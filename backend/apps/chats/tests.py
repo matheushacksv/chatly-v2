@@ -8,6 +8,7 @@ from unittest.mock import ANY, MagicMock, call, patch
 from django.utils import timezone
 
 import httpx
+from agno.run.base import RunStatus
 from django.conf import settings
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import connection
@@ -1536,6 +1537,20 @@ class GenerateReplyTests(BaseChatsTestCase):
         self.assertIn(ai.SPLIT_PROMPT, system)
         self.assertTrue(system.startswith('Você vende.'))  # instrução acrescenta, não substitui
 
+    # erro do provider (ex.: 529 overloaded) - Agno devolve o erro como content em vez de levantar
+
+    @patch('apps.ai.Claude')
+    @patch('apps.ai.AgnoAgent')
+    def test_generate_reply_raises_when_run_status_error(self, mock_agent_cls, mock_claude):
+        run_result = mock_agent_cls.return_value.run.return_value
+        run_result.status = RunStatus.error
+        run_result.content = "Error code: 529 - {'type': 'overloaded_error'}"
+
+        with self.assertRaises(RuntimeError) as ctx:
+            ai.generate_reply(self.agent, [], 'Oi')
+        # exceção carrega o erro pro log; task faz retry e o cliente não recebe o texto
+        self.assertIn('529', str(ctx.exception))
+
 
 class UpdateMemoryTests(BaseChatsTestCase):
     @patch('apps.ai.Claude')
@@ -1564,6 +1579,17 @@ class UpdateMemoryTests(BaseChatsTestCase):
     def test_update_memory_none_content_returns_empty(self, mock_agent_cls, mock_claude):
         mock_agent_cls.return_value.run.return_value.content = None
         self.assertEqual(ai.update_memory(self.agent, '', []), '')
+
+    @patch('apps.ai.Claude')
+    @patch('apps.ai.AgnoAgent')
+    def test_update_memory_raises_when_run_status_error(self, mock_agent_cls, mock_claude):
+        # sem o raise, o texto do erro viraria a memória do contato
+        run_result = mock_agent_cls.return_value.run.return_value
+        run_result.status = RunStatus.error
+        run_result.content = 'Error code: 529'
+
+        with self.assertRaises(RuntimeError):
+            ai.update_memory(self.agent, 'Nome: Matheus', [])
 
 
 class ProcessIncomingMessageTests(BaseChatsTestCase):

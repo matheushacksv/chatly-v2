@@ -4,6 +4,7 @@ from agno.media import Image
 from agno.models.anthropic import Claude
 from agno.models.message import Message
 from agno.models.openai import OpenAIResponses
+from agno.run.base import RunStatus
 from django.conf import settings
 from openai import OpenAI
 from pgvector.django import CosineDistance
@@ -23,6 +24,13 @@ SPLIT_PROMPT = (
     '\n\nDivida sua resposta em mensagens curtas de WhatsApp separadas por uma linha em branco. '
     'Cada bloco vira uma mensagem separada no chat. Use de 1 a 4 mensagens, como uma pessoa digitando.'
 )
+
+
+def _run(agno_agent: AgnoAgent, *args, **kwargs) -> str:
+    result = agno_agent.run(*args, **kwargs)
+    if result.status == RunStatus.error:
+        raise RuntimeError(f'model run failed: {result.content}')
+    return result.content or ''
 
 
 def _build_model(agent: Agent) -> Claude | OpenAIResponses:
@@ -67,7 +75,7 @@ def generate_reply(agent: Agent, history: list[dict], text: str, image: bytes | 
         tools=tools,
     )
     images = [Image(content=image, mime_type=mime_type)] if image else None
-    return agno_agent.run(text, images=images).content or ''
+    return _run(agno_agent, text, images=images)
 
 
 def transcribe_audio(content: bytes, mime_type: str) -> str:
@@ -86,4 +94,4 @@ def update_memory(agent: Agent, memory: str, history: list[dict]) -> str:
     conversation = '\n'.join(f'{m["role"]}: {m["content"]}' for m in history)
     agno_agent = AgnoAgent(model=_build_model(agent), system_message=MEMORY_PROMPT)
     prompt = f'<anotacoes_atuais>\n{memory}\n</anotacoes_atuais>\n\n<conversa_recente>\n{conversation}\n</conversa_recente>'
-    return (agno_agent.run(prompt).content or '')[:MEMORY_MAX_CHARS]
+    return _run(agno_agent, prompt)[:MEMORY_MAX_CHARS]
