@@ -1,0 +1,17 @@
+app.chatly.ia.br {
+    handle /api/* {
+        reverse_proxy api:8000
+    }
+    handle /admin/* {
+        reverse_proxy api:8000
+    }
+    handle /static/* {
+        reverse_proxy api:8000
+    }
+    handle {
+        root * /srv
+        encode gzip
+        try_files {path} /index.html
+        file_server
+    }
+}

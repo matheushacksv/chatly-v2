@@ -1,0 +1,331 @@
+<script setup lang="ts">
+import type { Campaign, Contact, Paginated, Template, WhatsAppAccount } from '~/types/api'
+
+const api = useApi()
+const toast = useToast()
+const { activeId: companyId } = useCompany()
+
+// ---- contas WhatsApp ----
+const { data: accounts } = await useAsyncData(
+  () => `accounts:${companyId.value}`,
+  () => api<WhatsAppAccount[]>(`/companies/${companyId.value}/whatsapp-accounts`),
+  { watch: [companyId], default: () => [] as WhatsAppAccount[] }
+)
+const accountId = ref<number | null>(null)
+watch(accounts, list => { accountId.value = list?.[0]?.id ?? null }, { immediate: true })
+
+const accountItems = computed(() =>
+  (accounts.value ?? []).map(a => ({ label: a.phone_number_id, value: a.id }))
+)
+
+// ---- campanhas ----
+const campaigns = ref<Campaign[]>([])
+
+async function loadCampaigns() {
+  if (!companyId.value) return
+  const page = await api<Paginated<Campaign>>(`/companies/${companyId.value}/campaigns?limit=100`)
+  campaigns.value = page.items
+}
+watch(companyId, loadCampaigns, { immediate: true })
+
+// campanha enviando = contadores mudando no banco → re-busca até terminar
+const poll = setInterval(() => {
+  if (campaigns.value.some(c => c.status === 'sending')) loadCampaigns()
+}, 5000)
+onUnmounted(() => clearInterval(poll))
+
+const statusBadge: Record<Campaign['status'], { label: string, color: 'warning' | 'success' | 'error' }> = {
+  sending: { label: 'Enviando', color: 'warning' },
+  done: { label: 'Concluída', color: 'success' },
+  failed: { label: 'Falha', color: 'error' }
+}
+
+const dateFmt = new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+
+// ---- detalhes (delivered/read só vêm no GET individual) ----
+const detail = ref<Campaign | null>(null)
+const detailOpen = ref(false)
+
+async function openDetail(campaign: Campaign) {
+  detail.value = null
+  detailOpen.value = true
+  detail.value = await api<Campaign>(`/companies/${companyId.value}/campaigns/${campaign.id}`)
+}
+
+// ---- nova campanha ----
+const createOpen = ref(false)
+const saving = ref(false)
+const name = ref('')
+const template = ref<Template | null>(null)
+const params = ref<string[]>([])
+
+type RecipientMode = 'all' | 'select' | 'csv'
+const mode = ref<RecipientMode>('all')
+const modeItems = [
+  { label: 'Todos os contatos', value: 'all' },
+  { label: 'Selecionar contatos', value: 'select' },
+  { label: 'Importar CSV', value: 'csv' }
+]
+
+function openCreate() {
+  name.value = ''
+  template.value = null
+  params.value = []
+  mode.value = 'all'
+  selectedContactIds.value = []
+  csvNumbers.value = []
+  csvInvalid.value = []
+  createOpen.value = true
+}
+
+// seleção manual: contatos da conta escolhida
+const contacts = ref<Contact[]>([])
+const selectedContactIds = ref<number[]>([])
+
+watch([createOpen, accountId], async ([open]) => {
+  if (!open || !accountId.value) return
+  const page = await api<Paginated<Contact>>(
+    `/companies/${companyId.value}/whatsapp-accounts/${accountId.value}/contacts?limit=100`
+  )
+  contacts.value = page.items
+})
+
+function toggleContact(id: number) {
+  selectedContactIds.value = selectedContactIds.value.includes(id)
+    ? selectedContactIds.value.filter(c => c !== id)
+    : [...selectedContactIds.value, id]
+}
+
+// CSV: "numero,nome" por linha, parse no browser - backend revalida os números
+const csvInput = ref<HTMLInputElement | null>(null)
+const csvNumbers = ref<{ number: string, name: string }[]>([])
+const csvInvalid = ref<string[]>([])
+
+function onCsvPicked(event: Event) {
+  const file = (event.target as HTMLInputElement).files?.[0]
+  if (!file) return
+  const reader = new FileReader()
+  reader.onload = () => {
+    csvNumbers.value = []
+    csvInvalid.value = []
+    for (const line of String(reader.result).split(/\r?\n/)) {
+      if (!line.trim()) continue
+      const [rawNumber = '', ...rest] = line.split(',')
+      const digits = rawNumber.replace(/\D/g, '')
+      if (digits.length >= 10 && digits.length <= 15) {
+        csvNumbers.value.push({ number: digits, name: rest.join(',').trim() })
+      } else {
+        csvInvalid.value.push(line.trim())
+      }
+    }
+  }
+  reader.readAsText(file)
+  ;(event.target as HTMLInputElement).value = ''
+}
+
+const canSubmit = computed(() =>
+  Boolean(
+    name.value.trim()
+    && template.value
+    && params.value.every(p => p.trim())
+    && (mode.value === 'all'
+      || (mode.value === 'select' && selectedContactIds.value.length)
+      || (mode.value === 'csv' && csvNumbers.value.length))
+  )
+)
+
+async function create() {
+  if (!canSubmit.value || !template.value || saving.value) return
+  saving.value = true
+  try {
+    const body: Record<string, unknown> = {
+      account_id: accountId.value,
+      name: name.value.trim(),
+      template_name: template.value.name,
+      template_language: template.value.language,
+      body_params: params.value
+    }
+    if (mode.value === 'select') body.contact_ids = selectedContactIds.value
+    if (mode.value === 'csv') {
+      body.contact_ids = []
+      body.numbers = csvNumbers.value
+    }
+    const created = await api<Campaign>(`/companies/${companyId.value}/campaigns`, { method: 'POST', body })
+    campaigns.value.unshift(created)
+    createOpen.value = false
+    toast.add({ title: 'Campanha disparada', icon: 'i-lucide-megaphone', color: 'success' })
+  } catch (error) {
+    toast.add({ title: apiErrorDetail(error, 'Falha ao criar campanha'), color: 'error' })
+  } finally {
+    saving.value = false
+  }
+}
+</script>
+
+<template>
+  <UDashboardPanel id="campanhas">
+    <template #header>
+      <UDashboardNavbar title="Campanhas">
+        <template #right>
+          <USelect
+            v-if="accountItems.length > 1"
+            v-model="accountId"
+            :items="accountItems"
+            icon="i-lucide-phone"
+            size="sm"
+          />
+          <UButton label="Nova campanha" icon="i-lucide-plus" :disabled="!accountId" @click="openCreate()" />
+        </template>
+      </UDashboardNavbar>
+    </template>
+
+    <template #body>
+      <div v-if="!accountId" class="p-4 text-sm text-muted">
+        Nenhuma conta WhatsApp conectada. Configure uma em
+        <NuxtLink to="/configuracoes" class="text-primary">Configurações</NuxtLink>.
+      </div>
+
+      <div v-else-if="campaigns.length" class="space-y-3">
+        <button
+          v-for="campaign in campaigns"
+          :key="campaign.id"
+          class="w-full text-left rounded-xl ring-1 ring-default bg-elevated/40 p-4 hover:ring-primary/40 transition flex items-center gap-4"
+          @click="openDetail(campaign)"
+        >
+          <div class="size-9 rounded-lg bg-primary/10 ring-1 ring-primary/20 flex items-center justify-center shrink-0">
+            <UIcon name="i-lucide-megaphone" class="size-5 text-primary" />
+          </div>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2">
+              <p class="font-display font-semibold truncate">{{ campaign.name }}</p>
+              <UBadge :color="statusBadge[campaign.status].color" variant="subtle" size="sm">
+                {{ statusBadge[campaign.status].label }}
+              </UBadge>
+            </div>
+            <p class="text-xs text-muted truncate">
+              <span class="font-mono">{{ campaign.template_name }}</span>
+              · {{ dateFmt.format(new Date(campaign.created_at)) }}
+            </p>
+          </div>
+          <div class="text-right shrink-0">
+            <p class="text-sm font-medium tabular-nums">{{ campaign.sent }}/{{ campaign.total }} enviadas</p>
+            <p v-if="campaign.failed" class="text-xs text-error tabular-nums">{{ campaign.failed }} falhas</p>
+          </div>
+          <UProgress
+            :model-value="campaign.sent + campaign.failed"
+            :max="campaign.total"
+            class="w-28 shrink-0 hidden sm:block"
+            size="sm"
+          />
+        </button>
+      </div>
+
+      <div v-else class="flex-1 flex flex-col items-center justify-center gap-3 text-muted py-16">
+        <div class="size-16 rounded-2xl bg-elevated ring-1 ring-default flex items-center justify-center">
+          <UIcon name="i-lucide-megaphone" class="size-8" />
+        </div>
+        <p class="text-sm">Nenhuma campanha ainda. Dispare a primeira.</p>
+        <UButton label="Nova campanha" icon="i-lucide-plus" variant="soft" :disabled="!accountId" @click="openCreate()" />
+      </div>
+    </template>
+  </UDashboardPanel>
+
+  <UModal v-model:open="detailOpen" :title="detail?.name ?? 'Campanha'" :description="detail ? `Template ${detail.template_name}` : undefined">
+    <template #body>
+      <div v-if="!detail" class="flex justify-center py-8">
+        <UIcon name="i-lucide-loader-circle" class="size-5 animate-spin text-muted" />
+      </div>
+      <div v-else class="grid grid-cols-2 gap-3">
+        <div class="rounded-lg ring-1 ring-default p-3">
+          <p class="text-xs text-muted">Destinatários</p>
+          <p class="text-xl font-semibold tabular-nums">{{ detail.total }}</p>
+        </div>
+        <div class="rounded-lg ring-1 ring-default p-3">
+          <p class="text-xs text-muted">Enviadas</p>
+          <p class="text-xl font-semibold tabular-nums">{{ detail.sent }}</p>
+        </div>
+        <div class="rounded-lg ring-1 ring-default p-3">
+          <p class="text-xs text-muted">Entregues</p>
+          <!-- lida implica entregue: status só guarda o mais recente -->
+          <p class="text-xl font-semibold tabular-nums">{{ detail.delivered + detail.read }}</p>
+        </div>
+        <div class="rounded-lg ring-1 ring-default p-3">
+          <p class="text-xs text-muted">Lidas</p>
+          <p class="text-xl font-semibold tabular-nums">{{ detail.read }}</p>
+        </div>
+        <div v-if="detail.failed" class="rounded-lg ring-1 ring-error/30 bg-error/5 p-3 col-span-2">
+          <p class="text-xs text-error">Falhas de envio</p>
+          <p class="text-xl font-semibold tabular-nums text-error">{{ detail.failed }}</p>
+        </div>
+      </div>
+    </template>
+  </UModal>
+
+  <USlideover v-model:open="createOpen" title="Nova campanha" description="Dispara um template aprovado pra vários contatos" :ui="{ content: 'max-w-xl' }">
+    <template #body>
+      <div class="space-y-5">
+        <UFormField label="Nome" required help="Só pra você identificar depois">
+          <UInput v-model="name" placeholder="Promo de julho" class="w-full" />
+        </UFormField>
+
+        <TemplatePicker
+          v-if="accountId"
+          v-model:template="template"
+          v-model:params="params"
+          :company-id="companyId ?? 0"
+          :account-id="accountId"
+        />
+
+        <UFormField label="Destinatários" required>
+          <URadioGroup v-model="mode" :items="modeItems" />
+        </UFormField>
+
+        <div v-if="mode === 'select'" class="rounded-lg ring-1 ring-default max-h-56 overflow-y-auto divide-y divide-default">
+          <p v-if="!contacts.length" class="p-3 text-sm text-muted">Nenhum contato nessa conta.</p>
+          <label
+            v-for="contact in contacts"
+            :key="contact.id"
+            class="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-elevated/60"
+          >
+            <UCheckbox
+              :model-value="selectedContactIds.includes(contact.id)"
+              @update:model-value="toggleContact(contact.id)"
+            />
+            <span class="text-sm truncate">{{ contact.name || contact.wa_id }}</span>
+            <span class="text-xs text-muted font-mono ml-auto shrink-0">{{ contact.wa_id }}</span>
+          </label>
+        </div>
+
+        <div v-if="mode === 'csv'" class="space-y-2">
+          <input ref="csvInput" type="file" accept=".csv,.txt" class="hidden" @change="onCsvPicked">
+          <UButton label="Escolher arquivo" icon="i-lucide-upload" variant="soft" @click="csvInput?.click()" />
+          <p class="text-xs text-muted">Uma linha por contato: <span class="font-mono">numero,nome</span> (nome opcional).</p>
+          <UAlert
+            v-if="csvNumbers.length"
+            icon="i-lucide-check"
+            color="success"
+            variant="subtle"
+            :title="`${csvNumbers.length} número(s) pronto(s) pra envio`"
+          />
+          <UAlert
+            v-if="csvInvalid.length"
+            icon="i-lucide-triangle-alert"
+            color="warning"
+            variant="subtle"
+            :title="`${csvInvalid.length} linha(s) ignorada(s) - número inválido`"
+            :description="csvInvalid.slice(0, 3).join(' · ')"
+          />
+        </div>
+
+        <UButton
+          block
+          icon="i-lucide-send"
+          :loading="saving"
+          :disabled="!canSubmit"
+          label="Disparar campanha"
+          @click="create()"
+        />
+      </div>
+    </template>
+  </USlideover>
+</template>

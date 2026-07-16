@@ -1,0 +1,34 @@
+@import "tailwindcss";
+@import "@nuxt/ui";
+
+@theme static {
+  --font-sans: 'Instrument Sans', sans-serif;
+  --font-display: 'Bricolage Grotesque', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+:root {
+  --ui-radius: 0.625rem;
+}
+
+/* scrollbars discretas em todo o app */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ui-border-accented) transparent;
+}
+
+/* wallpaper do chat: pontilhado sutil que acompanha o tema */
+.chat-wallpaper {
+  background-image: radial-gradient(var(--ui-border) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+
+/* painel de marca (login/register): sempre escuro, brilhos emerald em camadas */
+.brand-panel {
+  background-color: #060f0b;
+  background-image:
+    radial-gradient(ellipse at 85% -10%, rgba(16, 185, 129, 0.22) 0%, transparent 55%),
+    radial-gradient(ellipse at -10% 110%, rgba(5, 150, 105, 0.16) 0%, transparent 55%),
+    radial-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: auto, auto, 26px 26px;
+}

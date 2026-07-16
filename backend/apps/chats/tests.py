@@ -1,0 +1,2364 @@
+import hashlib
+import hmac
+import json
+import tempfile
+from datetime import timedelta
+from unittest.mock import ANY, MagicMock, call, patch
+
+from django.utils import timezone
+
+import httpx
+from django.conf import settings
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import connection
+from django.test import TestCase, override_settings
+
+from apps import ai
+from apps.chats import services, tasks, whatsapp
+
+from django.core.files.base import ContentFile
+
+from apps.accounts.models import User
+from apps.agents.models import Agent, Credential, Document, DocumentChunk
+from apps.chats.models import Campaign, Contact, Message, Sticker, WhatsAppAccount
+from apps.companies.models import Company
+from apps.testing import auth_header
+
+# storage default é MinIO - em teste troca por filesystem local num tempdir,
+# senão cada rodada sobe arquivo real pro bucket
+LOCAL_STORAGE_SETTINGS = dict(
+    MEDIA_ROOT=tempfile.mkdtemp(),
+    MEDIA_URL='media/',
+    STORAGES={
+        'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
+        'staticfiles': {'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage'},
+    },
+)
+
+
+def close_service_window(contact):
+    """Envelhece todas as inbound do contact além das 24h (created_at é auto_now_add, só via update)."""
+    Message.objects.filter(contact=contact, direction='in').update(created_at=timezone.now() - timedelta(hours=25))
+
+
+class BaseChatsTestCase(TestCase):
+    """Fixture de dois tenants: user + company + credential + agent + account de cada lado."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user(email='owner@a.com', password='strongpass123')
+        cls.other_user = User.objects.create_user(email='other@a.com', password='strongpass123')
+        cls.company = Company.objects.create(name='Minha Empresa', owner=cls.user)
+        cls.other_company = Company.objects.create(name='Empresa Alheia', owner=cls.other_user)
+        cls.credential = Credential.objects.create(
+            company=cls.company, provider='anthropic', api_key='sk-minha-chave'
+        )
+        cls.other_credential = Credential.objects.create(
+            company=cls.other_company, provider='anthropic', api_key='sk-chave-alheia'
+        )
+        cls.agent = Agent.objects.create(
+            company=cls.company, name='Vendedor', prompt='Você vende.', credential=cls.credential,
+            model='claude-opus-4-8',
+        )
+        cls.other_agent = Agent.objects.create(
+            company=cls.other_company, name='Alheio', prompt='...', credential=cls.other_credential
+        )
+        cls.account = WhatsAppAccount.objects.create(
+            company=cls.company,
+            agent=cls.agent,
+            phone_number_id='111111',
+            waba_id='waba-1',
+            access_token='EAAG-meu-token-secreto',
+            app_secret='meu-app-secret',
+            verify_token='verify-1',
+        )
+        cls.other_account = WhatsAppAccount.objects.create(
+            company=cls.other_company,
+            agent=cls.other_agent,
+            phone_number_id='222222',
+            waba_id='waba-2',
+            access_token='EAAG-token-alheio',
+            app_secret='app-secret-alheio',
+            verify_token='verify-2',
+        )
+        cls.contact = Contact.objects.create(account=cls.account, wa_id='5511999999999', name='Cliente A')
+        cls.other_contact = Contact.objects.create(account=cls.other_account, wa_id='5511888888888')
+        # criação sequencial: created_at crescente garante ordem no order_by
+        Message.objects.create(contact=cls.contact, direction='in', content='Oi', wa_message_id='wamid.1')
+        Message.objects.create(contact=cls.contact, direction='out', content='Olá! Como posso ajudar?', status='sent')
+        Message.objects.create(contact=cls.other_contact, direction='in', content='Mensagem alheia', wa_message_id='wamid.2')
+
+    def setUp(self):
+        self.auth = auth_header(self.user)
+        # publish (SSE) mockado globalmente: testes não falam com Redis real
+        patcher = patch('apps.chats.events.publish')
+        self.mock_events = patcher.start()
+        self.addCleanup(patcher.stop)
+
+
+class WhatsAppAccountTests(BaseChatsTestCase):
+    def url(self, company_id: int, account_id: int | None = None) -> str:
+        base = f'/api/companies/{company_id}/whatsapp-accounts'
+        return f'{base}/{account_id}' if account_id else base
+
+    def account_payload(self, **overrides) -> dict:
+        payload = {
+            'agent_id': self.agent.pk,
+            'phone_number_id': '333333',
+            'waba_id': 'waba-3',
+            'access_token': 'EAAG-token-novo',
+            'app_secret': 'app-secret-novo',
+            'verify_token': 'verify-3',
+        }
+        payload.update(overrides)
+        return payload
+
+    # create
+
+    def test_create_account(self):
+        response = self.client.post(
+            self.url(self.company.pk),
+            data=self.account_payload(),
+            content_type='application/json',
+            headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 201, response.json())
+        account = WhatsAppAccount.objects.get(phone_number_id='333333')
+        self.assertEqual(account.company, self.company)
+        self.assertEqual(account.agent, self.agent)
+
+    def test_create_account_does_not_leak_secrets(self):
+        response = self.client.post(
+            self.url(self.company.pk),
+            data=self.account_payload(),
+            content_type='application/json',
+            headers=self.auth,
+        )
+        body = response.json()
+        self.assertNotIn('access_token', body)
+        self.assertNotIn('app_secret', body)
+        content = response.content.decode()
+        self.assertNotIn('EAAG-token-novo', content)
+        self.assertNotIn('app-secret-novo', content)
+
+    def test_create_account_with_foreign_agent_returns_404(self):
+        # cross-tenant: agent de outra company não pode ser anexado
+        response = self.client.post(
+            self.url(self.company.pk),
+            data=self.account_payload(agent_id=self.other_agent.pk),
+            content_type='application/json',
+            headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(WhatsAppAccount.objects.filter(phone_number_id='333333').exists())
+
+    def test_create_account_with_nonexistent_agent_returns_404(self):
+        response = self.client.post(
+            self.url(self.company.pk),
+            data=self.account_payload(agent_id=99999),
+            content_type='application/json',
+            headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_create_account_with_duplicate_phone_number_returns_409(self):
+        # phone_number_id é unique GLOBAL - número da other_company também conflita
+        response = self.client.post(
+            self.url(self.company.pk),
+            data=self.account_payload(phone_number_id=self.other_account.phone_number_id),
+            content_type='application/json',
+            headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 409)
+
+    def test_create_account_in_foreign_company_returns_404(self):
+        response = self.client.post(
+            self.url(self.other_company.pk),
+            data=self.account_payload(),
+            content_type='application/json',
+            headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(WhatsAppAccount.objects.filter(phone_number_id='333333').exists())
+
+    # list / detail
+
+    def test_list_accounts_only_mine_and_without_secrets(self):
+        response = self.client.get(self.url(self.company.pk), headers=self.auth)
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(len(body), 1)
+        self.assertEqual(body[0]['phone_number_id'], '111111')
+        self.assertNotIn('access_token', body[0])
+        self.assertNotIn('app_secret', body[0])
+
+    def test_get_account(self):
+        response = self.client.get(self.url(self.company.pk, self.account.pk), headers=self.auth)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['phone_number_id'], '111111')
+
+    def test_get_foreign_account_returns_404(self):
+        response = self.client.get(self.url(self.company.pk, self.other_account.pk), headers=self.auth)
+        self.assertEqual(response.status_code, 404)
+
+    # update
+
+    def test_update_account_partial_keeps_unsent_fields(self):
+        # PATCH só com waba_id não pode apagar os demais (exclude_unset)
+        response = self.client.patch(
+            self.url(self.company.pk, self.account.pk),
+            data={'waba_id': 'waba-novo'},
+            content_type='application/json',
+            headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 200, response.json())
+        self.account.refresh_from_db()
+        self.assertEqual(self.account.waba_id, 'waba-novo')
+        self.assertEqual(self.account.access_token, 'EAAG-meu-token-secreto')
+        self.assertEqual(self.account.agent, self.agent)
+
+    def test_update_account_ignores_phone_number_id(self):
+        # mass assignment: campo fora do PatchDTO, pydantic descarta - valor não muda
+        response = self.client.patch(
+            self.url(self.company.pk, self.account.pk),
+            data={'phone_number_id': '999999', 'waba_id': 'waba-x'},
+            content_type='application/json',
+            headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.account.refresh_from_db()
+        self.assertEqual(self.account.phone_number_id, '111111')
+
+    def test_update_account_with_foreign_agent_returns_404(self):
+        response = self.client.patch(
+            self.url(self.company.pk, self.account.pk),
+            data={'agent_id': self.other_agent.pk},
+            content_type='application/json',
+            headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 404)
+        self.account.refresh_from_db()
+        self.assertEqual(self.account.agent, self.agent)
+
+    # delete
+
+    def test_delete_account(self):
+        response = self.client.delete(self.url(self.company.pk, self.account.pk), headers=self.auth)
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(WhatsAppAccount.objects.filter(pk=self.account.pk).exists())
+
+    def test_delete_foreign_account_returns_404(self):
+        response = self.client.delete(self.url(self.company.pk, self.other_account.pk), headers=self.auth)
+        self.assertEqual(response.status_code, 404)
+        self.assertTrue(WhatsAppAccount.objects.filter(pk=self.other_account.pk).exists())
+
+    def test_delete_agent_in_use_by_account_returns_409(self):
+        # agent é PROTECT de WhatsAppAccount - delete_agent precisa tratar ProtectedError
+        response = self.client.delete(
+            f'/api/companies/{self.company.pk}/agents/{self.agent.pk}', headers=self.auth
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertTrue(Agent.objects.filter(pk=self.agent.pk).exists())
+
+    # criptografia
+
+    def test_secrets_are_encrypted_at_rest(self):
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT access_token, app_secret FROM chats_whatsappaccount WHERE id = %s', [self.account.pk]
+            )
+            access_token, app_secret = cursor.fetchone()
+        self.assertNotIn('EAAG-meu-token-secreto', access_token)
+        self.assertNotIn('meu-app-secret', app_secret)
+
+    def test_secrets_decrypt_on_read(self):
+        self.account.refresh_from_db()
+        self.assertEqual(self.account.access_token, 'EAAG-meu-token-secreto')
+        self.assertEqual(self.account.app_secret, 'meu-app-secret')
+
+
+class ContactTests(BaseChatsTestCase):
+    def url(self, company_id: int, account_id: int) -> str:
+        return f'/api/companies/{company_id}/whatsapp-accounts/{account_id}/contacts'
+
+    def test_list_contacts(self):
+        response = self.client.get(self.url(self.company.pk, self.account.pk), headers=self.auth)
+        self.assertEqual(response.status_code, 200, response.json())
+        body = response.json()
+        # @paginate embrulha em items/count
+        self.assertEqual(body['count'], 1)
+        self.assertEqual(body['items'][0]['wa_id'], '5511999999999')
+        self.assertEqual(body['items'][0]['name'], 'Cliente A')
+
+    def test_list_contacts_of_foreign_account_returns_404(self):
+        response = self.client.get(self.url(self.company.pk, self.other_account.pk), headers=self.auth)
+        self.assertEqual(response.status_code, 404)
+
+    def test_list_contacts_search_by_name_and_number(self):
+        Contact.objects.create(account=self.account, wa_id='5511955555555', name='Fulano de Tal')
+        by_name = self.client.get(self.url(self.company.pk, self.account.pk) + '?search=fulano', headers=self.auth)
+        self.assertEqual([c['name'] for c in by_name.json()['items']], ['Fulano de Tal'])
+        by_number = self.client.get(self.url(self.company.pk, self.account.pk) + '?search=99999', headers=self.auth)
+        self.assertEqual([c['name'] for c in by_number.json()['items']], ['Cliente A'])
+
+    def test_rename_contact(self):
+        response = self.client.patch(
+            f'/api/companies/{self.company.pk}/contacts/{self.contact.pk}',
+            data=json.dumps({'name': 'Renomeado'}), content_type='application/json', headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 200, response.json())
+        self.contact.refresh_from_db()
+        self.assertEqual(self.contact.name, 'Renomeado')
+        self.assertFalse(self.contact.ai_paused)
+
+    def test_delete_contact_cascades_messages(self):
+        response = self.client.delete(
+            f'/api/companies/{self.company.pk}/contacts/{self.contact.pk}', headers=self.auth
+        )
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(Contact.objects.filter(pk=self.contact.pk).exists())
+        self.assertFalse(Message.objects.filter(contact_id=self.contact.pk).exists())
+
+    def test_delete_foreign_contact_returns_404(self):
+        response = self.client.delete(
+            f'/api/companies/{self.company.pk}/contacts/{self.other_contact.pk}', headers=self.auth
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertTrue(Contact.objects.filter(pk=self.other_contact.pk).exists())
+
+    # memória
+
+    def memory_url(self, company_id: int, contact_id: int) -> str:
+        return f'/api/companies/{company_id}/contacts/{contact_id}/memory'
+
+    def test_list_contacts_exposes_memory(self):
+        Contact.objects.filter(pk=self.contact.pk).update(memory='Nome: Matheus')
+        response = self.client.get(self.url(self.company.pk, self.account.pk), headers=self.auth)
+        self.assertEqual(response.json()['items'][0]['memory'], 'Nome: Matheus')
+
+    def test_clear_contact_memory(self):
+        Contact.objects.filter(pk=self.contact.pk).update(memory='Nome: Matheus')
+        response = self.client.delete(self.memory_url(self.company.pk, self.contact.pk), headers=self.auth)
+        self.assertEqual(response.status_code, 204)
+        self.contact.refresh_from_db()
+        self.assertEqual(self.contact.memory, '')
+
+    def test_clear_foreign_contact_memory_returns_404(self):
+        Contact.objects.filter(pk=self.other_contact.pk).update(memory='segredo alheio')
+        response = self.client.delete(self.memory_url(self.company.pk, self.other_contact.pk), headers=self.auth)
+        self.assertEqual(response.status_code, 404)
+        self.other_contact.refresh_from_db()
+        self.assertEqual(self.other_contact.memory, 'segredo alheio')
+
+    # handoff
+
+    def contact_url(self, company_id: int, contact_id: int) -> str:
+        return f'/api/companies/{company_id}/contacts/{contact_id}'
+
+    def test_pause_contact_ai(self):
+        response = self.client.patch(
+            self.contact_url(self.company.pk, self.contact.pk),
+            data=json.dumps({'ai_paused': True}), content_type='application/json', headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 200, response.json())
+        self.assertTrue(response.json()['ai_paused'])
+        self.contact.refresh_from_db()
+        self.assertTrue(self.contact.ai_paused)
+
+    def test_resume_contact_ai(self):
+        Contact.objects.filter(pk=self.contact.pk).update(ai_paused=True)
+        response = self.client.patch(
+            self.contact_url(self.company.pk, self.contact.pk),
+            data=json.dumps({'ai_paused': False}), content_type='application/json', headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.contact.refresh_from_db()
+        self.assertFalse(self.contact.ai_paused)
+
+    def test_patch_foreign_contact_returns_404(self):
+        response = self.client.patch(
+            self.contact_url(self.company.pk, self.other_contact.pk),
+            data=json.dumps({'ai_paused': True}), content_type='application/json', headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 404)
+        self.other_contact.refresh_from_db()
+        self.assertFalse(self.other_contact.ai_paused)
+
+    def test_list_contacts_exposes_ai_paused(self):
+        response = self.client.get(self.url(self.company.pk, self.account.pk), headers=self.auth)
+        self.assertFalse(response.json()['items'][0]['ai_paused'])
+
+    # última mensagem (preview + ordenação estilo WhatsApp)
+
+    def test_list_contacts_exposes_last_message(self):
+        response = self.client.get(self.url(self.company.pk, self.account.pk), headers=self.auth)
+        item = response.json()['items'][0]
+        self.assertEqual(item['last_message'], 'Olá! Como posso ajudar?')
+        self.assertIsNotNone(item['last_message_at'])
+
+    def test_list_contacts_ordered_by_last_message(self):
+        # contato com mensagem mais recente vem primeiro; sem mensagem vai pro fim
+        recente = Contact.objects.create(account=self.account, wa_id='5511777777777', name='Cliente B')
+        Message.objects.create(contact=recente, direction='in', content='Cheguei agora', wa_message_id='wamid.9')
+        Contact.objects.create(account=self.account, wa_id='5511666666666', name='Cliente Mudo')
+        response = self.client.get(self.url(self.company.pk, self.account.pk), headers=self.auth)
+        items = response.json()['items']
+        self.assertEqual([item['name'] for item in items], ['Cliente B', 'Cliente A', 'Cliente Mudo'])
+        self.assertIsNone(items[2]['last_message'])
+
+
+class CreateContactTests(BaseChatsTestCase):
+    def url(self, company_id: int, account_id: int) -> str:
+        return f'/api/companies/{company_id}/whatsapp-accounts/{account_id}/contacts'
+
+    def post(self, company_id: int, account_id: int, payload: dict):
+        return self.client.post(
+            self.url(company_id, account_id), data=json.dumps(payload), content_type='application/json', headers=self.auth
+        )
+
+    def test_create_contact_normalizes_number(self):
+        response = self.post(self.company.pk, self.account.pk, {'number': '+55 (11) 97777-7777', 'name': 'Novo Cliente'})
+        self.assertEqual(response.status_code, 201, response.json())
+        body = response.json()
+        self.assertEqual(body['wa_id'], '5511977777777')
+        self.assertEqual(body['name'], 'Novo Cliente')
+        self.assertTrue(Contact.objects.filter(account=self.account, wa_id='5511977777777').exists())
+
+    def test_create_contact_without_name(self):
+        response = self.post(self.company.pk, self.account.pk, {'number': '5511977777777'})
+        self.assertEqual(response.status_code, 201, response.json())
+        self.assertEqual(response.json()['name'], '')
+
+    def test_create_contact_invalid_number_returns_400(self):
+        before = Contact.objects.count()
+        response = self.post(self.company.pk, self.account.pk, {'number': '119999'})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(Contact.objects.count(), before)
+
+    def test_create_contact_existing_number_returns_same_contact(self):
+        # get_or_create: número repetido devolve o contato existente, nome original preservado
+        response = self.post(self.company.pk, self.account.pk, {'number': '+55 11 99999-9999', 'name': 'Outro Nome'})
+        self.assertEqual(response.status_code, 201, response.json())
+        body = response.json()
+        self.assertEqual(body['id'], self.contact.pk)
+        self.assertEqual(body['name'], 'Cliente A')
+        self.assertEqual(Contact.objects.filter(account=self.account, wa_id='5511999999999').count(), 1)
+
+    def test_create_contact_on_foreign_company_returns_404(self):
+        response = self.post(self.other_company.pk, self.other_account.pk, {'number': '5511977777777'})
+        self.assertEqual(response.status_code, 404)
+
+    def test_create_contact_on_foreign_account_returns_404(self):
+        response = self.post(self.company.pk, self.other_account.pk, {'number': '5511977777777'})
+        self.assertEqual(response.status_code, 404)
+
+
+class ImportContactsTests(BaseChatsTestCase):
+    def url(self, company_id: int, account_id: int) -> str:
+        return f'/api/companies/{company_id}/whatsapp-accounts/{account_id}/contacts/import'
+
+    def post(self, company_id: int, account_id: int, numbers: list[dict]):
+        return self.client.post(
+            self.url(company_id, account_id),
+            data=json.dumps({'numbers': numbers}), content_type='application/json', headers=self.auth,
+        )
+
+    def test_import_counts_created_and_existing(self):
+        response = self.post(self.company.pk, self.account.pk, [
+            {'number': '+55 (11) 97777-7777', 'name': 'Novo A'},
+            {'number': '5511966666666'},
+            {'number': '+55 11 99999-9999', 'name': 'Já Existe'},  # wa_id do self.contact
+        ])
+        self.assertEqual(response.status_code, 200, response.json())
+        self.assertEqual(response.json(), {'created': 2, 'existing': 1})
+        self.assertTrue(Contact.objects.filter(account=self.account, wa_id='5511977777777', name='Novo A').exists())
+        # existente preserva nome original
+        self.contact.refresh_from_db()
+        self.assertEqual(self.contact.name, 'Cliente A')
+
+    def test_import_invalid_number_creates_nothing(self):
+        # duas passadas: valida tudo antes de criar - nada de import parcial
+        before = Contact.objects.count()
+        response = self.post(self.company.pk, self.account.pk, [
+            {'number': '5511977777777', 'name': 'Válido'},
+            {'number': '123', 'name': 'Inválido'},
+        ])
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(Contact.objects.count(), before)
+
+    def test_import_empty_list_returns_400(self):
+        response = self.post(self.company.pk, self.account.pk, [])
+        self.assertEqual(response.status_code, 400)
+
+    def test_import_on_foreign_account_returns_404(self):
+        response = self.post(self.company.pk, self.other_account.pk, [{'number': '5511977777777'}])
+        self.assertEqual(response.status_code, 404)
+
+
+class MessageTests(BaseChatsTestCase):
+    def url(self, company_id: int, contact_id: int) -> str:
+        return f'/api/companies/{company_id}/contacts/{contact_id}/messages'
+
+    def test_list_messages_ordered(self):
+        # ordem desc (mais recente primeiro): página 0 da paginação = fim da conversa
+        response = self.client.get(self.url(self.company.pk, self.contact.pk), headers=self.auth)
+        self.assertEqual(response.status_code, 200, response.json())
+        body = response.json()
+        self.assertEqual(body['count'], 2)
+        contents = [message['content'] for message in body['items']]
+        self.assertEqual(contents, ['Olá! Como posso ajudar?', 'Oi'])
+        directions = [message['direction'] for message in body['items']]
+        self.assertEqual(directions, ['out', 'in'])
+
+    def test_list_messages_of_foreign_contact_returns_404(self):
+        response = self.client.get(self.url(self.company.pk, self.other_contact.pk), headers=self.auth)
+        self.assertEqual(response.status_code, 404)
+
+    def test_list_messages_exposes_from_human(self):
+        response = self.client.get(self.url(self.company.pk, self.contact.pk), headers=self.auth)
+        self.assertEqual([m['from_human'] for m in response.json()['items']], [False, False])
+
+
+class EventsTests(BaseChatsTestCase):
+    """SSE: evento é dica (front re-busca via API) e SEMPRE publica após gravar no banco."""
+
+    def close_stream(self, response):
+        # close() de StreamingHttpResponse dispara request_finished → close_old_connections,
+        # que fecharia a conexão transacional do teste e quebraria o teste seguinte
+        from django.core.signals import request_finished
+        from django.db import close_old_connections
+        request_finished.disconnect(close_old_connections)
+        try:
+            response.close()
+        finally:
+            request_finished.connect(close_old_connections)
+
+    def test_record_incoming_publishes_after_insert(self):
+        # side_effect fotografa o banco no momento do publish: INSERT já tem que estar visível
+        seen = {}
+        self.mock_events.side_effect = lambda company_id, event: seen.update(
+            exists=Message.objects.filter(wa_message_id='wamid.novo').exists(),
+            company_id=company_id, event=event,
+        )
+        services.record_incoming_message(self.contact, 'wamid.novo', 'Oi de novo')
+        self.assertTrue(seen['exists'])
+        self.assertEqual(seen['company_id'], self.company.pk)
+        self.assertEqual(seen['event'], {'type': 'message', 'contact_id': self.contact.pk})
+
+    def test_record_outgoing_publishes_after_insert(self):
+        seen = {}
+        self.mock_events.side_effect = lambda company_id, event: seen.update(
+            exists=Message.objects.filter(wa_message_id='wamid.out').exists(), event=event,
+        )
+        services.record_outgoing_message(self.contact, 'wamid.out', 'Resposta')
+        self.assertTrue(seen['exists'])
+        self.assertEqual(seen['event'], {'type': 'message', 'contact_id': self.contact.pk})
+
+    def test_update_contact_publishes_contact_event(self):
+        services.update_contact(self.company, self.contact.pk, {'ai_paused': True})
+        self.mock_events.assert_called_once_with(
+            self.company.pk, {'type': 'contact', 'contact_id': self.contact.pk}
+        )
+
+    def test_stream_endpoint_yields_published_event(self):
+        # view chamada direto (sem test client): streaming + test client fecham a
+        # conexão de banco do teste via request_finished; aqui não há signal nenhum
+        from api.endpoints.events import events_endpoint
+
+        with patch('api.endpoints.events.redis') as mock_redis:
+            pubsub = mock_redis.Redis.from_url.return_value.pubsub.return_value
+            pubsub.get_message.return_value = {'type': 'message', 'data': b'{"type": "message", "contact_id": 7}'}
+
+            request = MagicMock(auth=self.user)
+            response = events_endpoint(request, self.company.pk)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response['Content-Type'], 'text/event-stream')
+            first = next(iter(response.streaming_content))
+            self.assertEqual(first, b'data: {"type": "message", "contact_id": 7}\n\n')
+            pubsub.subscribe.assert_called_once_with(f'chatly:events:{self.company.pk}')
+            self.close_stream(response)  # dispara o finally do generator
+            pubsub.close.assert_called_once()
+
+    def test_stream_endpoint_keepalive_when_no_event(self):
+        from api.endpoints.events import events_endpoint
+
+        with patch('api.endpoints.events.redis') as mock_redis:
+            pubsub = mock_redis.Redis.from_url.return_value.pubsub.return_value
+            pubsub.get_message.return_value = None  # timeout sem evento
+
+            response = events_endpoint(MagicMock(auth=self.user), self.company.pk)
+            first = next(iter(response.streaming_content))
+
+            self.assertTrue(first.startswith(b':'))  # comentário SSE = keepalive
+            self.close_stream(response)
+
+    def test_stream_endpoint_foreign_company_returns_404(self):
+        response = self.client.get(f'/api/companies/{self.other_company.pk}/events', headers=self.auth)
+        self.assertEqual(response.status_code, 404)
+
+
+class ManualMessageTests(BaseChatsTestCase):
+    """POST do atendente humano: envia na hora e grava com from_human=True."""
+
+    def post(self, company_id: int, contact_id: int, content: str = 'Oi, aqui é o atendente'):
+        return self.client.post(
+            f'/api/companies/{company_id}/contacts/{contact_id}/messages',
+            data=json.dumps({'content': content}), content_type='application/json', headers=self.auth,
+        )
+
+    @patch('apps.chats.whatsapp.send_text')
+    def test_send_manual_message(self, mock_send):
+        mock_send.return_value = 'wamid.manual'
+
+        response = self.post(self.company.pk, self.contact.pk)
+
+        self.assertEqual(response.status_code, 201, response.json())
+        mock_send.assert_called_once_with(self.account, '5511999999999', 'Oi, aqui é o atendente')
+        message = Message.objects.get(wa_message_id='wamid.manual')
+        self.assertEqual(message.direction, 'out')
+        self.assertTrue(message.from_human)
+        self.assertTrue(response.json()['from_human'])
+
+    @patch('apps.chats.whatsapp.send_text')
+    def test_send_manual_message_to_foreign_contact_returns_404(self, mock_send):
+        response = self.post(self.company.pk, self.other_contact.pk)
+        self.assertEqual(response.status_code, 404)
+        mock_send.assert_not_called()
+
+    @patch('apps.chats.whatsapp.send_text')
+    def test_send_manual_message_whatsapp_rejection_returns_400(self, mock_send):
+        # rejeição síncrona da Meta (número inválido etc.): erro limpo, nada gravado
+        mock_send.side_effect = httpx.HTTPStatusError('Bad Request', request=MagicMock(), response=MagicMock())
+        out_count = Message.objects.filter(direction='out').count()
+
+        response = self.post(self.company.pk, self.contact.pk)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(Message.objects.filter(direction='out').count(), out_count)
+
+    # janela de 24h: a Meta aceita o POST fora da janela e falha async via webhook
+    # de status - a fronteira que o usuário vê tem que ser nossa, antes do envio
+
+    @patch('apps.chats.whatsapp.send_text')
+    def test_send_manual_message_outside_window_returns_400(self, mock_send):
+        close_service_window(self.contact)
+        out_count = Message.objects.filter(direction='out').count()
+
+        response = self.post(self.company.pk, self.contact.pk)
+
+        self.assertEqual(response.status_code, 400)
+        mock_send.assert_not_called()
+        self.assertEqual(Message.objects.filter(direction='out').count(), out_count)
+
+    @patch('apps.chats.whatsapp.send_text')
+    def test_send_manual_message_without_any_inbound_returns_400(self, mock_send):
+        # contato importado que nunca respondeu: janela nem existe ainda
+        contact = Contact.objects.create(account=self.account, wa_id='5511777777777')
+
+        response = self.post(self.company.pk, contact.pk)
+
+        self.assertEqual(response.status_code, 400)
+        mock_send.assert_not_called()
+
+
+@override_settings(**LOCAL_STORAGE_SETTINGS)
+class MediaMessageTests(BaseChatsTestCase):
+    """POST multipart do atendente + proxy autenticado de mídia recebida."""
+
+    def post_media(self, contact_id: int, file, caption: str = ''):
+        data = {'file': file}
+        if caption:
+            data['caption'] = caption
+        return self.client.post(
+            f'/api/companies/{self.company.pk}/contacts/{contact_id}/messages/media',
+            data=data, headers=self.auth,
+        )
+
+    @patch('apps.chats.whatsapp.send_media')
+    @patch('apps.chats.whatsapp.upload_media')
+    def test_send_image_with_caption(self, mock_upload, mock_send):
+        mock_upload.return_value = 'media-up'
+        mock_send.return_value = 'wamid.media-img'
+        file = SimpleUploadedFile('foto.jpg', b'jpeg-bytes', content_type='image/jpeg')
+
+        response = self.post_media(self.contact.pk, file, caption='Olha essa foto')
+
+        self.assertEqual(response.status_code, 201, response.json())
+        mock_upload.assert_called_once_with(self.account, b'jpeg-bytes', 'image/jpeg', 'foto.jpg')
+        mock_send.assert_called_once_with(self.account, '5511999999999', 'image', 'media-up', 'Olha essa foto', 'foto.jpg')
+        message = Message.objects.get(wa_message_id='wamid.media-img')
+        self.assertEqual(message.message_type, 'image')
+        self.assertEqual(message.content, 'Olha essa foto')
+        self.assertTrue(message.from_human)
+        # regressão do seek(0): read() do upload deixa o ponteiro no fim - sem
+        # seek o FileField salvaria arquivo vazio
+        self.assertEqual(message.media_file.read(), b'jpeg-bytes')
+        body = response.json()
+        self.assertEqual(body['message_type'], 'image')
+        self.assertIsNotNone(body['media_url'])
+
+    @patch('apps.chats.whatsapp.upload_media')
+    def test_send_media_outside_window_returns_400(self, mock_upload):
+        close_service_window(self.contact)
+        file = SimpleUploadedFile('foto.jpg', b'jpeg-bytes', content_type='image/jpeg')
+
+        response = self.post_media(self.contact.pk, file)
+
+        self.assertEqual(response.status_code, 400)
+        mock_upload.assert_not_called()
+
+    @patch('apps.chats.whatsapp.send_media')
+    @patch('apps.chats.whatsapp.upload_media')
+    def test_send_image_without_caption_gets_placeholder(self, mock_upload, mock_send):
+        # content vazio quebraria o build_history (text block vazio)
+        mock_upload.return_value = 'media-up2'
+        mock_send.return_value = 'wamid.media-img2'
+        file = SimpleUploadedFile('foto.png', b'png-bytes', content_type='image/png')
+        self.post_media(self.contact.pk, file)
+        self.assertEqual(Message.objects.get(wa_message_id='wamid.media-img2').content, '[imagem]')
+
+    @patch('apps.chats.whatsapp.send_media')
+    @patch('apps.chats.whatsapp.upload_media')
+    def test_send_document_without_caption_gets_filename_placeholder(self, mock_upload, mock_send):
+        mock_upload.return_value = 'media-doc'
+        mock_send.return_value = 'wamid.media-doc'
+        file = SimpleUploadedFile('contrato.pdf', b'pdf-bytes', content_type='application/pdf')
+        response = self.post_media(self.contact.pk, file)
+        self.assertEqual(response.status_code, 201, response.json())
+        message = Message.objects.get(wa_message_id='wamid.media-doc')
+        self.assertEqual(message.message_type, 'document')
+        self.assertEqual(message.content, '[documento: contrato.pdf]')
+
+    @patch('apps.chats.whatsapp.upload_media')
+    def test_gif_returns_400_without_uploading(self, mock_upload):
+        # Meta rejeita gif como image - barra antes de gastar upload
+        file = SimpleUploadedFile('anim.gif', b'gif-bytes', content_type='image/gif')
+        response = self.post_media(self.contact.pk, file)
+        self.assertEqual(response.status_code, 400)
+        mock_upload.assert_not_called()
+        self.assertFalse(Message.objects.filter(direction='out', message_type='image').exists())
+
+    @patch('apps.chats.whatsapp.upload_media')
+    def test_oversized_image_returns_400(self, mock_upload):
+        file = SimpleUploadedFile('grande.jpg', b'x' * (5 * 2**20 + 1), content_type='image/jpeg')
+        response = self.post_media(self.contact.pk, file)
+        self.assertEqual(response.status_code, 400)
+        mock_upload.assert_not_called()
+
+    @patch('apps.chats.whatsapp.send_media')
+    @patch('apps.chats.whatsapp.upload_media')
+    def test_send_webp_goes_as_sticker(self, mock_upload, mock_send):
+        # webp cai como sticker, não image - e sticker não leva caption
+        mock_upload.return_value = 'media-stk'
+        mock_send.return_value = 'wamid.media-stk'
+        file = SimpleUploadedFile('figurinha.webp', b'webp-bytes', content_type='image/webp')
+
+        response = self.post_media(self.contact.pk, file)
+
+        self.assertEqual(response.status_code, 201, response.json())
+        mock_send.assert_called_once_with(self.account, '5511999999999', 'sticker', 'media-stk', '', 'figurinha.webp')
+        message = Message.objects.get(wa_message_id='wamid.media-stk')
+        self.assertEqual(message.message_type, 'sticker')
+        self.assertEqual(message.content, '[figurinha]')
+
+    @patch('apps.chats.whatsapp.upload_media')
+    def test_oversized_sticker_returns_400(self, mock_upload):
+        file = SimpleUploadedFile('grande.webp', b'x' * (500 * 2**10 + 1), content_type='image/webp')
+        response = self.post_media(self.contact.pk, file)
+        self.assertEqual(response.status_code, 400)
+        mock_upload.assert_not_called()
+
+    @patch('apps.chats.whatsapp.upload_media')
+    def test_send_media_to_foreign_contact_returns_404(self, mock_upload):
+        file = SimpleUploadedFile('foto.jpg', b'jpeg-bytes', content_type='image/jpeg')
+        response = self.post_media(self.other_contact.pk, file)
+        self.assertEqual(response.status_code, 404)
+        mock_upload.assert_not_called()
+
+    @patch('apps.chats.whatsapp.send_media')
+    @patch('apps.chats.whatsapp.upload_media')
+    def test_whatsapp_rejection_returns_400_and_records_nothing(self, mock_upload, mock_send):
+        mock_upload.return_value = 'media-up3'
+        mock_send.side_effect = httpx.HTTPStatusError('Bad Request', request=MagicMock(), response=MagicMock())
+        out_count = Message.objects.filter(direction='out').count()
+        file = SimpleUploadedFile('foto.jpg', b'jpeg-bytes', content_type='image/jpeg')
+
+        response = self.post_media(self.contact.pk, file)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(Message.objects.filter(direction='out').count(), out_count)
+
+    # proxy de mídia recebida (baixa da Meta na hora, media_id vale ~30 dias)
+
+    def media_url(self, message_id: int) -> str:
+        return f'/api/companies/{self.company.pk}/messages/{message_id}/media'
+
+    @patch('apps.chats.whatsapp.download_media')
+    def test_proxy_streams_received_media(self, mock_download):
+        mock_download.return_value = (b'jpeg-da-meta', 'image/jpeg')
+        message = Message.objects.create(
+            contact=self.contact, direction='in', content='[imagem]',
+            message_type='image', media_id='media-in', wa_message_id='wamid.in-img',
+        )
+
+        response = self.client.get(self.media_url(message.pk), headers=self.auth)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b'jpeg-da-meta')
+        self.assertEqual(response['Content-Type'], 'image/jpeg')
+        self.assertEqual(response['Cache-Control'], 'private, max-age=86400')
+        mock_download.assert_called_once_with(self.account, 'media-in')
+
+    def test_proxy_foreign_message_returns_404(self):
+        foreign = Message.objects.create(
+            contact=self.other_contact, direction='in', content='[imagem]',
+            message_type='image', media_id='media-alheia', wa_message_id='wamid.in-foreign',
+        )
+        response = self.client.get(self.media_url(foreign.pk), headers=self.auth)
+        self.assertEqual(response.status_code, 404)
+
+    def test_proxy_message_without_media_returns_404(self):
+        message = Message.objects.get(wa_message_id='wamid.1')  # texto puro
+        response = self.client.get(self.media_url(message.pk), headers=self.auth)
+        self.assertEqual(response.status_code, 404)
+
+    @patch('apps.chats.whatsapp.download_media')
+    def test_proxy_expired_media_returns_404(self, mock_download):
+        mock_download.side_effect = httpx.HTTPStatusError('Bad Request', request=MagicMock(), response=MagicMock())
+        message = Message.objects.create(
+            contact=self.contact, direction='in', content='[imagem]',
+            message_type='image', media_id='media-exp', wa_message_id='wamid.in-exp',
+        )
+        response = self.client.get(self.media_url(message.pk), headers=self.auth)
+        self.assertEqual(response.status_code, 404)
+
+
+@override_settings(**LOCAL_STORAGE_SETTINGS)
+class StickerTests(BaseChatsTestCase):
+    """Galeria de figurinhas da empresa: salvar do chat, listar, deletar, reenviar."""
+
+    def url(self, company_id: int, sticker_id: int | None = None) -> str:
+        base = f'/api/companies/{company_id}/stickers'
+        return f'{base}/{sticker_id}' if sticker_id else base
+
+    def save(self, company_id: int, message_id: int):
+        return self.client.post(
+            self.url(company_id), data=json.dumps({'message_id': message_id}),
+            content_type='application/json', headers=self.auth,
+        )
+
+    def received_sticker(self, contact=None, wamid='wamid.stk-recv'):
+        return Message.objects.create(
+            contact=contact or self.contact, direction='in', content='[figurinha]',
+            message_type='sticker', media_id='media-stk', wa_message_id=wamid,
+        )
+
+    # salvar
+
+    @patch('apps.chats.whatsapp.download_media')
+    def test_save_sticker_from_received_message(self, mock_download):
+        mock_download.return_value = (b'webp-da-meta', 'image/webp')
+        message = self.received_sticker()
+
+        response = self.save(self.company.pk, message.pk)
+
+        self.assertEqual(response.status_code, 201, response.json())
+        sticker = Sticker.objects.get(pk=response.json()['id'])
+        self.assertEqual(sticker.company, self.company)
+        self.assertEqual(sticker.file.read(), b'webp-da-meta')
+        self.assertTrue(sticker.file.name.endswith('.webp'))
+        self.assertTrue(response.json()['url'])
+        mock_download.assert_called_once_with(self.account, 'media-stk')
+
+    @patch('apps.chats.whatsapp.download_media')
+    def test_save_sticker_from_sent_message_reads_local_file(self, mock_download):
+        # enviada tem cópia local - não gasta chamada na Meta
+        message = Message.objects.create(
+            contact=self.contact, direction='out', content='[figurinha]', message_type='sticker',
+            wa_message_id='wamid.stk-out', media_file=SimpleUploadedFile('f.webp', b'webp-local', content_type='image/webp'),
+        )
+
+        response = self.save(self.company.pk, message.pk)
+
+        self.assertEqual(response.status_code, 201, response.json())
+        self.assertEqual(Sticker.objects.get(pk=response.json()['id']).file.read(), b'webp-local')
+        mock_download.assert_not_called()
+
+    def test_save_non_sticker_message_returns_404(self):
+        message = Message.objects.get(wa_message_id='wamid.1')  # texto
+        response = self.save(self.company.pk, message.pk)
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(Sticker.objects.exists())
+
+    def test_save_foreign_message_returns_404(self):
+        message = self.received_sticker(contact=self.other_contact, wamid='wamid.stk-foreign')
+        response = self.save(self.company.pk, message.pk)
+        self.assertEqual(response.status_code, 404)
+
+    @patch('apps.chats.whatsapp.download_media')
+    def test_save_expired_media_returns_404(self, mock_download):
+        mock_download.side_effect = httpx.HTTPStatusError('Bad Request', request=MagicMock(), response=MagicMock())
+        message = self.received_sticker(wamid='wamid.stk-exp')
+        response = self.save(self.company.pk, message.pk)
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(Sticker.objects.exists())
+
+    # listar / deletar
+
+    def test_list_stickers_only_mine(self):
+        Sticker.objects.create(company=self.company, file=ContentFile(b'meu', name='a.webp'))
+        Sticker.objects.create(company=self.other_company, file=ContentFile(b'alheio', name='b.webp'))
+
+        response = self.client.get(self.url(self.company.pk), headers=self.auth)
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(len(body), 1)
+        self.assertTrue(body[0]['url'])
+
+    def test_delete_sticker(self):
+        sticker = Sticker.objects.create(company=self.company, file=ContentFile(b'x', name='a.webp'))
+        response = self.client.delete(self.url(self.company.pk, sticker.pk), headers=self.auth)
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(Sticker.objects.filter(pk=sticker.pk).exists())
+
+    def test_delete_foreign_sticker_returns_404(self):
+        sticker = Sticker.objects.create(company=self.other_company, file=ContentFile(b'x', name='b.webp'))
+        response = self.client.delete(self.url(self.company.pk, sticker.pk), headers=self.auth)
+        self.assertEqual(response.status_code, 404)
+        self.assertTrue(Sticker.objects.filter(pk=sticker.pk).exists())
+
+    # reenviar
+
+    def send_sticker(self, contact_id: int, sticker_id: int):
+        return self.client.post(
+            f'/api/companies/{self.company.pk}/contacts/{contact_id}/messages/sticker',
+            data=json.dumps({'sticker_id': sticker_id}), content_type='application/json', headers=self.auth,
+        )
+
+    @patch('apps.chats.whatsapp.send_media')
+    @patch('apps.chats.whatsapp.upload_media')
+    def test_send_saved_sticker(self, mock_upload, mock_send):
+        mock_upload.return_value = 'media-up-stk'
+        mock_send.return_value = 'wamid.stk-sent'
+        sticker = Sticker.objects.create(company=self.company, file=ContentFile(b'webp-salvo', name='s.webp'))
+
+        response = self.send_sticker(self.contact.pk, sticker.pk)
+
+        self.assertEqual(response.status_code, 201, response.json())
+        mock_upload.assert_called_once_with(self.account, b'webp-salvo', 'image/webp', 'sticker.webp')
+        mock_send.assert_called_once_with(self.account, '5511999999999', 'sticker', 'media-up-stk')
+        message = Message.objects.get(wa_message_id='wamid.stk-sent')
+        self.assertEqual(message.message_type, 'sticker')
+        self.assertEqual(message.content, '[figurinha]')
+        self.assertTrue(message.from_human)
+        self.assertEqual(message.media_file.read(), b'webp-salvo')
+
+    @patch('apps.chats.whatsapp.upload_media')
+    def test_send_saved_sticker_outside_window_returns_400(self, mock_upload):
+        close_service_window(self.contact)
+        sticker = Sticker.objects.create(company=self.company, file=ContentFile(b'webp-salvo', name='s.webp'))
+
+        response = self.send_sticker(self.contact.pk, sticker.pk)
+
+        self.assertEqual(response.status_code, 400)
+        mock_upload.assert_not_called()
+
+    @patch('apps.chats.whatsapp.upload_media')
+    def test_send_foreign_sticker_returns_404(self, mock_upload):
+        sticker = Sticker.objects.create(company=self.other_company, file=ContentFile(b'x', name='b.webp'))
+        response = self.send_sticker(self.contact.pk, sticker.pk)
+        self.assertEqual(response.status_code, 404)
+        mock_upload.assert_not_called()
+
+    @patch('apps.chats.whatsapp.upload_media')
+    def test_send_sticker_to_foreign_contact_returns_404(self, mock_upload):
+        sticker = Sticker.objects.create(company=self.company, file=ContentFile(b'x', name='a.webp'))
+        response = self.send_sticker(self.other_contact.pk, sticker.pk)
+        self.assertEqual(response.status_code, 404)
+        mock_upload.assert_not_called()
+
+
+class WebhookTests(BaseChatsTestCase):
+    URL = '/api/whatsapp/webhook'
+
+    def setUp(self):
+        super().setUp()
+        # apply_async publicaria no broker real - mock cobre todos os POSTs da classe
+        patcher = patch('api.endpoints.webhook.process_incoming_message.apply_async')
+        self.mock_enqueue = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    # helpers
+
+    def sign(self, body: bytes, secret: str = 'meu-app-secret') -> str:
+        return 'sha256=' + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+    def message_payload(self, phone_number_id='111111', wa_id='5511777777777',
+                        name='Novo Cliente', text='Quero comprar', wamid='wamid.novo'):
+        return {
+            'object': 'whatsapp_business_account',
+            'entry': [{
+                'id': 'waba-1',
+                'changes': [{
+                    'field': 'messages',
+                    'value': {
+                        'messaging_product': 'whatsapp',
+                        'metadata': {'display_phone_number': '5511000000000', 'phone_number_id': phone_number_id},
+                        'contacts': [{'profile': {'name': name}, 'wa_id': wa_id}],
+                        'messages': [{
+                            'from': wa_id, 'id': wamid, 'timestamp': '1720000000',
+                            'type': 'text', 'text': {'body': text},
+                        }],
+                    },
+                }],
+            }],
+        }
+
+    def status_payload(self, wamid='wamid.1', status='delivered', phone_number_id='111111'):
+        return {
+            'object': 'whatsapp_business_account',
+            'entry': [{
+                'id': 'waba-1',
+                'changes': [{
+                    'field': 'messages',
+                    'value': {
+                        'messaging_product': 'whatsapp',
+                        'metadata': {'display_phone_number': '5511000000000', 'phone_number_id': phone_number_id},
+                        'statuses': [{'id': wamid, 'status': status, 'timestamp': '1720000000'}],
+                    },
+                }],
+            }],
+        }
+
+    def post_webhook(self, payload: dict, signature: str | None = None):
+        # assina os MESMOS bytes enviados - HMAC é sobre o body cru
+        body = json.dumps(payload).encode()
+        headers = {'X-Hub-Signature-256': signature if signature is not None else self.sign(body)}
+        return self.client.post(self.URL, data=body, content_type='application/json', headers=headers)
+
+    # GET verificação
+
+    def test_verify_webhook_echoes_challenge_as_plain_text(self):
+        response = self.client.get(self.URL, {
+            'hub.mode': 'subscribe', 'hub.verify_token': 'verify-1', 'hub.challenge': '12345',
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b'12345')  # echo exato, sem aspas de JSON
+
+    def test_verify_webhook_wrong_token_returns_403(self):
+        response = self.client.get(self.URL, {
+            'hub.mode': 'subscribe', 'hub.verify_token': 'token-errado', 'hub.challenge': '12345',
+        })
+        self.assertEqual(response.status_code, 403)
+
+    def test_verify_webhook_wrong_mode_returns_403(self):
+        response = self.client.get(self.URL, {
+            'hub.mode': 'unsubscribe', 'hub.verify_token': 'verify-1', 'hub.challenge': '12345',
+        })
+        self.assertEqual(response.status_code, 403)
+
+    # POST mensagens
+
+    def test_receive_message_creates_contact_and_message(self):
+        response = self.post_webhook(self.message_payload())
+        self.assertEqual(response.status_code, 200)
+        contact = Contact.objects.get(account=self.account, wa_id='5511777777777')
+        self.assertEqual(contact.name, 'Novo Cliente')
+        message = Message.objects.get(wa_message_id='wamid.novo')
+        self.assertEqual(message.contact, contact)
+        self.assertEqual(message.direction, 'in')
+        self.assertEqual(message.content, 'Quero comprar')
+
+    def test_receive_message_twice_is_idempotent(self):
+        # Meta reenvia webhooks - wa_message_id unique segura duplicata
+        self.post_webhook(self.message_payload())
+        response = self.post_webhook(self.message_payload())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Message.objects.filter(wa_message_id='wamid.novo').count(), 1)
+
+    def test_receive_message_reuses_existing_contact(self):
+        payload = self.message_payload(wa_id='5511999999999', wamid='wamid.novo2')
+        response = self.post_webhook(payload)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Contact.objects.filter(account=self.account, wa_id='5511999999999').count(), 1)
+        message = Message.objects.get(wa_message_id='wamid.novo2')
+        self.assertEqual(message.contact, self.contact)
+
+    def test_invalid_signature_returns_403_and_writes_nothing(self):
+        body = json.dumps(self.message_payload()).encode()
+        response = self.post_webhook(self.message_payload(), signature=self.sign(body, secret='secret-errado'))
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(Message.objects.filter(wa_message_id='wamid.novo').exists())
+        self.assertFalse(Contact.objects.filter(wa_id='5511777777777').exists())
+
+    def test_missing_signature_returns_403(self):
+        response = self.post_webhook(self.message_payload(), signature='')
+        self.assertEqual(response.status_code, 403)
+
+    def test_unknown_phone_number_id_returns_200_silently(self):
+        response = self.post_webhook(self.message_payload(phone_number_id='999999'))
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Message.objects.filter(wa_message_id='wamid.novo').exists())
+
+    def test_malformed_payload_returns_200(self):
+        response = self.post_webhook({})
+        self.assertEqual(response.status_code, 200)
+
+    def media_message_payload(self, msg_type: str, media: dict, wamid: str, wa_id='5511777777777'):
+        payload = self.message_payload(wa_id=wa_id, wamid=wamid)
+        payload['entry'][0]['changes'][0]['value']['messages'][0] = {
+            'from': wa_id, 'id': wamid, 'timestamp': '1720000000',
+            'type': msg_type, msg_type: media,
+        }
+        return payload
+
+    def test_unsupported_message_type_is_ignored(self):
+        payload = self.media_message_payload('reaction', {'message_id': 'wamid.1', 'emoji': '👍'}, wamid='wamid.react')
+        response = self.post_webhook(payload)
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Message.objects.filter(wa_message_id='wamid.react').exists())
+        self.mock_enqueue.assert_not_called()
+
+    # mídia (imagem/áudio)
+
+    def test_image_message_with_caption_creates_media_message(self):
+        payload = self.media_message_payload(
+            'image', {'id': 'media-img', 'mime_type': 'image/jpeg', 'caption': 'O que é isso?'}, wamid='wamid.img'
+        )
+        response = self.post_webhook(payload)
+        self.assertEqual(response.status_code, 200)
+        message = Message.objects.get(wa_message_id='wamid.img')
+        self.assertEqual(message.message_type, 'image')
+        self.assertEqual(message.media_id, 'media-img')
+        self.assertEqual(message.content, 'O que é isso?')
+        self.mock_enqueue.assert_called_once_with(args=(message.pk,), countdown=0)
+
+    def test_image_without_caption_gets_placeholder_content(self):
+        # content vazio viraria text block vazio no histórico - Anthropic rejeita
+        payload = self.media_message_payload('image', {'id': 'media-img2'}, wamid='wamid.img2')
+        self.post_webhook(payload)
+        self.assertEqual(Message.objects.get(wa_message_id='wamid.img2').content, '[imagem]')
+
+    def test_audio_message_creates_empty_content_for_transcription(self):
+        payload = self.media_message_payload('audio', {'id': 'media-aud', 'mime_type': 'audio/ogg'}, wamid='wamid.aud')
+        response = self.post_webhook(payload)
+        self.assertEqual(response.status_code, 200)
+        message = Message.objects.get(wa_message_id='wamid.aud')
+        self.assertEqual(message.message_type, 'audio')
+        self.assertEqual(message.media_id, 'media-aud')
+        self.assertEqual(message.content, '')  # task preenche com o transcript
+        self.mock_enqueue.assert_called_once_with(args=(message.pk,), countdown=0)
+
+    def test_media_without_id_is_ignored(self):
+        # payload defensivo: mídia sem id não tem o que baixar - 200 sem crash
+        payload = self.media_message_payload('image', {}, wamid='wamid.noid')
+        response = self.post_webhook(payload)
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Message.objects.filter(wa_message_id='wamid.noid').exists())
+        self.mock_enqueue.assert_not_called()
+
+    def test_video_message_creates_media_message_with_placeholder(self):
+        payload = self.media_message_payload('video', {'id': 'media-vid', 'mime_type': 'video/mp4'}, wamid='wamid.vid')
+        response = self.post_webhook(payload)
+        self.assertEqual(response.status_code, 200)
+        message = Message.objects.get(wa_message_id='wamid.vid')
+        self.assertEqual(message.message_type, 'video')
+        self.assertEqual(message.media_id, 'media-vid')
+        self.assertEqual(message.content, '[vídeo]')
+
+    def test_document_message_uses_filename_placeholder(self):
+        payload = self.media_message_payload(
+            'document', {'id': 'media-doc', 'filename': 'orcamento.pdf'}, wamid='wamid.doc'
+        )
+        self.post_webhook(payload)
+        message = Message.objects.get(wa_message_id='wamid.doc')
+        self.assertEqual(message.message_type, 'document')
+        self.assertEqual(message.content, '[documento: orcamento.pdf]')
+
+    def test_sticker_message_creates_media_message_with_placeholder(self):
+        payload = self.media_message_payload(
+            'sticker', {'id': 'media-stk', 'mime_type': 'image/webp', 'animated': False}, wamid='wamid.stk-in'
+        )
+        response = self.post_webhook(payload)
+        self.assertEqual(response.status_code, 200)
+        message = Message.objects.get(wa_message_id='wamid.stk-in')
+        self.assertEqual(message.message_type, 'sticker')
+        self.assertEqual(message.media_id, 'media-stk')
+        self.assertEqual(message.content, '[figurinha]')
+
+    def test_status_update_changes_message_status(self):
+        response = self.post_webhook(self.status_payload(wamid='wamid.1', status='delivered'))
+        self.assertEqual(response.status_code, 200)
+        message = Message.objects.get(wa_message_id='wamid.1')
+        self.assertEqual(message.status, 'delivered')
+
+    # disparo da task de resposta
+
+    def test_new_message_enqueues_processing_task(self):
+        response = self.post_webhook(self.message_payload())
+        self.assertEqual(response.status_code, 200)
+        record = Message.objects.get(wa_message_id='wamid.novo')
+        self.mock_enqueue.assert_called_once_with(args=(record.pk,), countdown=0)
+
+    def test_enqueue_countdown_uses_agent_response_delay(self):
+        # debounce: countdown vem da config do agente
+        Agent.objects.filter(pk=self.agent.pk).update(response_delay=8)
+        self.post_webhook(self.message_payload())
+        record = Message.objects.get(wa_message_id='wamid.novo')
+        self.mock_enqueue.assert_called_once_with(args=(record.pk,), countdown=8)
+
+    def test_resent_webhook_does_not_enqueue_twice(self):
+        # Meta reenvia webhooks: gravação já era idempotente, resposta também precisa ser
+        self.post_webhook(self.message_payload())
+        self.post_webhook(self.message_payload())
+        self.assertEqual(self.mock_enqueue.call_count, 1)
+
+    def test_status_webhook_does_not_enqueue(self):
+        self.post_webhook(self.status_payload())
+        self.mock_enqueue.assert_not_called()
+
+    # regressão: visto em produção - status da Meta com contacts sem 'profile';
+    # qualquer não-200 vira retry storm e pode desativar o webhook
+
+    def test_contacts_without_profile_returns_200(self):
+        payload = self.status_payload()
+        payload['entry'][0]['changes'][0]['value']['contacts'] = [{'wa_id': '5511999999999'}]
+        response = self.post_webhook(payload)
+        self.assertEqual(response.status_code, 200)
+
+    def test_message_with_contact_without_profile_creates_contact_with_empty_name(self):
+        payload = self.message_payload(wa_id='5511666666666', wamid='wamid.semprofile')
+        payload['entry'][0]['changes'][0]['value']['contacts'] = [{'wa_id': '5511666666666'}]
+        response = self.post_webhook(payload)
+        self.assertEqual(response.status_code, 200)
+        contact = Contact.objects.get(wa_id='5511666666666')
+        self.assertEqual(contact.name, '')
+
+
+class SendTextTests(BaseChatsTestCase):
+    @patch('apps.chats.whatsapp.httpx.post')
+    def test_send_text_calls_graph_api_and_returns_wamid(self, mock_post):
+        mock_post.return_value.json.return_value = {'messages': [{'id': 'wamid.enviado'}]}
+
+        wamid = whatsapp.send_text(self.account, '5511999999999', 'Olá!')
+
+        self.assertEqual(wamid, 'wamid.enviado')
+        args, kwargs = mock_post.call_args
+        self.assertEqual(args[0], f'{whatsapp.GRAPH_URL}/111111/messages')
+        # access_token decifrado do EncryptedTextField vai no header
+        self.assertEqual(kwargs['headers']['Authorization'], 'Bearer EAAG-meu-token-secreto')
+        self.assertEqual(kwargs['json'], {
+            'messaging_product': 'whatsapp',
+            'to': '5511999999999',
+            'type': 'text',
+            'text': {'body': 'Olá!'},
+        })
+        self.assertEqual(kwargs['timeout'], 10)
+
+    @patch('apps.chats.whatsapp.httpx.post')
+    def test_send_text_raises_on_api_error(self, mock_post):
+        # erro da Meta (token expirado, janela 24h) sobe cru - caller decide retry/failed
+        mock_post.return_value.raise_for_status.side_effect = httpx.HTTPStatusError(
+            'Bad Request', request=MagicMock(), response=MagicMock()
+        )
+        with self.assertRaises(httpx.HTTPStatusError):
+            whatsapp.send_text(self.account, '5511999999999', 'Olá!')
+
+    def test_record_outgoing_message(self):
+        message = services.record_outgoing_message(self.contact, 'wamid.out1', 'Resposta da IA')
+        self.assertEqual(message.contact, self.contact)
+        self.assertEqual(message.direction, 'out')
+        self.assertEqual(message.status, 'sent')
+        self.assertEqual(message.wa_message_id, 'wamid.out1')
+
+
+class DownloadMediaTests(BaseChatsTestCase):
+    @patch('apps.chats.whatsapp.httpx.get')
+    def test_download_media_two_authenticated_gets(self, mock_get):
+        meta_response = MagicMock()
+        meta_response.json.return_value = {'url': 'https://lookaside.fbsbx.com/whatsapp/media-x', 'mime_type': 'image/jpeg'}
+        file_response = MagicMock(content=b'bytes-da-imagem')
+        mock_get.side_effect = [meta_response, file_response]
+
+        content, mime_type = whatsapp.download_media(self.account, 'media-1')
+
+        self.assertEqual(content, b'bytes-da-imagem')
+        self.assertEqual(mime_type, 'image/jpeg')
+        first, second = mock_get.call_args_list
+        self.assertEqual(first.args[0], f'{whatsapp.GRAPH_URL}/media-1')
+        self.assertEqual(second.args[0], 'https://lookaside.fbsbx.com/whatsapp/media-x')
+        # a URL temporária também exige o Bearer - sem ele a Meta devolve erro
+        for call in (first, second):
+            self.assertEqual(call.kwargs['headers']['Authorization'], 'Bearer EAAG-meu-token-secreto')
+
+    @patch('apps.chats.whatsapp.httpx.get')
+    def test_download_media_raises_on_api_error(self, mock_get):
+        # media_id expirado (30 dias) ou token inválido - sobe cru, task faz retry
+        mock_get.return_value.raise_for_status.side_effect = httpx.HTTPStatusError(
+            'Bad Request', request=MagicMock(), response=MagicMock()
+        )
+        with self.assertRaises(httpx.HTTPStatusError):
+            whatsapp.download_media(self.account, 'media-1')
+
+
+class SendMediaTests(BaseChatsTestCase):
+    @patch('apps.chats.whatsapp.httpx.post')
+    def test_upload_media_posts_multipart_and_returns_media_id(self, mock_post):
+        mock_post.return_value.json.return_value = {'id': 'media-novo'}
+
+        media_id = whatsapp.upload_media(self.account, b'jpeg-bytes', 'image/jpeg', 'foto.jpg')
+
+        self.assertEqual(media_id, 'media-novo')
+        args, kwargs = mock_post.call_args
+        self.assertEqual(args[0], f'{whatsapp.GRAPH_URL}/111111/media')
+        self.assertEqual(kwargs['headers']['Authorization'], 'Bearer EAAG-meu-token-secreto')
+        self.assertEqual(kwargs['data'], {'messaging_product': 'whatsapp'})
+        self.assertEqual(kwargs['files']['file'], ('foto.jpg', b'jpeg-bytes', 'image/jpeg'))
+        self.assertEqual(kwargs['timeout'], 30)  # upload de arquivo demora mais que JSON
+
+    @patch('apps.chats.whatsapp.httpx.post')
+    def test_send_media_image_with_caption(self, mock_post):
+        # chave do objeto de conteúdo é dinâmica: type='image' → payload['image']
+        mock_post.return_value.json.return_value = {'messages': [{'id': 'wamid.media'}]}
+
+        wamid = whatsapp.send_media(self.account, '5511999999999', 'image', 'media-1', caption='Olha isso')
+
+        self.assertEqual(wamid, 'wamid.media')
+        self.assertEqual(mock_post.call_args.kwargs['json'], {
+            'messaging_product': 'whatsapp',
+            'to': '5511999999999',
+            'type': 'image',
+            'image': {'id': 'media-1', 'caption': 'Olha isso'},
+        })
+
+    @patch('apps.chats.whatsapp.httpx.post')
+    def test_send_media_audio_ignores_caption(self, mock_post):
+        # Cloud API rejeita caption em áudio - função nunca pode mandar
+        mock_post.return_value.json.return_value = {'messages': [{'id': 'wamid.aud'}]}
+        whatsapp.send_media(self.account, '5511999999999', 'audio', 'media-2', caption='legenda')
+        self.assertEqual(mock_post.call_args.kwargs['json']['audio'], {'id': 'media-2'})
+
+    @patch('apps.chats.whatsapp.httpx.post')
+    def test_send_media_sticker_ignores_caption(self, mock_post):
+        mock_post.return_value.json.return_value = {'messages': [{'id': 'wamid.stk'}]}
+        whatsapp.send_media(self.account, '5511999999999', 'sticker', 'media-4', caption='legenda')
+        self.assertEqual(mock_post.call_args.kwargs['json']['sticker'], {'id': 'media-4'})
+
+    @patch('apps.chats.whatsapp.httpx.post')
+    def test_send_media_document_includes_filename(self, mock_post):
+        mock_post.return_value.json.return_value = {'messages': [{'id': 'wamid.doc'}]}
+        whatsapp.send_media(
+            self.account, '5511999999999', 'document', 'media-3', caption='segue', filename='contrato.pdf'
+        )
+        self.assertEqual(
+            mock_post.call_args.kwargs['json']['document'],
+            {'id': 'media-3', 'caption': 'segue', 'filename': 'contrato.pdf'},
+        )
+
+    @patch('apps.chats.whatsapp.httpx.post')
+    def test_send_media_raises_on_api_error(self, mock_post):
+        mock_post.return_value.raise_for_status.side_effect = httpx.HTTPStatusError(
+            'Bad Request', request=MagicMock(), response=MagicMock()
+        )
+        with self.assertRaises(httpx.HTTPStatusError):
+            whatsapp.send_media(self.account, '5511999999999', 'image', 'media-1')
+
+
+class TranscribeAudioTests(BaseChatsTestCase):
+    @patch('apps.ai.httpx.post')
+    def test_transcribe_audio_calls_groq_and_returns_text(self, mock_post):
+        mock_post.return_value.json.return_value = {'text': 'Quero comprar'}
+
+        text = ai.transcribe_audio(b'ogg-bytes', 'audio/ogg; codecs=opus')
+
+        self.assertEqual(text, 'Quero comprar')
+        args, kwargs = mock_post.call_args
+        self.assertEqual(args[0], ai.GROQ_STT_URL)
+        # key global da plataforma - STT não é BYOK
+        self.assertEqual(kwargs['headers']['Authorization'], f'Bearer {settings.GROQ_API_KEY}')
+        self.assertEqual(kwargs['data'], {'model': 'whisper-large-v3-turbo'})
+        self.assertEqual(kwargs['files']['file'], ('audio.ogg', b'ogg-bytes', 'audio/ogg; codecs=opus'))
+
+    @patch('apps.ai.httpx.post')
+    def test_transcribe_audio_raises_on_api_error(self, mock_post):
+        mock_post.return_value.raise_for_status.side_effect = httpx.HTTPStatusError(
+            'Rate limited', request=MagicMock(), response=MagicMock()
+        )
+        with self.assertRaises(httpx.HTTPStatusError):
+            ai.transcribe_audio(b'ogg-bytes', 'audio/ogg')
+
+
+class BuildHistoryTests(BaseChatsTestCase):
+    def test_build_history_returns_chronological_role_content(self):
+        history = services.build_history(self.contact)
+        self.assertEqual(history, [
+            {'role': 'user', 'content': 'Oi'},
+            {'role': 'assistant', 'content': 'Olá! Como posso ajudar?'},
+        ])
+
+    def test_build_history_does_not_leak_other_contacts(self):
+        # cross-tenant: histórico é só do contact pedido
+        history = services.build_history(self.other_contact)
+        self.assertEqual(history, [{'role': 'user', 'content': 'Mensagem alheia'}])
+
+    def test_build_history_keeps_only_latest_messages_in_order(self):
+        for i in range(25):
+            Message.objects.create(contact=self.contact, direction='in', content=f'msg {i}')
+        history = services.build_history(self.contact)
+        self.assertEqual(len(history), 20)
+        # janela desliza: mais antigas caem, ordem cronológica preservada
+        self.assertEqual(history[0]['content'], 'msg 5')
+        self.assertEqual(history[-1]['content'], 'msg 24')
+
+    def test_build_history_skips_empty_content(self):
+        # áudio sem transcript (STT ainda não rodou ou falhou de vez) não pode
+        # virar text block vazio - Anthropic rejeita; vale com e sem exclude_pk
+        Message.objects.create(contact=self.contact, direction='in', content='', message_type='audio', media_id='m1')
+        for history in (services.build_history(self.contact), services.build_history(self.contact, exclude_pk=99999)):
+            self.assertEqual(len(history), 2)
+            self.assertNotIn('', [m['content'] for m in history])
+
+
+class GenerateReplyTests(BaseChatsTestCase):
+    @patch('apps.ai.Claude')
+    @patch('apps.ai.AgnoAgent')
+    def test_generate_reply_builds_agent_and_returns_content(self, mock_agent_cls, mock_claude):
+        mock_agent_cls.return_value.run.return_value.content = 'Resposta da IA'
+
+        reply = ai.generate_reply(self.agent, [{'role': 'user', 'content': 'Oi'}], 'Quanto custa?')
+
+        self.assertEqual(reply, 'Resposta da IA')
+        kwargs = mock_agent_cls.call_args.kwargs
+        self.assertEqual(kwargs['model'], mock_claude.return_value)
+        self.assertEqual(kwargs['system_message'], 'Você vende.')
+        self.assertEqual(len(kwargs['additional_input']), 1)
+        self.assertEqual(kwargs['additional_input'][0].role, 'user')
+        self.assertEqual(kwargs['additional_input'][0].content, 'Oi')
+        mock_agent_cls.return_value.run.assert_called_once_with('Quanto custa?', images=None)
+
+    @patch('apps.ai.Claude')
+    @patch('apps.ai.AgnoAgent')
+    def test_generate_reply_uses_tenant_key_and_model(self, mock_agent_cls, mock_claude):
+        # BYOK: key e modelo vêm do cadastro do tenant, sem default nosso
+        mock_agent_cls.return_value.run.return_value.content = 'ok'
+        ai.generate_reply(self.agent, [], 'Oi')
+        mock_claude.assert_called_once_with(id='claude-opus-4-8', api_key='sk-minha-chave')
+
+    @patch('apps.ai.OpenAIResponses')
+    @patch('apps.ai.AgnoAgent')
+    def test_generate_reply_routes_openai_provider(self, mock_agent_cls, mock_openai):
+        mock_agent_cls.return_value.run.return_value.content = 'ok'
+        credential = Credential.objects.create(company=self.company, provider='openai', api_key='sk-openai')
+        agent = Agent.objects.create(
+            company=self.company, name='GPT', prompt='...', credential=credential, model='gpt-5.2'
+        )
+        ai.generate_reply(agent, [], 'Oi')
+        mock_openai.assert_called_once_with(id='gpt-5.2', api_key='sk-openai')
+
+    @patch('apps.ai.Claude')
+    @patch('apps.ai.AgnoAgent')
+    def test_generate_reply_returns_empty_string_when_content_none(self, mock_agent_cls, mock_claude):
+        mock_agent_cls.return_value.run.return_value.content = None
+        self.assertEqual(ai.generate_reply(self.agent, [], 'Oi'), '')
+
+    @patch('apps.ai.Claude')
+    @patch('apps.ai.AgnoAgent')
+    def test_generate_reply_passes_image_to_model(self, mock_agent_cls, mock_claude):
+        mock_agent_cls.return_value.run.return_value.content = 'É um tênis azul.'
+
+        reply = ai.generate_reply(self.agent, [], '[imagem]', image=b'jpeg-bytes', mime_type='image/jpeg')
+
+        self.assertEqual(reply, 'É um tênis azul.')
+        run_kwargs = mock_agent_cls.return_value.run.call_args.kwargs
+        self.assertEqual(len(run_kwargs['images']), 1)
+        self.assertEqual(run_kwargs['images'][0].content, b'jpeg-bytes')
+        self.assertEqual(run_kwargs['images'][0].mime_type, 'image/jpeg')
+
+    # memória de longo prazo
+
+    @patch('apps.ai.Claude')
+    @patch('apps.ai.AgnoAgent')
+    def test_generate_reply_injects_memory_into_system_message(self, mock_agent_cls, mock_claude):
+        mock_agent_cls.return_value.run.return_value.content = 'Oi Matheus!'
+
+        ai.generate_reply(self.agent, [], 'qual meu nome?', memory='Nome: Matheus')
+
+        system = mock_agent_cls.call_args.kwargs['system_message']
+        self.assertIn('Você vende.', system)
+        self.assertIn('<memory>\nNome: Matheus\n</memory>', system)
+
+    @patch('apps.ai.Claude')
+    @patch('apps.ai.AgnoAgent')
+    def test_generate_reply_passes_tools_to_agent(self, mock_agent_cls, mock_claude):
+        mock_agent_cls.return_value.run.return_value.content = 'ok'
+
+        ai.generate_reply(self.agent, [], 'Oi')
+        self.assertIsNone(mock_agent_cls.call_args.kwargs['tools'])
+
+        def fake_tool():
+            return 'x'
+
+        ai.generate_reply(self.agent, [], 'Oi', tools=[fake_tool])
+        self.assertEqual(mock_agent_cls.call_args.kwargs['tools'], [fake_tool])
+
+    @patch('apps.ai.embed_text')
+    @patch('apps.ai.Claude')
+    @patch('apps.ai.AgnoAgent')
+    def test_generate_reply_combines_memory_and_knowledge(self, mock_agent_cls, mock_claude, mock_embed):
+        mock_agent_cls.return_value.run.return_value.content = 'ok'
+        mock_embed.return_value = [[1.0] + [0.0] * 1535]
+        document = Document.objects.create(agent=self.agent, name='faq.txt', content='...', status='ready')
+        DocumentChunk.objects.create(document=document, content='Entrega em 3 dias', embedding=[1.0] + [0.0] * 1535)
+
+        ai.generate_reply(self.agent, [], 'qual o prazo?', memory='Nome: Matheus')
+
+        system = mock_agent_cls.call_args.kwargs['system_message']
+        self.assertEqual(system.count('Você vende.'), 1)  # prompt do agent não pode duplicar
+        self.assertLess(system.index('<memory>'), system.index('<knowledge>'))
+        # blocos separados por linha em branco, não colados
+        self.assertIn('</memory>\n\nUse as informações', system)
+
+    # split de mensagens
+
+    @patch('apps.ai.Claude')
+    @patch('apps.ai.AgnoAgent')
+    def test_generate_reply_adds_split_instruction_only_when_enabled(self, mock_agent_cls, mock_claude):
+        mock_agent_cls.return_value.run.return_value.content = 'ok'
+
+        ai.generate_reply(self.agent, [], 'Oi')
+        self.assertNotIn(ai.SPLIT_PROMPT, mock_agent_cls.call_args.kwargs['system_message'])
+
+        self.agent.split_messages = True
+        ai.generate_reply(self.agent, [], 'Oi')
+        system = mock_agent_cls.call_args.kwargs['system_message']
+        self.assertIn(ai.SPLIT_PROMPT, system)
+        self.assertTrue(system.startswith('Você vende.'))  # instrução acrescenta, não substitui
+
+
+class UpdateMemoryTests(BaseChatsTestCase):
+    @patch('apps.ai.Claude')
+    @patch('apps.ai.AgnoAgent')
+    def test_update_memory_builds_prompt_and_returns_notes(self, mock_agent_cls, mock_claude):
+        mock_agent_cls.return_value.run.return_value.content = 'Nome: Matheus'
+        history = [{'role': 'user', 'content': 'meu nome é Matheus'}, {'role': 'assistant', 'content': 'Prazer!'}]
+
+        result = ai.update_memory(self.agent, 'anotações antigas', history)
+
+        self.assertEqual(result, 'Nome: Matheus')
+        self.assertEqual(mock_agent_cls.call_args.kwargs['system_message'], ai.MEMORY_PROMPT)
+        prompt = mock_agent_cls.return_value.run.call_args.args[0]
+        self.assertIn('<anotacoes_atuais>\nanotações antigas\n</anotacoes_atuais>', prompt)
+        self.assertIn('user: meu nome é Matheus\nassistant: Prazer!', prompt)
+
+    @patch('apps.ai.Claude')
+    @patch('apps.ai.AgnoAgent')
+    def test_update_memory_truncates_at_max_chars(self, mock_agent_cls, mock_claude):
+        # cap hard contra blob crescendo sem limite
+        mock_agent_cls.return_value.run.return_value.content = 'x' * (ai.MEMORY_MAX_CHARS + 500)
+        self.assertEqual(len(ai.update_memory(self.agent, '', [])), ai.MEMORY_MAX_CHARS)
+
+    @patch('apps.ai.Claude')
+    @patch('apps.ai.AgnoAgent')
+    def test_update_memory_none_content_returns_empty(self, mock_agent_cls, mock_claude):
+        mock_agent_cls.return_value.run.return_value.content = None
+        self.assertEqual(ai.update_memory(self.agent, '', []), '')
+
+
+class ProcessIncomingMessageTests(BaseChatsTestCase):
+    def setUp(self):
+        super().setUp()
+        # sem o mock, o fim feliz da task publica update_contact_memory no broker real
+        patcher = patch('apps.chats.tasks.update_contact_memory.delay')
+        self.mock_memory_enqueue = patcher.start()
+        self.addCleanup(patcher.stop)
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_task_generates_sends_and_records_reply(self, mock_generate, mock_send):
+        mock_generate.return_value = 'Resposta gerada'
+        mock_send.return_value = 'wamid.resposta'
+        incoming = Message.objects.get(wa_message_id='wamid.1')
+
+        tasks.process_incoming_message(incoming.pk)
+
+        # histórico exclui a mensagem sendo respondida - sobra só a out antiga
+        mock_generate.assert_called_once_with(
+            self.agent, [{'role': 'assistant', 'content': 'Olá! Como posso ajudar?'}], 'Oi',
+            image=None, mime_type='', memory='', tools=ANY,
+        )
+        mock_send.assert_called_once_with(self.account, '5511999999999', 'Resposta gerada')
+        reply = Message.objects.get(wa_message_id='wamid.resposta')
+        self.assertEqual(reply.direction, 'out')
+        self.assertEqual(reply.content, 'Resposta gerada')
+        self.assertEqual(reply.contact, self.contact)
+        self.assertFalse(reply.from_human)  # resposta da IA, não do atendente
+
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_task_with_unknown_message_id_is_silent(self, mock_generate, mock_send):
+        tasks.process_incoming_message(99999)
+        mock_generate.assert_not_called()
+        mock_send.assert_not_called()
+
+    # nota: em chamada direta (fora de worker) self.retry re-levanta a exceção
+    # original - o reagendamento em si é plumbing do Celery, não se testa aqui
+
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_task_ai_failure_raises_and_sends_nothing(self, mock_generate, mock_send):
+        mock_generate.side_effect = RuntimeError('provider down')
+        incoming = Message.objects.get(wa_message_id='wamid.1')
+        out_count = Message.objects.filter(direction='out').count()
+
+        with self.assertRaises(RuntimeError):
+            tasks.process_incoming_message(incoming.pk)
+
+        mock_send.assert_not_called()
+        self.assertEqual(Message.objects.filter(direction='out').count(), out_count)
+
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_task_send_failure_raises_without_recording(self, mock_generate, mock_send):
+        # falha no envio: exceção sobe sem gravar out fantasma no banco
+        mock_generate.return_value = 'Resposta'
+        mock_send.side_effect = httpx.HTTPStatusError('Bad Request', request=MagicMock(), response=MagicMock())
+        incoming = Message.objects.get(wa_message_id='wamid.1')
+        out_count = Message.objects.filter(direction='out').count()
+
+        with self.assertRaises(httpx.HTTPStatusError):
+            tasks.process_incoming_message(incoming.pk)
+
+        self.assertEqual(Message.objects.filter(direction='out').count(), out_count)
+
+    # split de mensagens
+
+    @patch('apps.chats.tasks.time.sleep')
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_task_splits_reply_into_multiple_messages(self, mock_generate, mock_send, mock_sleep):
+        self.agent.split_messages = True
+        self.agent.save(update_fields=['split_messages'])
+        mock_generate.return_value = 'Oi!\n\nTudo bem com você?'
+        mock_send.side_effect = ['wamid.p1', 'wamid.p2']
+        incoming = Message.objects.get(wa_message_id='wamid.1')
+
+        tasks.process_incoming_message(incoming.pk)
+
+        self.assertEqual(mock_send.call_args_list, [
+            call(self.account, '5511999999999', 'Oi!'),
+            call(self.account, '5511999999999', 'Tudo bem com você?'),
+        ])
+        parts = Message.objects.filter(direction='out', wa_message_id__in=['wamid.p1', 'wamid.p2']).order_by('pk')
+        self.assertEqual([m.content for m in parts], ['Oi!', 'Tudo bem com você?'])
+        # pausa entre blocos, nunca antes do primeiro
+        self.assertEqual(mock_sleep.call_count, 1)
+
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_task_split_disabled_sends_single_message(self, mock_generate, mock_send):
+        # default off: resposta com parágrafos continua indo em bloco único
+        mock_generate.return_value = 'Oi!\n\nTudo bem com você?'
+        mock_send.return_value = 'wamid.unico'
+        incoming = Message.objects.get(wa_message_id='wamid.1')
+
+        tasks.process_incoming_message(incoming.pk)
+
+        mock_send.assert_called_once_with(self.account, '5511999999999', 'Oi!\n\nTudo bem com você?')
+        self.assertEqual(Message.objects.get(wa_message_id='wamid.unico').content, 'Oi!\n\nTudo bem com você?')
+
+    @patch('apps.chats.tasks.time.sleep')
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_task_split_skips_empty_blocks(self, mock_generate, mock_send, mock_sleep):
+        # linhas em branco extras da IA não podem virar mensagem vazia (Meta rejeita body vazio)
+        self.agent.split_messages = True
+        self.agent.save(update_fields=['split_messages'])
+        mock_generate.return_value = 'Oi!\n\n\n\n   \n\nTudo bem?'
+        mock_send.side_effect = ['wamid.s1', 'wamid.s2']
+        incoming = Message.objects.get(wa_message_id='wamid.1')
+
+        tasks.process_incoming_message(incoming.pk)
+
+        self.assertEqual(mock_send.call_count, 2)
+        self.assertEqual(
+            [args.args[2] for args in mock_send.call_args_list],
+            ['Oi!', 'Tudo bem?'],
+        )
+
+    # mídia
+
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.chats.whatsapp.download_media')
+    @patch('apps.ai.generate_reply')
+    def test_task_downloads_image_and_passes_to_ai(self, mock_generate, mock_download, mock_send):
+        mock_download.return_value = (b'jpeg-bytes', 'image/jpeg')
+        mock_generate.return_value = 'É um tênis.'
+        mock_send.return_value = 'wamid.resp-img'
+        incoming = Message.objects.create(
+            contact=self.contact, direction='in', content='[imagem]',
+            message_type='image', media_id='media-img', wa_message_id='wamid.img-task',
+        )
+
+        tasks.process_incoming_message(incoming.pk)
+
+        mock_download.assert_called_once_with(self.account, 'media-img')
+        mock_generate.assert_called_once_with(
+            self.agent,
+            [{'role': 'user', 'content': 'Oi'}, {'role': 'assistant', 'content': 'Olá! Como posso ajudar?'}],
+            '[imagem]', image=b'jpeg-bytes', mime_type='image/jpeg', memory='', tools=ANY,
+        )
+        self.assertTrue(Message.objects.filter(wa_message_id='wamid.resp-img', direction='out').exists())
+
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.transcribe_audio')
+    @patch('apps.chats.whatsapp.download_media')
+    @patch('apps.ai.generate_reply')
+    def test_task_transcribes_audio_and_saves_transcript(self, mock_generate, mock_download, mock_transcribe, mock_send):
+        mock_download.return_value = (b'ogg-bytes', 'audio/ogg')
+        mock_transcribe.return_value = 'Quero comprar por áudio'
+        mock_generate.return_value = 'Claro!'
+        mock_send.return_value = 'wamid.resp-aud'
+        incoming = Message.objects.create(
+            contact=self.contact, direction='in', content='',
+            message_type='audio', media_id='media-aud', wa_message_id='wamid.aud-task',
+        )
+
+        tasks.process_incoming_message(incoming.pk)
+
+        mock_download.assert_called_once_with(self.account, 'media-aud')
+        mock_transcribe.assert_called_once_with(b'ogg-bytes', 'audio/ogg')
+        # transcript persiste no content - histórico das próximas mensagens fica coerente
+        incoming.refresh_from_db()
+        self.assertEqual(incoming.content, 'Quero comprar por áudio')
+        # IA recebe transcript como texto puro, sem imagem
+        self.assertEqual(mock_generate.call_args.args[2], 'Quero comprar por áudio')
+        self.assertEqual(mock_generate.call_args.kwargs, {'image': None, 'mime_type': '', 'memory': '', 'tools': ANY})
+
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.transcribe_audio')
+    @patch('apps.chats.whatsapp.download_media')
+    @patch('apps.ai.generate_reply')
+    def test_task_retry_does_not_retranscribe_audio(self, mock_generate, mock_download, mock_transcribe, mock_send):
+        # retry após falha pós-STT: content já preenchido pula download + Groq
+        mock_generate.return_value = 'ok'
+        mock_send.return_value = 'wamid.resp-retry'
+        incoming = Message.objects.create(
+            contact=self.contact, direction='in', content='já transcrito',
+            message_type='audio', media_id='media-aud2', wa_message_id='wamid.aud-retry',
+        )
+
+        tasks.process_incoming_message(incoming.pk)
+
+        mock_download.assert_not_called()
+        mock_transcribe.assert_not_called()
+        self.assertEqual(mock_generate.call_args.args[2], 'já transcrito')
+
+    # debounce: só a task da última mensagem recebida responde
+
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_task_aborts_when_newer_incoming_message_exists(self, mock_generate, mock_send):
+        # a task da mensagem mais nova responde por todas; guard olha só direction='in'
+        # (out mais nova não abortar é coberto por test_task_generates_sends_and_records_reply,
+        # onde wamid.1 tem uma out posterior)
+        incoming = Message.objects.get(wa_message_id='wamid.1')
+        Message.objects.create(contact=self.contact, direction='in', content='tudo bem?', wa_message_id='wamid.newer')
+        out_count = Message.objects.filter(direction='out').count()
+
+        tasks.process_incoming_message(incoming.pk)
+
+        mock_generate.assert_not_called()
+        mock_send.assert_not_called()
+        self.assertEqual(Message.objects.filter(direction='out').count(), out_count)
+
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.transcribe_audio')
+    @patch('apps.chats.whatsapp.download_media')
+    @patch('apps.ai.generate_reply')
+    def test_task_aborted_audio_still_persists_transcript(self, mock_generate, mock_download, mock_transcribe, mock_send):
+        # transcrição roda antes do guard: transcript entra no histórico da task final
+        mock_download.return_value = (b'ogg-bytes', 'audio/ogg')
+        mock_transcribe.return_value = 'primeira parte por áudio'
+        audio = Message.objects.create(
+            contact=self.contact, direction='in', content='',
+            message_type='audio', media_id='media-aud3', wa_message_id='wamid.aud-abort',
+        )
+        Message.objects.create(contact=self.contact, direction='in', content='segunda parte', wa_message_id='wamid.after-audio')
+
+        tasks.process_incoming_message(audio.pk)
+
+        audio.refresh_from_db()
+        self.assertEqual(audio.content, 'primeira parte por áudio')
+        mock_generate.assert_not_called()
+        mock_send.assert_not_called()
+
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_task_of_last_message_replies_with_accumulated_history(self, mock_generate, mock_send):
+        # mensagens acumuladas viram turnos 'user' consecutivos no histórico
+        mock_generate.return_value = 'Oi! Tudo ótimo.'
+        mock_send.return_value = 'wamid.resp-debounce'
+        Message.objects.create(contact=self.contact, direction='in', content='oi', wa_message_id='wamid.parte1')
+        last = Message.objects.create(contact=self.contact, direction='in', content='tudo bem?', wa_message_id='wamid.parte2')
+
+        tasks.process_incoming_message(last.pk)
+
+        mock_generate.assert_called_once_with(
+            self.agent,
+            [
+                {'role': 'user', 'content': 'Oi'},
+                {'role': 'assistant', 'content': 'Olá! Como posso ajudar?'},
+                {'role': 'user', 'content': 'oi'},
+            ],
+            'tudo bem?', image=None, mime_type='', memory='', tools=ANY,
+        )
+        self.assertTrue(Message.objects.filter(wa_message_id='wamid.resp-debounce', direction='out').exists())
+
+    # memória de longo prazo
+
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_task_passes_contact_memory_to_ai(self, mock_generate, mock_send):
+        mock_generate.return_value = 'Oi Matheus!'
+        mock_send.return_value = 'wamid.resp-mem'
+        Contact.objects.filter(pk=self.contact.pk).update(memory='Nome: Matheus')
+        incoming = Message.objects.get(wa_message_id='wamid.1')
+
+        tasks.process_incoming_message(incoming.pk)
+
+        self.assertEqual(mock_generate.call_args.kwargs['memory'], 'Nome: Matheus')
+
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_task_enqueues_memory_update_after_recording_reply(self, mock_generate, mock_send):
+        mock_generate.return_value = 'Resposta gerada'
+        mock_send.return_value = 'wamid.resposta'
+        incoming = Message.objects.get(wa_message_id='wamid.1')
+        # update reescreve a memória a partir do histórico - a resposta precisa já estar gravada
+        self.mock_memory_enqueue.side_effect = lambda contact_pk: self.assertTrue(
+            Message.objects.filter(wa_message_id='wamid.resposta', direction='out').exists()
+        )
+
+        tasks.process_incoming_message(incoming.pk)
+
+        self.mock_memory_enqueue.assert_called_once_with(self.contact.pk)
+
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_task_aborted_by_debounce_does_not_update_memory(self, mock_generate, mock_send):
+        incoming = Message.objects.get(wa_message_id='wamid.1')
+        Message.objects.create(contact=self.contact, direction='in', content='mais nova', wa_message_id='wamid.newest')
+
+        tasks.process_incoming_message(incoming.pk)
+
+        self.mock_memory_enqueue.assert_not_called()
+
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_task_send_failure_does_not_update_memory(self, mock_generate, mock_send):
+        mock_generate.return_value = 'Resposta'
+        mock_send.side_effect = httpx.HTTPStatusError('Bad Request', request=MagicMock(), response=MagicMock())
+        incoming = Message.objects.get(wa_message_id='wamid.1')
+
+        with self.assertRaises(httpx.HTTPStatusError):
+            tasks.process_incoming_message(incoming.pk)
+
+        self.mock_memory_enqueue.assert_not_called()
+
+    # handoff
+
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_task_paused_contact_does_not_reply(self, mock_generate, mock_send):
+        Contact.objects.filter(pk=self.contact.pk).update(ai_paused=True)
+        incoming = Message.objects.get(wa_message_id='wamid.1')
+        out_count = Message.objects.filter(direction='out').count()
+
+        tasks.process_incoming_message(incoming.pk)
+
+        mock_generate.assert_not_called()
+        mock_send.assert_not_called()
+        self.mock_memory_enqueue.assert_not_called()
+        self.assertEqual(Message.objects.filter(direction='out').count(), out_count)
+
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.transcribe_audio')
+    @patch('apps.chats.whatsapp.download_media')
+    @patch('apps.ai.generate_reply')
+    def test_task_paused_contact_still_transcribes_audio(self, mock_generate, mock_download, mock_transcribe, mock_send):
+        # atendente precisa ler o áudio - transcrição roda antes do guard de pausa
+        Contact.objects.filter(pk=self.contact.pk).update(ai_paused=True)
+        mock_download.return_value = (b'ogg-bytes', 'audio/ogg')
+        mock_transcribe.return_value = 'áudio pro atendente'
+        incoming = Message.objects.create(
+            contact=self.contact, direction='in', content='',
+            message_type='audio', media_id='media-aud-paused', wa_message_id='wamid.aud-paused',
+        )
+
+        tasks.process_incoming_message(incoming.pk)
+
+        incoming.refresh_from_db()
+        self.assertEqual(incoming.content, 'áudio pro atendente')
+        mock_generate.assert_not_called()
+        mock_send.assert_not_called()
+
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_task_transfer_tool_pauses_contact(self, mock_generate, mock_send):
+        # a closure passada como tool tem que pausar ESTE contact quando o modelo chamá-la
+        mock_generate.return_value = 'Vou te transferir!'
+        mock_send.return_value = 'wamid.resp-transfer'
+        incoming = Message.objects.get(wa_message_id='wamid.1')
+
+        tasks.process_incoming_message(incoming.pk)
+
+        tools = mock_generate.call_args.kwargs['tools']
+        self.assertEqual(len(tools), 1)
+        tool = tools[0]
+        self.assertEqual(tool.__name__, 'transferir_para_atendente')
+        self.assertTrue(tool.__doc__)  # docstring é a descrição que o modelo lê
+        tool()  # simula o modelo chamando a tool
+        self.contact.refresh_from_db()
+        self.assertTrue(self.contact.ai_paused)
+        # handoff automático tem tipo próprio: front notifica só quando a IA transfere,
+        # não quando o próprio atendente pausa pela UI (esse é 'contact');
+        # name vai no evento pro toast funcionar fora da página de conversas
+        self.mock_events.assert_any_call(
+            self.company.pk,
+            {'type': 'handoff', 'contact_id': self.contact.pk, 'name': self.contact.name},
+        )
+
+
+class UpdateContactMemoryTests(BaseChatsTestCase):
+    @patch('apps.ai.update_memory')
+    def test_task_rewrites_contact_memory(self, mock_update):
+        mock_update.return_value = 'Nome: Matheus. Prefere áudio.'
+        Contact.objects.filter(pk=self.contact.pk).update(memory='Nome: Matheus')
+
+        tasks.update_contact_memory(self.contact.pk)
+
+        self.contact.refresh_from_db()
+        self.assertEqual(self.contact.memory, 'Nome: Matheus. Prefere áudio.')
+        mock_update.assert_called_once_with(
+            self.agent, 'Nome: Matheus',
+            [{'role': 'user', 'content': 'Oi'}, {'role': 'assistant', 'content': 'Olá! Como posso ajudar?'}],
+        )
+
+    @patch('apps.ai.update_memory')
+    def test_task_unknown_contact_is_silent(self, mock_update):
+        tasks.update_contact_memory(99999)
+        mock_update.assert_not_called()
+
+    @patch('apps.ai.update_memory')
+    def test_task_failure_raises_without_saving(self, mock_update):
+        # em chamada direta (fora de worker) self.retry re-levanta a exceção original
+        mock_update.side_effect = RuntimeError('provider down')
+
+        with self.assertRaises(RuntimeError):
+            tasks.update_contact_memory(self.contact.pk)
+
+        self.contact.refresh_from_db()
+        self.assertEqual(self.contact.memory, '')
+
+
+# payload no formato real do GET /{waba_id}/message_templates da Meta
+TEMPLATES_FIXTURE = [
+    {
+        'name': 'oferta',
+        'status': 'APPROVED',
+        'language': 'pt_BR',
+        'category': 'MARKETING',
+        'components': [
+            {'type': 'HEADER', 'format': 'TEXT', 'text': 'Olá!'},
+            {'type': 'BODY', 'text': 'Oi {{1}}, temos {{2}} pra você.'},
+            {'type': 'FOOTER', 'text': 'Chatly'},
+        ],
+    },
+    {
+        'name': 'janela',
+        'status': 'APPROVED',
+        'language': 'pt_BR',
+        'category': 'UTILITY',
+        'components': [{'type': 'BODY', 'text': 'Podemos continuar seu atendimento?'}],
+    },
+    {
+        'name': 'pendente',
+        'status': 'PENDING',
+        'language': 'pt_BR',
+        'category': 'MARKETING',
+        'components': [{'type': 'BODY', 'text': 'Aguardando {{1}}.'}],
+    },
+]
+
+
+class TemplateTests(BaseChatsTestCase):
+    """Listagem de templates da Meta + envio de template no chat 1-1 (janela de 24h)."""
+
+    def list_url(self, company_id: int, account_id: int) -> str:
+        return f'/api/companies/{company_id}/accounts/{account_id}/templates'
+
+    def post_template(self, contact_id: int, template_name: str = 'oferta', params: list | None = None):
+        payload = {'template_name': template_name, 'language': 'pt_BR', 'params': params or []}
+        return self.client.post(
+            f'/api/companies/{self.company.pk}/contacts/{contact_id}/messages/template',
+            data=json.dumps(payload), content_type='application/json', headers=self.auth,
+        )
+
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_list_templates_extracts_body_and_param_count(self, mock_list):
+        mock_list.return_value = TEMPLATES_FIXTURE
+
+        response = self.client.get(self.list_url(self.company.pk, self.account.pk), headers=self.auth)
+
+        self.assertEqual(response.status_code, 200, response.json())
+        mock_list.assert_called_once_with(self.account)
+        body = response.json()
+        self.assertEqual(len(body), 3)
+        oferta = body[0]
+        self.assertEqual(oferta['name'], 'oferta')
+        self.assertEqual(oferta['status'], 'APPROVED')
+        # body_text vem só do component BODY (header/footer ficam de fora)
+        self.assertEqual(oferta['body_text'], 'Oi {{1}}, temos {{2}} pra você.')
+        self.assertEqual(oferta['param_count'], 2)
+        self.assertEqual(body[1]['param_count'], 0)
+        self.assertEqual(body[2]['status'], 'PENDING')
+
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_list_templates_of_foreign_account_returns_404(self, mock_list):
+        response = self.client.get(self.list_url(self.company.pk, self.other_account.pk), headers=self.auth)
+        self.assertEqual(response.status_code, 404)
+        mock_list.assert_not_called()
+
+    @patch('apps.chats.whatsapp.send_template')
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_send_template_message_resolves_nome_and_records_rendered_body(self, mock_list, mock_send):
+        mock_list.return_value = TEMPLATES_FIXTURE
+        mock_send.return_value = 'wamid.tpl'
+
+        response = self.post_template(self.contact.pk, params=['{{nome}}', '10% off'])
+
+        self.assertEqual(response.status_code, 201, response.json())
+        mock_send.assert_called_once_with(self.account, '5511999999999', 'oferta', 'pt_BR', ['Cliente A', '10% off'])
+        message = Message.objects.get(wa_message_id='wamid.tpl')
+        # content persiste o body renderizado: history da IA e preview da lista ficam legíveis
+        self.assertEqual(message.content, 'Oi Cliente A, temos 10% off pra você.')
+        self.assertEqual(message.direction, 'out')
+        self.assertTrue(message.from_human)
+
+    @patch('apps.chats.whatsapp.send_template')
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_send_template_works_with_closed_window(self, mock_list, mock_send):
+        # template é justamente o canal de reabertura - não pode levar o check da janela
+        close_service_window(self.contact)
+        mock_list.return_value = TEMPLATES_FIXTURE
+        mock_send.return_value = 'wamid.tpl-closed'
+
+        response = self.post_template(self.contact.pk, params=['Cliente', '10% off'])
+
+        self.assertEqual(response.status_code, 201, response.json())
+        self.assertTrue(Message.objects.filter(wa_message_id='wamid.tpl-closed').exists())
+
+    @patch('apps.chats.whatsapp.send_template')
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_send_template_without_params(self, mock_list, mock_send):
+        mock_list.return_value = TEMPLATES_FIXTURE
+        mock_send.return_value = 'wamid.tpl2'
+
+        response = self.post_template(self.contact.pk, template_name='janela')
+
+        self.assertEqual(response.status_code, 201, response.json())
+        mock_send.assert_called_once_with(self.account, '5511999999999', 'janela', 'pt_BR', [])
+        self.assertEqual(Message.objects.get(wa_message_id='wamid.tpl2').content, 'Podemos continuar seu atendimento?')
+
+    @patch('apps.chats.whatsapp.send_template')
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_send_unapproved_template_returns_400(self, mock_list, mock_send):
+        # PENDING/REJECTED não pode ser enviado - Meta recusaria
+        mock_list.return_value = TEMPLATES_FIXTURE
+        response = self.post_template(self.contact.pk, template_name='pendente', params=['x'])
+        self.assertEqual(response.status_code, 400)
+        mock_send.assert_not_called()
+
+    @patch('apps.chats.whatsapp.send_template')
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_send_unknown_template_returns_400(self, mock_list, mock_send):
+        mock_list.return_value = TEMPLATES_FIXTURE
+        response = self.post_template(self.contact.pk, template_name='nao_existe')
+        self.assertEqual(response.status_code, 400)
+        mock_send.assert_not_called()
+
+    @patch('apps.chats.whatsapp.send_template')
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_send_template_to_foreign_contact_returns_404(self, mock_list, mock_send):
+        response = self.post_template(self.other_contact.pk)
+        self.assertEqual(response.status_code, 404)
+        mock_send.assert_not_called()
+
+    @patch('apps.chats.whatsapp.send_template')
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_send_template_meta_rejection_returns_400(self, mock_list, mock_send):
+        mock_list.return_value = TEMPLATES_FIXTURE
+        mock_send.side_effect = httpx.HTTPStatusError('Bad Request', request=MagicMock(), response=MagicMock())
+        out_count = Message.objects.filter(direction='out').count()
+
+        response = self.post_template(self.contact.pk, template_name='janela')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(Message.objects.filter(direction='out').count(), out_count)
+
+    def test_list_contacts_exposes_last_inbound_at(self):
+        # front usa pra detectar janela de 24h fechada; só msgs direction='in' contam
+        only_out = Contact.objects.create(account=self.account, wa_id='5511777777777', name='Sem inbound')
+        Message.objects.create(contact=only_out, direction='out', content='disparo', status='sent')
+
+        response = self.client.get(
+            f'/api/companies/{self.company.pk}/whatsapp-accounts/{self.account.pk}/contacts', headers=self.auth
+        )
+
+        self.assertEqual(response.status_code, 200, response.json())
+        by_wa_id = {c['wa_id']: c for c in response.json()['items']}
+        self.assertIsNotNone(by_wa_id['5511999999999']['last_inbound_at'])
+        self.assertIsNone(by_wa_id['5511777777777']['last_inbound_at'])
+
+
+class CampaignTests(BaseChatsTestCase):
+    """CRUD de campanhas: criação valida template/destinatários e enfileira a task."""
+
+    def url(self, company_id: int, campaign_id: int | None = None) -> str:
+        base = f'/api/companies/{company_id}/campaigns'
+        return f'{base}/{campaign_id}' if campaign_id else base
+
+    def campaign_payload(self, **overrides) -> dict:
+        payload = {
+            'account_id': self.account.pk,
+            'name': 'Promo de julho',
+            'template_name': 'oferta',
+            'template_language': 'pt_BR',
+            'body_params': ['{{nome}}', '10% off'],
+        }
+        payload.update(overrides)
+        return payload
+
+    def post_campaign(self, company_id: int, **overrides):
+        return self.client.post(
+            self.url(company_id), data=json.dumps(self.campaign_payload(**overrides)),
+            content_type='application/json', headers=self.auth,
+        )
+
+    @patch('apps.chats.tasks.run_campaign.delay')
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_create_campaign_defaults_to_all_contacts(self, mock_list, mock_delay):
+        mock_list.return_value = TEMPLATES_FIXTURE
+
+        response = self.post_campaign(self.company.pk)
+
+        self.assertEqual(response.status_code, 201, response.json())
+        campaign = Campaign.objects.get(name='Promo de julho')
+        self.assertEqual(campaign.total, 1)
+        self.assertEqual(campaign.status, 'sending')
+        mock_delay.assert_called_once_with(campaign.pk, [self.contact.pk])
+
+    @patch('apps.chats.tasks.run_campaign.delay')
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_create_campaign_selected_ignores_foreign_contacts(self, mock_list, mock_delay):
+        mock_list.return_value = TEMPLATES_FIXTURE
+
+        response = self.post_campaign(self.company.pk, contact_ids=[self.contact.pk, self.other_contact.pk])
+
+        self.assertEqual(response.status_code, 201, response.json())
+        self.assertEqual(response.json()['total'], 1)
+        mock_delay.assert_called_once_with(ANY, [self.contact.pk])
+
+    @patch('apps.chats.tasks.run_campaign.delay')
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_create_campaign_csv_normalizes_number_and_creates_contact(self, mock_list, mock_delay):
+        mock_list.return_value = TEMPLATES_FIXTURE
+
+        response = self.post_campaign(
+            self.company.pk, contact_ids=[], numbers=[{'number': '+55 (11) 97777-7777', 'name': 'Lead Novo'}]
+        )
+
+        self.assertEqual(response.status_code, 201, response.json())
+        contact = Contact.objects.get(wa_id='5511977777777')
+        self.assertEqual(contact.name, 'Lead Novo')
+        self.assertEqual(contact.account, self.account)
+        self.assertEqual(response.json()['total'], 1)
+        mock_delay.assert_called_once_with(ANY, [contact.pk])
+
+    @patch('apps.chats.tasks.run_campaign.delay')
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_create_campaign_invalid_number_returns_400(self, mock_list, mock_delay):
+        mock_list.return_value = TEMPLATES_FIXTURE
+
+        response = self.post_campaign(self.company.pk, contact_ids=[], numbers=[{'number': '123'}])
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(Campaign.objects.count(), 0)
+        mock_delay.assert_not_called()
+
+    @patch('apps.chats.tasks.run_campaign.delay')
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_create_campaign_param_count_mismatch_returns_400(self, mock_list, mock_delay):
+        # oferta tem {{1}} e {{2}} - mandar 1 param só = erro antes de criar qualquer coisa
+        mock_list.return_value = TEMPLATES_FIXTURE
+
+        response = self.post_campaign(self.company.pk, body_params=['só um'])
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('expects 2', response.json()['detail'])
+        mock_delay.assert_not_called()
+
+    @patch('apps.chats.tasks.run_campaign.delay')
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_create_campaign_without_recipients_returns_400(self, mock_list, mock_delay):
+        mock_list.return_value = TEMPLATES_FIXTURE
+        response = self.post_campaign(self.company.pk, contact_ids=[])
+        self.assertEqual(response.status_code, 400)
+        mock_delay.assert_not_called()
+
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_create_campaign_on_foreign_company_returns_404(self, mock_list):
+        response = self.post_campaign(self.other_company.pk)
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(Campaign.objects.count(), 0)
+
+    def test_list_campaigns_only_mine(self):
+        Campaign.objects.create(account=self.account, name='Minha', template_name='oferta', template_language='pt_BR')
+        Campaign.objects.create(account=self.other_account, name='Alheia', template_name='x', template_language='pt_BR')
+
+        response = self.client.get(self.url(self.company.pk), headers=self.auth)
+
+        self.assertEqual(response.status_code, 200, response.json())
+        self.assertEqual(response.json()['count'], 1)
+        self.assertEqual(response.json()['items'][0]['name'], 'Minha')
+
+    def test_get_campaign_aggregates_delivered_and_read(self):
+        campaign = Campaign.objects.create(
+            account=self.account, name='Promo', template_name='oferta', template_language='pt_BR', total=3, sent=3
+        )
+        for i, status in enumerate(('sent', 'delivered', 'read')):
+            Message.objects.create(
+                contact=self.contact, direction='out', content='oi', status=status,
+                wa_message_id=f'wamid.camp{i}', campaign=campaign,
+            )
+
+        response = self.client.get(self.url(self.company.pk, campaign.pk), headers=self.auth)
+
+        self.assertEqual(response.status_code, 200, response.json())
+        body = response.json()
+        self.assertEqual(body['delivered'], 1)
+        self.assertEqual(body['read'], 1)
+
+    def test_get_foreign_campaign_returns_404(self):
+        campaign = Campaign.objects.create(account=self.other_account, name='Alheia', template_name='x', template_language='pt_BR')
+        response = self.client.get(self.url(self.company.pk, campaign.pk), headers=self.auth)
+        self.assertEqual(response.status_code, 404)
+
+
+class RunCampaignTests(BaseChatsTestCase):
+    """Task de disparo: contadores, render por contato e término com status certo."""
+
+    def setUp(self):
+        super().setUp()
+        # throttle de 0.1s por envio deixaria a suíte lenta
+        patcher = patch('apps.chats.tasks.time.sleep')
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.campaign = Campaign.objects.create(
+            account=self.account, name='Promo', template_name='oferta',
+            template_language='pt_BR', body_params=['{{nome}}', '10% off'], total=2,
+        )
+        self.contact_b = Contact.objects.create(account=self.account, wa_id='5511666666666', name='Cliente B')
+
+    @patch('apps.chats.whatsapp.send_template')
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_run_campaign_counts_sent_and_failed_and_finishes_done(self, mock_list, mock_send):
+        mock_list.return_value = TEMPLATES_FIXTURE
+        # 1º envio ok, 2º rejeitado pela Meta - task segue e contabiliza
+        mock_send.side_effect = ['wamid.c1', httpx.HTTPStatusError('Bad Request', request=MagicMock(), response=MagicMock())]
+
+        tasks.run_campaign(self.campaign.pk, [self.contact.pk, self.contact_b.pk])
+
+        self.campaign.refresh_from_db()
+        self.assertEqual(self.campaign.sent, 1)
+        self.assertEqual(self.campaign.failed, 1)
+        self.assertEqual(self.campaign.status, 'done')
+        # {{nome}} resolvido por contato em cada chamada
+        self.assertEqual(mock_send.call_args_list[0].args, (self.account, '5511999999999', 'oferta', 'pt_BR', ['Cliente A', '10% off']))
+        self.assertEqual(mock_send.call_args_list[1].args, (self.account, '5511666666666', 'oferta', 'pt_BR', ['Cliente B', '10% off']))
+        message = Message.objects.get(wa_message_id='wamid.c1')
+        self.assertEqual(message.campaign, self.campaign)
+        self.assertEqual(message.content, 'Oi Cliente A, temos 10% off pra você.')
+        self.assertTrue(message.from_human)
+        self.assertFalse(Message.objects.filter(contact=self.contact_b, direction='out').exists())
+
+    @patch('apps.chats.whatsapp.send_template')
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_run_campaign_template_gone_marks_failed(self, mock_list, mock_send):
+        # template apagado/despublicado na Meta entre criar e rodar
+        mock_list.return_value = []
+
+        tasks.run_campaign(self.campaign.pk, [self.contact.pk])
+
+        self.campaign.refresh_from_db()
+        self.assertEqual(self.campaign.status, 'failed')
+        mock_send.assert_not_called()
+
+    @patch('apps.chats.whatsapp.send_template')
+    def test_run_campaign_unknown_campaign_is_silent(self, mock_send):
+        tasks.run_campaign(99999, [])
+        mock_send.assert_not_called()
+
+
+class TemplateApiUnitTests(BaseChatsTestCase):
+    """Camada whatsapp: formato exato dos payloads de template da Cloud API."""
+
+    @patch('apps.chats.whatsapp.httpx.get')
+    def test_list_templates_queries_waba(self, mock_get):
+        mock_get.return_value.json.return_value = {'data': TEMPLATES_FIXTURE}
+
+        result = whatsapp.list_templates(self.account)
+
+        self.assertEqual(result, TEMPLATES_FIXTURE)
+        args, kwargs = mock_get.call_args
+        self.assertEqual(args[0], f'{whatsapp.GRAPH_URL}/waba-1/message_templates')
+        self.assertEqual(kwargs['headers']['Authorization'], 'Bearer EAAG-meu-token-secreto')
+        self.assertEqual(kwargs['params'], {'fields': 'name,status,language,category,components', 'limit': 100})
+
+    @patch('apps.chats.whatsapp.httpx.post')
+    def test_send_template_with_body_params(self, mock_post):
+        mock_post.return_value.json.return_value = {'messages': [{'id': 'wamid.tpl'}]}
+
+        wamid = whatsapp.send_template(self.account, '5511999999999', 'oferta', 'pt_BR', ['Cliente A', '10% off'])
+
+        self.assertEqual(wamid, 'wamid.tpl')
+        self.assertEqual(mock_post.call_args.kwargs['json'], {
+            'messaging_product': 'whatsapp',
+            'to': '5511999999999',
+            'type': 'template',
+            'template': {
+                'name': 'oferta',
+                'language': {'code': 'pt_BR'},
+                'components': [{'type': 'body', 'parameters': [
+                    {'type': 'text', 'text': 'Cliente A'},
+                    {'type': 'text', 'text': '10% off'},
+                ]}],
+            },
+        })
+
+    @patch('apps.chats.whatsapp.httpx.post')
+    def test_send_template_without_params_omits_components(self, mock_post):
+        mock_post.return_value.json.return_value = {'messages': [{'id': 'wamid.tpl'}]}
+
+        whatsapp.send_template(self.account, '5511999999999', 'janela', 'pt_BR', [])
+
+        self.assertEqual(mock_post.call_args.kwargs['json']['template'], {'name': 'janela', 'language': {'code': 'pt_BR'}})
+
+    @patch('apps.chats.whatsapp.httpx.post')
+    def test_send_template_raises_on_api_error(self, mock_post):
+        mock_post.return_value.raise_for_status.side_effect = httpx.HTTPStatusError(
+            'Bad Request', request=MagicMock(), response=MagicMock()
+        )
+        with self.assertRaises(httpx.HTTPStatusError):
+            whatsapp.send_template(self.account, '5511999999999', 'oferta', 'pt_BR', [])
