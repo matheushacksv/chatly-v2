@@ -831,6 +831,8 @@ const accountItems = computed(() =>
           <pre v-if="selected.memory" class="text-xs bg-elevated rounded-lg p-3 whitespace-pre-wrap break-words font-sans">{{ selected.memory }}</pre>
           <p v-else class="text-sm text-muted">Nada anotado ainda.</p>
         </div>
+
+        <PipedrivePanel v-if="companyId" :company-id="companyId" :contact="selected" />
       </div>
     </template>
   </UDashboardPanel>

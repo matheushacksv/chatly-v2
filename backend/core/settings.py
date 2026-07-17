@@ -43,6 +43,7 @@ INSTALLED_APPS = [
     'apps.companies',
     'apps.agents',
     'apps.chats',
+    'apps.crm',
 ]
 
 MIDDLEWARE = [

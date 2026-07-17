@@ -118,3 +118,52 @@ export interface AgentDocument {
   status: 'processing' | 'ready' | 'failed'
   created_at: string
 }
+
+export interface PipedriveConfig {
+  id: number
+  default_pipeline_id: number | null
+  default_stage_id: number | null
+  created_at: string
+}
+
+export interface PipedrivePipeline {
+  id: number
+  name: string
+  stages: { id: number, name: string }[]
+}
+
+export interface PipedrivePerson {
+  id: number
+  name: string
+  phones: string[]
+}
+
+export interface PipedrivePersonResolve {
+  person: PipedrivePerson | null
+  suggestions: PipedrivePerson[]
+}
+
+export interface PipedriveDeal {
+  id: number
+  title: string
+  value: number | null
+  currency: string | null
+  pipeline_id: number | null
+  stage_id: number | null
+  status: string | null
+  update_time: string | null
+}
+
+export interface PipedriveNote {
+  id: number
+  content: string
+  add_time: string | null
+}
+
+export interface PipedriveActivity {
+  id: number
+  subject: string | null
+  type: string | null
+  due_date: string | null
+  done: boolean
+}

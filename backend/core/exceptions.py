@@ -32,3 +32,8 @@ class Unauthorized(DomainError):
 class Forbidden(DomainError):
     status_code = 403
     default_message = 'Forbidden'
+
+
+class PipedriveError(DomainError):
+    status_code = 502
+    default_message = 'Pipedrive request failed'
