@@ -8,6 +8,8 @@ from apps import ai
 from apps.chats import events, services, whatsapp
 from apps.chats.models import Campaign, Contact, Message
 from core.exceptions import ValidationError
+from apps.crm import pipedrive, services as crm_services
+from apps.crm.models import PipedriveAccount
 
 
 @shared_task(bind=True, max_retries=3)
@@ -39,8 +41,33 @@ def process_incoming_message(self, message_id: int):
             events.publish(contact.account.company_id, {'type': 'handoff', 'contact_id': contact.pk, 'name': contact.name or contact.wa_id})
             return 'Transferido'
 
+        tools = [transferir_para_atendente]
+        pd = PipedriveAccount.objects.filter(company=account.company).first()
+        if pd:
+
+            def criar_negocio(titulo: str) -> str:
+                """Cria negócio (deal) no CRM para este cliente. Use quando você concluir seu objetivo
+                O título deve ser o nome"""
+                try:
+                    deal = crm_services.create_deal_for_contact(pd, contact, titulo)
+                    return f'Negócio criado no CRM (id {deal["id"]})'
+                except Exception as exc:
+                    return f'Falha ao criar negócio: {exc}'
+
+            def anotar_crm(anotacao: str) -> str:
+                """Salva uma anotação sobre este cliente no CRM. Use para registrar fatos importantes para a equipe de vendas:
+                    orçamento, objeções, quem decide e etc"""
+                try:
+                    person_id = crm_services.find_or_create_person(pd, contact)
+                    pipedrive.create_note(pd.api_key, anotacao, person_id=person_id)
+                    return 'Anotação salva no CRM'
+                except Exception as exc:
+                    return f'Falha ao anotar no CRM: {exc}'
+
+            tools += [criar_negocio, anotar_crm]
+
         reply = ai.generate_reply(
-            account.agent, history, message.content, image=image, mime_type=mime_type, memory=contact.memory, tools=[transferir_para_atendente]
+            account.agent, history, message.content, image=image, mime_type=mime_type, memory=contact.memory, tools=tools
         )
         parts = [p.strip() for p in reply.split('\n\n') if p.strip()] if account.agent.split_messages else [reply]
         wamids = []

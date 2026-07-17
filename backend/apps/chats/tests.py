@@ -23,6 +23,8 @@ from apps.accounts.models import User
 from apps.agents.models import Agent, Credential, Document, DocumentChunk
 from apps.chats.models import Campaign, Contact, Message, Sticker, WhatsAppAccount
 from apps.companies.models import Company
+from apps.crm.models import PipedriveAccount
+from core.exceptions import PipedriveError
 from apps.testing import auth_header
 
 # storage default é MinIO - em teste troca por filesystem local num tempdir,
@@ -2388,3 +2390,99 @@ class TemplateApiUnitTests(BaseChatsTestCase):
         )
         with self.assertRaises(httpx.HTTPStatusError):
             whatsapp.send_template(self.account, '5511999999999', 'oferta', 'pt_BR', [])
+
+
+class PipedriveToolsTests(BaseChatsTestCase):
+    """Tools de CRM na task: presentes só com PipedriveAccount, erro vira string (nunca retry)."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = patch('apps.chats.tasks.update_contact_memory.delay')
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _run_task_and_get_tools(self, mock_generate, mock_send):
+        mock_generate.return_value = 'ok'
+        mock_send.return_value = 'wamid.out'
+        incoming = Message.objects.get(wa_message_id='wamid.1')
+        tasks.process_incoming_message(incoming.pk)
+        return mock_generate.call_args.kwargs['tools']
+
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_no_pipedrive_account_no_crm_tools(self, mock_generate, mock_send):
+        tools = self._run_task_and_get_tools(mock_generate, mock_send)
+        self.assertEqual([t.__name__ for t in tools], ['transferir_para_atendente'])
+
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_pipedrive_account_adds_crm_tools(self, mock_generate, mock_send):
+        PipedriveAccount.objects.create(company=self.company, api_key='pd-key', default_pipeline_id=1, default_stage_id=2)
+        tools = self._run_task_and_get_tools(mock_generate, mock_send)
+        self.assertEqual(
+            [t.__name__ for t in tools], ['transferir_para_atendente', 'criar_negocio', 'anotar_crm']
+        )
+
+    @patch('apps.crm.pipedrive.create_deal')
+    @patch('apps.crm.pipedrive.search_persons')
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_criar_negocio_finds_person_and_creates_deal(self, mock_generate, mock_send, mock_search, mock_create_deal):
+        PipedriveAccount.objects.create(company=self.company, api_key='pd-key', default_pipeline_id=1, default_stage_id=2)
+        mock_search.return_value = [{'id': 88, 'name': 'Cliente A'}]
+        mock_create_deal.return_value = {'id': 7, 'title': 'Cliente A'}
+        tools = self._run_task_and_get_tools(mock_generate, mock_send)
+
+        result = tools[1]('Cliente A')
+
+        self.assertEqual(result, 'Negócio criado no CRM (id 7)')
+        mock_create_deal.assert_called_once_with('pd-key', 'Cliente A', 88, 1, 2, None)
+        self.contact.refresh_from_db()
+        self.assertEqual(self.contact.pipedrive_person_id, 88)
+
+    @patch('apps.crm.pipedrive.create_note')
+    @patch('apps.crm.pipedrive.create_person')
+    @patch('apps.crm.pipedrive.search_persons')
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_anotar_crm_creates_person_and_note(self, mock_generate, mock_send, mock_search, mock_create_person, mock_note):
+        PipedriveAccount.objects.create(company=self.company, api_key='pd-key')
+        mock_search.return_value = []
+        mock_create_person.return_value = {'id': 51}
+        tools = self._run_task_and_get_tools(mock_generate, mock_send)
+
+        result = tools[2]('Orçamento de 5 mil')
+
+        self.assertEqual(result, 'Anotação salva no CRM')
+        mock_note.assert_called_once_with('pd-key', 'Orçamento de 5 mil', person_id=51)
+        self.contact.refresh_from_db()
+        self.assertEqual(self.contact.pipedrive_person_id, 51)
+
+    @patch('apps.crm.pipedrive.search_persons')
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_tool_error_returns_string_and_task_does_not_retry(self, mock_generate, mock_send, mock_search):
+        PipedriveAccount.objects.create(company=self.company, api_key='pd-key', default_pipeline_id=1, default_stage_id=2)
+        mock_search.side_effect = PipedriveError('Pipedrive rate limit reached, try again soon')
+        # IA chama a tool no meio da geração: erro do Pipedrive não pode estourar a task
+        mock_generate.side_effect = lambda *args, **kwargs: kwargs['tools'][1]('Cliente A')
+        mock_send.return_value = 'wamid.out'
+        incoming = Message.objects.get(wa_message_id='wamid.1')
+
+        tasks.process_incoming_message(incoming.pk)  # sem raise = sem retry
+
+        reply = mock_send.call_args.args[2]
+        self.assertEqual(reply, 'Falha ao criar negócio: Pipedrive rate limit reached, try again soon')
+
+    @patch('apps.crm.pipedrive.search_persons')
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_criar_negocio_without_defaults_returns_error_string(self, mock_generate, mock_send, mock_search):
+        PipedriveAccount.objects.create(company=self.company, api_key='pd-key')
+        mock_search.return_value = [{'id': 88}]
+        tools = self._run_task_and_get_tools(mock_generate, mock_send)
+
+        result = tools[1]('Cliente A')
+
+        self.assertEqual(result, 'Falha ao criar negócio: default pipeline and stage not set')
+        mock_search.assert_not_called()

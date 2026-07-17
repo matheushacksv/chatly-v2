@@ -29,6 +29,7 @@ class Contact(models.Model):
     name = models.CharField(max_length=255, blank=True)
     memory = models.TextField(blank=True, default='')
     ai_paused = models.BooleanField(default=False)
+    pipedrive_person_id = models.IntegerField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

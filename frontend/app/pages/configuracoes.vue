@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Agent, Credential, Invite, Member, WhatsAppAccount } from '~/types/api'
+import type { Agent, Credential, Invite, Member, PipedriveConfig, PipedrivePipeline, WhatsAppAccount } from '~/types/api'
 
 const api = useApi()
 const toast = useToast()
@@ -272,6 +272,86 @@ async function removeCompany() {
     toast.add({ title: apiErrorDetail(error), color: 'error' })
   }
 }
+
+// ---- Pipedrive ----
+const pipedrive = ref<PipedriveConfig | null>(null)
+const pipelines = ref<PipedrivePipeline[]>([])
+const pipedriveKey = ref('')
+const connectingPipedrive = ref(false)
+const pipelineId = ref<number | undefined>()
+const stageId = ref<number | undefined>()
+const savingDefaults = ref(false)
+
+const pipelineItems = computed(() => pipelines.value.map(p => ({ label: p.name, value: p.id })))
+const stageItems = computed(() =>
+  pipelines.value.find(p => p.id === pipelineId.value)?.stages.map(s => ({ label: s.name, value: s.id })) ?? []
+)
+
+async function loadPipedrive() {
+  if (!companyId.value || !isOwner.value) return
+  try {
+    pipedrive.value = await api<PipedriveConfig>(`/companies/${companyId.value}/pipedrive`)
+  } catch {
+    pipedrive.value = null // 404 = não conectado
+    return
+  }
+  pipelineId.value = pipedrive.value.default_pipeline_id ?? undefined
+  stageId.value = pipedrive.value.default_stage_id ?? undefined
+  try {
+    pipelines.value = await api<PipedrivePipeline[]>(`/companies/${companyId.value}/pipedrive/pipelines`)
+  } catch (error) {
+    toast.add({ title: apiErrorDetail(error, 'Falha ao carregar funis'), color: 'error' })
+  }
+}
+watch([companyId, isOwner], loadPipedrive, { immediate: true })
+
+async function connectPipedrive() {
+  if (!pipedriveKey.value.trim()) return
+  connectingPipedrive.value = true
+  try {
+    await api(`/companies/${companyId.value}/pipedrive`, { method: 'POST', body: { api_key: pipedriveKey.value.trim() } })
+    pipedriveKey.value = ''
+    toast.add({ title: 'Pipedrive conectado', color: 'success' })
+    await loadPipedrive()
+  } catch (error) {
+    toast.add({ title: apiErrorDetail(error, 'Falha ao conectar Pipedrive'), color: 'error' })
+  } finally {
+    connectingPipedrive.value = false
+  }
+}
+
+async function savePipedriveDefaults() {
+  savingDefaults.value = true
+  try {
+    pipedrive.value = await api<PipedriveConfig>(`/companies/${companyId.value}/pipedrive`, {
+      method: 'PATCH', body: { pipeline_id: pipelineId.value ?? null, stage_id: stageId.value ?? null }
+    })
+    toast.add({ title: 'Funil padrão salvo', color: 'success' })
+  } catch (error) {
+    toast.add({ title: apiErrorDetail(error), color: 'error' })
+  } finally {
+    savingDefaults.value = false
+  }
+}
+
+async function disconnectPipedrive() {
+  const ok = await confirmModal({
+    title: 'Desconectar o Pipedrive?',
+    description: 'A IA para de criar negócios e o painel do CRM some das conversas.',
+    confirmLabel: 'Desconectar'
+  })
+  if (!ok) return
+  try {
+    await api(`/companies/${companyId.value}/pipedrive`, { method: 'DELETE' })
+    pipedrive.value = null
+    pipelines.value = []
+    pipelineId.value = undefined
+    stageId.value = undefined
+    toast.add({ title: 'Pipedrive desconectado', icon: 'i-lucide-trash-2' })
+  } catch (error) {
+    toast.add({ title: apiErrorDetail(error), color: 'error' })
+  }
+}
 </script>
 
 <template>
@@ -324,6 +404,48 @@ async function removeCompany() {
               />
               <UButton type="submit" label="Adicionar" :loading="savingCredential" :disabled="!newCredential.api_key.trim()" />
             </form>
+          </section>
+
+          <USeparator />
+
+          <!-- Pipedrive -->
+          <section class="space-y-3">
+            <div class="flex items-start justify-between gap-4">
+              <div>
+                <h2 class="font-display font-semibold text-lg">Pipedrive</h2>
+                <p class="text-sm text-muted">CRM integrado: a IA e os atendentes criam negócios e anotações. A chave nunca é exibida depois de salva.</p>
+              </div>
+              <UBadge v-if="pipedrive" color="success" variant="subtle">Conectado</UBadge>
+            </div>
+
+            <form v-if="!pipedrive" class="flex gap-2" @submit.prevent="connectPipedrive">
+              <UInput
+                v-model="pipedriveKey"
+                type="password"
+                placeholder="Api token do Pipedrive"
+                class="flex-1 font-mono"
+                autocomplete="off"
+              />
+              <UButton type="submit" label="Conectar" :loading="connectingPipedrive" :disabled="!pipedriveKey.trim()" />
+            </form>
+
+            <template v-else>
+              <div class="flex gap-2 items-start">
+                <UFormField label="Funil padrão" class="flex-1">
+                  <USelect v-model="pipelineId" :items="pipelineItems" placeholder="Escolha" class="w-full" @update:model-value="stageId = undefined" />
+                </UFormField>
+                <UFormField label="Etapa inicial" class="flex-1">
+                  <USelect v-model="stageId" :items="stageItems" placeholder="Escolha" class="w-full" :disabled="!pipelineId" />
+                </UFormField>
+              </div>
+              <div class="flex items-center justify-between gap-4">
+                <p class="text-xs text-muted">Usados quando a IA cria um negócio.</p>
+                <div class="flex items-center gap-2">
+                  <UButton label="Desconectar" color="error" variant="ghost" size="xs" @click="disconnectPipedrive()" />
+                  <UButton label="Salvar" :loading="savingDefaults" :disabled="!pipelineId || !stageId" @click="savePipedriveDefaults()" />
+                </div>
+              </div>
+            </template>
           </section>
 
           <USeparator />
