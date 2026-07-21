@@ -121,6 +121,77 @@ const headerFormatItems: { label: string, value: TemplateHeaderFormat }[] = [
   { label: 'Documento', value: 'DOCUMENT' }
 ]
 
+// códigos de idioma aceitos pela Meta pra templates
+const languageItems = [
+  { label: 'Africâner (af)', value: 'af' },
+  { label: 'Albanês (sq)', value: 'sq' },
+  { label: 'Alemão (de)', value: 'de' },
+  { label: 'Árabe (ar)', value: 'ar' },
+  { label: 'Azerbaijano (az)', value: 'az' },
+  { label: 'Bengali (bn)', value: 'bn' },
+  { label: 'Búlgaro (bg)', value: 'bg' },
+  { label: 'Catalão (ca)', value: 'ca' },
+  { label: 'Chinês (CHN) (zh_CN)', value: 'zh_CN' },
+  { label: 'Chinês (HKG) (zh_HK)', value: 'zh_HK' },
+  { label: 'Chinês (TAI) (zh_TW)', value: 'zh_TW' },
+  { label: 'Coreano (ko)', value: 'ko' },
+  { label: 'Croata (hr)', value: 'hr' },
+  { label: 'Dinamarquês (da)', value: 'da' },
+  { label: 'Eslovaco (sk)', value: 'sk' },
+  { label: 'Esloveno (sl)', value: 'sl' },
+  { label: 'Espanhol (es)', value: 'es' },
+  { label: 'Espanhol (ARG) (es_AR)', value: 'es_AR' },
+  { label: 'Espanhol (ESP) (es_ES)', value: 'es_ES' },
+  { label: 'Espanhol (MEX) (es_MX)', value: 'es_MX' },
+  { label: 'Estoniano (et)', value: 'et' },
+  { label: 'Filipino (fil)', value: 'fil' },
+  { label: 'Finlandês (fi)', value: 'fi' },
+  { label: 'Francês (fr)', value: 'fr' },
+  { label: 'Georgiano (ka)', value: 'ka' },
+  { label: 'Grego (el)', value: 'el' },
+  { label: 'Gujarati (gu)', value: 'gu' },
+  { label: 'Hebraico (he)', value: 'he' },
+  { label: 'Híndi (hi)', value: 'hi' },
+  { label: 'Húngaro (hu)', value: 'hu' },
+  { label: 'Indonésio (id)', value: 'id' },
+  { label: 'Inglês (en)', value: 'en' },
+  { label: 'Inglês (Reino Unido) (en_GB)', value: 'en_GB' },
+  { label: 'Inglês (EUA) (en_US)', value: 'en_US' },
+  { label: 'Irlandês (ga)', value: 'ga' },
+  { label: 'Italiano (it)', value: 'it' },
+  { label: 'Japonês (ja)', value: 'ja' },
+  { label: 'Cazaque (kk)', value: 'kk' },
+  { label: 'Canarês (kn)', value: 'kn' },
+  { label: 'Laosiano (lo)', value: 'lo' },
+  { label: 'Letão (lv)', value: 'lv' },
+  { label: 'Lituano (lt)', value: 'lt' },
+  { label: 'Macedônio (mk)', value: 'mk' },
+  { label: 'Malaio (ms)', value: 'ms' },
+  { label: 'Malaiala (ml)', value: 'ml' },
+  { label: 'Marata (mr)', value: 'mr' },
+  { label: 'Norueguês (nb)', value: 'nb' },
+  { label: 'Holandês (nl)', value: 'nl' },
+  { label: 'Persa (fa)', value: 'fa' },
+  { label: 'Polonês (pl)', value: 'pl' },
+  { label: 'Português (BR) (pt_BR)', value: 'pt_BR' },
+  { label: 'Português (PT) (pt_PT)', value: 'pt_PT' },
+  { label: 'Punjabi (pa)', value: 'pa' },
+  { label: 'Romeno (ro)', value: 'ro' },
+  { label: 'Russo (ru)', value: 'ru' },
+  { label: 'Sérvio (sr)', value: 'sr' },
+  { label: 'Suaíli (sw)', value: 'sw' },
+  { label: 'Sueco (sv)', value: 'sv' },
+  { label: 'Tâmil (ta)', value: 'ta' },
+  { label: 'Telugu (te)', value: 'te' },
+  { label: 'Tailandês (th)', value: 'th' },
+  { label: 'Turco (tr)', value: 'tr' },
+  { label: 'Ucraniano (uk)', value: 'uk' },
+  { label: 'Urdu (ur)', value: 'ur' },
+  { label: 'Usbeque (uz)', value: 'uz' },
+  { label: 'Vietnamita (vi)', value: 'vi' },
+  { label: 'Zulu (zu)', value: 'zu' }
+]
+
 const headerPreviewUrl = ref<string | null>(null)
 function revokeHeaderPreview() {
   if (headerPreviewUrl.value) URL.revokeObjectURL(headerPreviewUrl.value)
@@ -336,15 +407,22 @@ async function submit() {
           <UFormField label="Nome" required help="minúsculas, números e _">
             <UInput v-model="state.name" :disabled="editing" placeholder="boas_vindas" class="w-full" />
           </UFormField>
-          <UFormField label="Idioma" required help="código da Meta">
-            <UInput v-model="state.language" :disabled="editing" placeholder="pt_BR" class="w-full" />
+          <UFormField label="Idioma" required>
+            <USelectMenu
+              v-model="state.language"
+              :disabled="editing"
+              :items="languageItems"
+              value-key="value"
+              placeholder="Escolha o idioma"
+              class="w-full"
+            />
           </UFormField>
         </div>
         <p v-if="state.name && !nameValid" class="text-xs text-error -mt-3">
           Só letras minúsculas, números e underscore.
         </p>
 
-        <UFormField label="Categoria" required>
+        <UFormField label="Categoria" required :help="state.category === 'MARKETING' ? 'Fora da janela de 24h, entrega pra contatos sem interação recente pode não acontecer. Pra conteúdo transacional prefira Utilidade.' : undefined">
           <URadioGroup
             v-model="state.category"
             orientation="horizontal"
