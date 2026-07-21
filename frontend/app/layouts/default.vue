@@ -61,6 +61,7 @@ const nav = computed<NavigationMenuItem[]>(() => [
   { label: 'Conversas', icon: 'i-lucide-messages-square', to: '/conversas' },
   { label: 'Contatos', icon: 'i-lucide-book-user', to: '/contatos' },
   { label: 'Campanhas', icon: 'i-lucide-megaphone', to: '/campanhas' },
+  { label: 'Templates', icon: 'i-lucide-layout-template', to: '/templates' },
   { label: 'Agentes', icon: 'i-lucide-bot', to: '/agentes' },
   // member não administra nada - backend devolve 404 nas rotas de admin de qualquer forma
   ...(isOwner.value ? [{ label: 'Configurações', icon: 'i-lucide-settings', to: '/configuracoes' }] : [])

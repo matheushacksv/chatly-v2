@@ -5,13 +5,14 @@ from datetime import timedelta
 
 import httpx
 from django.core.files.base import ContentFile
+from django.core.files.uploadedfile import UploadedFile
 from django.db import IntegrityError
 from django.db.models import Count, F, OuterRef, Q, QuerySet, Subquery
 from django.utils import timezone
 
 from apps.agents.services import get_agent
 from apps.chats import events, whatsapp
-from apps.chats.models import Campaign, Contact, Message, Sticker, WhatsAppAccount
+from apps.chats.models import Campaign, Contact, Message, Sticker, TemplateHeaderMedia, WhatsAppAccount
 from apps.companies.models import Company
 from core.exceptions import Conflict, NotFound, ValidationError
 
@@ -24,6 +25,7 @@ MEDIA_SPECS = {
 }
 PLACEHOLDERS = {'image': '[imagem]', 'audio': '[áudio]', 'video': '[vídeo]', 'sticker': '[figurinha]'}
 TEMPLATE_PARAM_RE = re.compile(r'\{\{(\d+)\}\}')
+TEMPLATE_NAME_RE = re.compile(r'^[a-z0-9_]+$')
 NAME_TOKEN = '{{nome}}'
 SERVICE_WINDOW = timedelta(hours=24)
 
@@ -43,11 +45,74 @@ def check_service_window(contact: Contact) -> None:
         raise ValidationError('service window closed. Only templates allowed')
 
 
+def upload_account_media(company: Company, account_id: int, file: UploadedFile) -> str:
+    account = get_account(company, account_id)
+    return whatsapp.upload_media(account, file.read(), file.content_type or '', file.name or 'arquivo')
+
+
+def _save_header_media(account: WhatsAppAccount, name: str, language: str, header: dict | None) -> None:
+    if not header or header.get('format') not in ('IMAGE', 'VIDEO', 'DOCUMENT') or not header.get('media_id'):
+        return
+    TemplateHeaderMedia.objects.update_or_create(
+        account=account,
+        template_name=name,
+        template_language=language,
+        defaults={'media_id': header['media_id'], 'media_type': header['format'].lower()},
+    )
+
+
+def _get_saved_header_media(account: WhatsAppAccount, name: str, language: str) -> str:
+    saved = TemplateHeaderMedia.objects.filter(account=account, template_name=name, template_language=language).first()
+    return saved.media_id if saved else ''
+
+
+def _map_template_detail(account: WhatsAppAccount, template: dict) -> dict:
+    components = template.get('components', [])
+    header_c = next((c for c in components if c['type'] == 'HEADER'), None)
+    body_c = next((c for c in components if c['type'] == 'BODY'), {})
+    footer_c = next((c for c in components if c['type'] == 'FOOTER'), None)
+    buttons_c = next((c for c in components if c['type'] == 'BUTTONS'), None)
+
+    header = None
+    if header_c:
+        header = {
+            'format': header_c.get('format', 'TEXT'),
+            'text': header_c.get('text', ''),
+            'example': (header_c.get('example', {}).get('header_text') or [''])[0],
+        }
+
+    has_header_media = TemplateHeaderMedia.objects.filter(
+        account=account, template_name=template['name'], template_language=template['language']
+    ).exists()
+
+    return {
+        'id': template['id'],
+        'name': template['name'],
+        'language': template['language'],
+        'category': template['category'],
+        'status': template['status'],
+        'header': header,
+        'has_header_media': has_header_media,
+        'body_text': body_c.get('text', ''),
+        'body_examples': (body_c.get('example', {}).get('body_text') or [[]])[0],
+        'footer_text': footer_c.get('text', '') if footer_c else '',
+        'buttons': [
+            {
+                'type': btn['type'],
+                'text': btn.get('text', ''),
+                'url': btn.get('url', ''),
+                'phone_number': btn.get('phone_number', ''),
+            }
+            for btn in (buttons_c or {}).get('buttons', [])
+        ],
+    }
+
+
 # * ------ WhatsApp Accounts -----
 
 
 def create_account(
-    company: Company, agent_id: int, phone_number_id: str, waba_id: str, access_token: str, app_secret: str, verify_token: str
+    company: Company, agent_id: int, phone_number_id: str, waba_id: str, access_token: str, app_secret: str, verify_token: str, app_id: str = ''
 ) -> WhatsAppAccount:
     agent = get_agent(company, agent_id)
     try:
@@ -59,6 +124,7 @@ def create_account(
             access_token=access_token,
             app_secret=app_secret,
             verify_token=verify_token,
+            app_id=app_id,
         )
     except IntegrityError:
         raise Conflict('already exists whatsapp created')
@@ -251,16 +317,21 @@ def send_saved_sticker(company: Company, contact_id: int, sticker_id: int) -> Me
 
 def list_templates(company: Company, account_id: int) -> list[dict]:
     account = get_account(company, account_id)
+    saved_names = set(TemplateHeaderMedia.objects.filter(account=account).values_list('template_name', 'template_language'))
     templates = []
     for template in whatsapp.list_templates(account):
         body = next((c.get('text', '') for c in template.get('components', []) if c.get('type') == 'BODY'), '')
         params = TEMPLATE_PARAM_RE.findall(body)
+        header = next((c for c in template.get('components', []) if c.get('type') == 'HEADER'), None)
         templates.append(
             {
+                'id': template.get('id', ''),
                 'name': template['name'],
                 'language': template['language'],
                 'status': template['status'],
                 'category': template.get('category', ''),
+                'header_format': header.get('format', 'NONE') if header else 'NONE',
+                'has_header_media': (template['name'], template['language']) in saved_names,
                 'body_text': body,
                 'param_count': max((int(p) for p in params), default=0),
             }
@@ -268,10 +339,13 @@ def list_templates(company: Company, account_id: int) -> list[dict]:
     return templates
 
 
-def get_template_body(account: WhatsAppAccount, name: str, language: str) -> str:
+def get_template_send_info(account: WhatsAppAccount, name: str, language: str) -> tuple[str, str]:
     for template in whatsapp.list_templates(account):
         if template['name'] == name and template['language'] == language and template['status'] == 'APPROVED':
-            return next((c.get('text', '') for c in template.get('components', []) if c.get('type') == 'BODY'), '')
+            body = next((c.get('text', '') for c in template.get('components', []) if c.get('type') == 'BODY'), '')
+            header = next((c for c in template.get('components', []) if c.get('type') == 'HEADER'), None)
+            header_format = header.get('format', 'NONE') if header else 'NONE'
+            return body, header_format
     raise ValidationError('template not found')
 
 
@@ -284,14 +358,125 @@ def render_template(body: str, params: list[str], contact: Contact) -> str:
     return TEMPLATE_PARAM_RE.sub(lambda m: resolved[int(m.group(1)) - 1], body)
 
 
-def send_template_message(company: Company, contact_id: int, template_name: str, language: str, params: list[str]) -> Message:
+def send_template_message(
+    company: Company, contact_id: int, template_name: str, language: str, params: list[str], header_media_id: str = ''
+) -> Message:
     contact = get_contact(company, contact_id)
-    body = get_template_body(contact.account, template_name, language)
+    body, header_format = get_template_send_info(contact.account, template_name, language)
+    if header_format in ('IMAGE', 'VIDEO', 'DOCUMENT') and not header_media_id:
+        header_media_id = _get_saved_header_media(contact.account, template_name, language)
+    if header_format in ('IMAGE', 'VIDEO', 'DOCUMENT') and not header_media_id:
+        raise ValidationError('esse template exige um arquivo no cabeçalho, envie antes de mandar')
+    header_media_type = header_format.lower() if header_media_id else ''
     try:
-        wamid = whatsapp.send_template(contact.account, contact.wa_id, template_name, language, resolve_params(params, contact))
+        wamid = whatsapp.send_template(
+            contact.account, contact.wa_id, template_name, language, resolve_params(params, contact), header_media_id, header_media_type
+        )
     except httpx.HTTPStatusError:
         raise ValidationError('whatsapp invalid send')
     return record_outgoing_message(contact, wamid, render_template(body, params, contact), from_human=True)
+
+
+def build_components(data: dict) -> list[dict]:
+    body_text = data['body_text']
+    body_examples = data.get('body_examples', [])
+    footer_text = data.get('footer_text', '')
+    header = data.get('header')
+    buttons = data.get('buttons') or []
+
+    param_count = max((int(p) for p in TEMPLATE_PARAM_RE.findall(body_text)), default=0)
+    if len(body_examples) != param_count:
+        raise ValidationError(f'body espera {param_count} exemplo(s), recebeu {len(body_examples)}')
+    if len(footer_text) > 60:
+        raise ValidationError('footer deve ter no máximo 60 caracteres')
+
+    components = []
+
+    if header and header.get('format', 'NONE') != 'NONE':
+        header_component: dict = {'type': 'HEADER', 'format': header['format']}
+        if header['format'] == 'TEXT':
+            header_component['text'] = header.get('text', '')
+            if header.get('example'):
+                header_component['example'] = {'header_text': [header['example']]}
+        elif header['format'] in ('IMAGE', 'VIDEO', 'DOCUMENT'):
+            if not header.get('handle'):
+                raise ValidationError('cabeçalho de mídia exige o upload do arquivo de exemplo')
+            header_component['example'] = {'header_handle': [header['handle']]}
+        components.append(header_component)
+
+    body: dict = {'type': 'BODY', 'text': body_text}
+    if body_examples:
+        body['example'] = {'body_text': [body_examples]}
+    components.append(body)
+
+    if footer_text:
+        components.append({'type': 'FOOTER', 'text': footer_text})
+
+    if buttons:
+        button_components = []
+        for btn in buttons:
+            button: dict = {'type': btn['type'], 'text': btn['text']}
+            if btn['type'] == 'URL':
+                if not btn.get('url'):
+                    raise ValidationError('botão URL exige url')
+                button['url'] = btn['url']
+            elif btn['type'] == 'PHONE_NUMBER':
+                if not btn.get('phone_number'):
+                    raise ValidationError('botão de telefone exige phone_number')
+                button['phone_number'] = btn['phone_number']
+            button_components.append(button)
+        components.append({'type': 'BUTTONS', 'buttons': button_components})
+
+    return components
+
+
+def upload_template_media(company: Company, account_id: int, file: UploadedFile) -> dict:
+    account = get_account(company, account_id)
+    content = file.read()
+    mime = file.content_type or ''
+    if mime in MEDIA_SPECS['image'][0]:
+        max_size = MEDIA_SPECS['image'][1]
+    elif mime in MEDIA_SPECS['video'][0]:
+        max_size = MEDIA_SPECS['video'][1]
+    elif mime == 'application/pdf':
+        max_size = MEDIA_SPECS['document'][1]
+    else:
+        raise ValidationError('cabeçalho aceita imagem (jpeg/png), vídeo (mp4/3gpp) ou PDF')
+    if len(content) > max_size:
+        raise ValidationError('arquivo excede o tamanho máximo permitido')
+    handle = whatsapp.upload_sample_media(account, content, mime, file.name or 'arquivo')
+    media_id = whatsapp.upload_media(account, content, mime, file.name or 'arquivo')
+    return {'handle': handle, 'media_id': media_id}
+
+
+def create_template(company: Company, account_id: int, data: dict) -> dict:
+    if not TEMPLATE_NAME_RE.match(data['name']):
+        raise ValidationError('nome deve conter só letras minúsculas, números e underscore')
+    account = get_account(company, account_id)
+    payload = {'name': data['name'], 'language': data['language'], 'category': data['category'], 'components': build_components(data)}
+    result = whatsapp.create_template(account, payload)
+    _save_header_media(account, data['name'], data['language'], data.get('header'))
+    return result
+
+
+def edit_template(company: Company, account_id: int, template_id: str, data: dict) -> dict:
+    account = get_account(company, account_id)
+    result = whatsapp.edit_template(account, template_id, build_components(data), data.get('category'))
+    _save_header_media(account, data['name'], data['language'], data.get('header'))
+    return result
+
+
+def delete_template(company: Company, account_id: int, name: str, template_id: str | None = None) -> None:
+    account = get_account(company, account_id)
+    whatsapp.delete_template(account, name, template_id)
+
+
+def get_template_detail(company: Company, account_id: int, template_id: str) -> dict:
+    account = get_account(company, account_id)
+    for template in whatsapp.list_templates(account):
+        if template.get('id') == template_id:
+            return _map_template_detail(account, template)
+    raise NotFound('template not found')
 
 
 # * ----- Campaigns ------
@@ -306,14 +491,21 @@ def create_campaign(
     body_params: list[str],
     contact_ids: list[int] | None = None,
     numbers: list[dict] | None = None,
+    header_media_id: str = '',
 ) -> Campaign:
     from apps.chats.tasks import run_campaign
 
     account = get_account(company, account_id)
-    body = get_template_body(account, template_name, template_language)
+    body, header_format = get_template_send_info(account, template_name, template_language)
     param_count = max((int(p) for p in TEMPLATE_PARAM_RE.findall(body)), default=0)
     if len(body_params) != param_count:
         raise ValidationError(f'template expects {param_count} params, got {len(body_params)}')
+    if header_format in ('IMAGE', 'VIDEO', 'DOCUMENT') and not header_media_id:
+        header_media_id = _get_saved_header_media(account, template_name, template_language)
+    if header_format in ('IMAGE', 'VIDEO', 'DOCUMENT') and not header_media_id:
+        raise ValidationError('esse template exige um arquivo no cabeçalho, envie antes de criar a campanha')
+
+    header_media_type = header_format.lower() if header_media_id else ''
 
     if contact_ids is None and not numbers:
         recipients = list(Contact.objects.filter(account=account))
@@ -330,6 +522,8 @@ def create_campaign(
         template_name=template_name,
         template_language=template_language,
         body_params=body_params,
+        header_media_id=header_media_id,
+        header_media_type=header_media_type,
         total=len(recipients),
     )
     run_campaign.delay(campaign.pk, [c.pk for c in recipients])
@@ -386,8 +580,11 @@ def record_incoming_message(
     return message, created
 
 
-def update_message_status(wa_message_id: str, status: str) -> None:
-    Message.objects.filter(wa_message_id=wa_message_id).update(status=status)
+def update_message_status(wa_message_id: str, status: str, error_detail: str = '') -> None:
+    data = {'status': status}
+    if error_detail:
+        data['error_detail'] = error_detail
+    Message.objects.filter(wa_message_id=wa_message_id).update(**data)
 
 
 def record_outgoing_message(

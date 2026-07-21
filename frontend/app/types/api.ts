@@ -35,6 +35,7 @@ export interface WhatsAppAccount {
   phone_number_id: string
   waba_id: string
   verify_token: string
+  app_id: string
 }
 
 export interface Contact {
@@ -74,12 +75,74 @@ export interface Paginated<T> {
 }
 
 export interface Template {
+  id: string
   name: string
   language: string
   status: string
   category: string
+  header_format: string
+  has_header_media: boolean
   body_text: string
   param_count: number
+}
+
+export interface MediaUpload {
+  media_id: string
+}
+
+export type TemplateCategory = 'MARKETING' | 'UTILITY'
+export type TemplateHeaderFormat = 'NONE' | 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT'
+export type TemplateButtonType = 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER'
+
+export interface TemplateHeader {
+  format: TemplateHeaderFormat
+  text: string
+  example: string
+  handle: string
+  media_id: string
+}
+
+export interface TemplateMediaHandle {
+  handle: string
+  media_id: string
+}
+
+export interface TemplateButton {
+  type: TemplateButtonType
+  text: string
+  url: string
+  phone_number: string
+}
+
+export interface TemplateDetail {
+  id: string
+  name: string
+  language: string
+  category: string
+  status: string
+  header: TemplateHeader | null
+  has_header_media: boolean
+  body_text: string
+  body_examples: string[]
+  footer_text: string
+  buttons: TemplateButton[]
+}
+
+export interface TemplateInput {
+  name: string
+  language: string
+  category: TemplateCategory
+  header: TemplateHeader | null
+  body_text: string
+  body_examples: string[]
+  footer_text: string
+  buttons: TemplateButton[]
+}
+
+export interface TemplateCreated {
+  id: string
+  status: string
+  category: string
 }
 
 export interface Campaign {

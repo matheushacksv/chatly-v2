@@ -61,6 +61,8 @@ def receive_webhook_endpoint(request):
             process_incoming_message.apply_async(args=(record.pk,), countdown=account.agent.response_delay)
 
     for status_event in value.get('statuses', []):
-        services.update_message_status(status_event['id'], status_event['status'])
+        errors = status_event.get('errors', [])
+        error_detail = errors[0].get('title', '') if errors else ''
+        services.update_message_status(status_event['id'], status_event['status'], error_detail)
 
     return HttpResponse(status=200)

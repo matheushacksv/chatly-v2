@@ -3,7 +3,7 @@ from ninja import File, Form, Router, Status, UploadedFile
 from ninja.pagination import paginate
 
 from apps.chats import services
-from apps.chats.schemas import ManualMessageDTO, MessageOutDTO, SendStickerDTO, SendTemplateDTO
+from apps.chats.schemas import ManualMessageDTO, MediaUploadDTO, MessageOutDTO, SendStickerDTO, SendTemplateDTO
 from apps.companies import services as companies_services
 
 router = Router(tags=['Messages'])
@@ -42,7 +42,15 @@ def send_sticker_endpoint(request, company_id: int, contact_id: int, payload: Se
     company = companies_services.get_company(request.auth, company_id)
     return Status(201, services.send_saved_sticker(company, contact_id, payload.sticker_id))
 
+
 @router.post('/{company_id}/contacts/{contact_id}/messages/template', response={201: MessageOutDTO})
 def send_template_endpoint(request, company_id: int, contact_id: int, payload: SendTemplateDTO):
     company = companies_services.get_company(request.auth, company_id)
-    return Status(201, services.send_template_message(company, contact_id, payload.template_name, payload.language, payload.params))
+    return Status(201, services.send_template_message(company, contact_id, payload.template_name, payload.language, payload.params, payload.header_media_id))
+
+
+@router.post('/{company_id}/accounts/{account_id}/media', response={201: MediaUploadDTO})
+def upload_account_media_endpoint(request, company_id: int, account_id: int, file: File[UploadedFile]):
+    company = companies_services.get_company(request.auth, company_id)
+    media_id = services.upload_account_media(company, account_id, file)
+    return Status(201, {'media_id': media_id})

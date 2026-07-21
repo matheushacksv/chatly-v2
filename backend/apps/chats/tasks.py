@@ -7,9 +7,10 @@ from django.db.models import F
 from apps import ai
 from apps.chats import events, services, whatsapp
 from apps.chats.models import Campaign, Contact, Message
-from core.exceptions import ValidationError
-from apps.crm import pipedrive, services as crm_services
+from apps.crm import pipedrive
+from apps.crm import services as crm_services
 from apps.crm.models import PipedriveAccount
+from core.exceptions import ValidationError
 
 
 @shared_task(bind=True, max_retries=3)
@@ -56,7 +57,7 @@ def process_incoming_message(self, message_id: int):
 
             def anotar_crm(anotacao: str) -> str:
                 """Salva uma anotação sobre este cliente no CRM. Use para registrar fatos importantes para a equipe de vendas:
-                    orçamento, objeções, quem decide e etc"""
+                orçamento, objeções, quem decide e etc"""
                 try:
                     person_id = crm_services.find_or_create_person(pd, contact)
                     pipedrive.create_note(pd.api_key, anotacao, person_id=person_id)
@@ -66,9 +67,7 @@ def process_incoming_message(self, message_id: int):
 
             tools += [criar_negocio, anotar_crm]
 
-        reply = ai.generate_reply(
-            account.agent, history, message.content, image=image, mime_type=mime_type, memory=contact.memory, tools=tools
-        )
+        reply = ai.generate_reply(account.agent, history, message.content, image=image, mime_type=mime_type, memory=contact.memory, tools=tools)
         parts = [p.strip() for p in reply.split('\n\n') if p.strip()] if account.agent.split_messages else [reply]
         wamids = []
         for i, part in enumerate(parts):
@@ -101,14 +100,22 @@ def run_campaign(campaign_id: int, contact_ids: list[int]):
     if campaign is None:
         return
     try:
-        body = services.get_template_body(campaign.account, campaign.template_name, campaign.template_language)
+        body, _ = services.get_template_send_info(campaign.account, campaign.template_name, campaign.template_language)
     except (ValidationError, httpx.HTTPStatusError):
         Campaign.objects.filter(pk=campaign_id).update(status='failed')
         return
     for contact in Contact.objects.filter(pk__in=contact_ids):
         params = services.resolve_params(campaign.body_params, contact)
         try:
-            wamid = whatsapp.send_template(campaign.account, contact.wa_id, campaign.template_name, campaign.template_language, params)
+            wamid = whatsapp.send_template(
+                campaign.account,
+                contact.wa_id,
+                campaign.template_name,
+                campaign.template_language,
+                params,
+                campaign.header_media_id,
+                campaign.header_media_type,
+            )
         except httpx.HTTPStatusError:
             Campaign.objects.filter(pk=campaign_id).update(failed=F('failed') + 1)
             continue

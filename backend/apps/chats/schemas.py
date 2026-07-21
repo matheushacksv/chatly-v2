@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from ninja import ModelSchema, Schema
 from pydantic import Field
@@ -13,12 +14,13 @@ class WhatsAppAccountInDTO(Schema):
     access_token: str
     app_secret: str
     verify_token: str
+    app_id: str = ''
 
 
 class WhatsAppAccountOutDTO(ModelSchema):
     class Meta:
         model = WhatsAppAccount
-        fields = ['id', 'agent', 'phone_number_id', 'waba_id', 'verify_token']
+        fields = ['id', 'agent', 'phone_number_id', 'waba_id', 'verify_token', 'app_id']
 
 
 class WhatsAppAccountPatchDTO(Schema):
@@ -27,6 +29,7 @@ class WhatsAppAccountPatchDTO(Schema):
     access_token: str | None = None
     app_secret: str | None = None
     verify_token: str | None = None
+    app_id: str | None = None
 
 
 class ContactOutDTO(ModelSchema):
@@ -58,7 +61,7 @@ class MessageOutDTO(ModelSchema):
 
     class Meta:
         model = Message
-        fields = ['id', 'contact', 'direction', 'content', 'message_type', 'wa_message_id', 'from_human', 'status', 'created_at']
+        fields = ['id', 'contact', 'direction', 'content', 'message_type', 'wa_message_id', 'from_human', 'status', 'error_detail', 'created_at']
 
     @staticmethod
     def resolve_media_url(obj):
@@ -92,18 +95,26 @@ class SendStickerDTO(Schema):
 
 
 class TemplateOutDTO(Schema):
+    id: str
     name: str
     language: str
     status: str
     category: str
+    header_format: str
+    has_header_media: bool
     body_text: str
     param_count: int
+
+
+class MediaUploadDTO(Schema):
+    media_id: str
 
 
 class SendTemplateDTO(Schema):
     template_name: str
     language: str
     params: list[str] = []
+    header_media_id: str = ''
 
 
 class CampaignRecipientDTO(Schema):
@@ -128,6 +139,7 @@ class CampaignInDTO(Schema):
     body_params: list[str] = []
     contact_ids: list[int] | None = None
     numbers: list[CampaignRecipientDTO] = []
+    header_media_id: str = ''
 
 
 class CampaignOutDTO(ModelSchema):
@@ -137,3 +149,58 @@ class CampaignOutDTO(ModelSchema):
     class Meta:
         model = Campaign
         fields = ['id', 'name', 'template_name', 'template_language', 'status', 'total', 'sent', 'failed', 'created_at']
+
+
+class HeaderDTO(Schema):
+    format: Literal['NONE', 'TEXT', 'IMAGE', 'VIDEO', 'DOCUMENT'] = 'NONE'
+    text: str = ''
+    example: str = ''
+    handle: str = ''
+    media_id: str = ''
+
+
+class TemplateMediaDTO(Schema):
+    handle: str
+    media_id: str
+
+
+class ButtonDTO(Schema):
+    type: Literal['QUICK_REPLY', 'URL', 'PHONE_NUMBER']
+    text: str
+    url: str = ''
+    phone_number: str = ''
+
+
+class TemplateInDTO(Schema):
+    name: str
+    language: str
+    category: Literal['MARKETING', 'UTILITY']
+    header: HeaderDTO | None = None
+    body_text: str
+    body_examples: list[str] = []
+    footer_text: str = ''
+    buttons: list[ButtonDTO] = []
+
+
+class TemplateCreatedDTO(Schema):
+    id: str
+    status: str
+    category: str
+
+
+class TemplateEditedDTO(Schema):
+    success: bool
+
+
+class TemplateDetailDTO(Schema):
+    id: str
+    name: str
+    language: str
+    category: str
+    status: str
+    header: HeaderDTO | None = None
+    has_header_media: bool
+    body_text: str
+    body_examples: list[str] = []
+    footer_text: str = ''
+    buttons: list[ButtonDTO] = []
