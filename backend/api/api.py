@@ -12,6 +12,7 @@ from api.endpoints.documents import router as documents_router
 from api.endpoints.events import router as events_router
 from api.endpoints.messages import router as messages_router
 from api.endpoints.stickers import router as stickers_router
+from api.endpoints.templates import router as templates_router
 from api.endpoints.webhook import router as webhooks_router
 from api.endpoints.whatsapp_accounts import router as whatsapp_accounts_router
 from core.exceptions import DomainError
@@ -37,3 +38,4 @@ api.add_router('/companies', events_router)
 api.add_router('/companies', stickers_router)
 api.add_router('/companies', campaigns_router)
 api.add_router('/companies', crm_router)
+api.add_router('/companies', templates_router)

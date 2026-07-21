@@ -300,10 +300,22 @@ const windowClosed = computed(() =>
 const templateModalOpen = ref(false)
 const chosenTemplate = ref<Template | null>(null)
 const templateParams = ref<string[]>([])
+const templateHeaderMediaId = ref('')
 
-const canSendTemplate = computed(() =>
-  Boolean(chosenTemplate.value && templateParams.value.every(p => p.trim()))
-)
+const templateMissingReasons = computed(() => {
+  if (!chosenTemplate.value) return []
+  const reasons: string[] = []
+  if (!templateParams.value.every(p => p.trim())) reasons.push('preencha todas as variáveis do corpo')
+  if (
+    ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(chosenTemplate.value.header_format)
+    && !chosenTemplate.value.has_header_media
+    && !templateHeaderMediaId.value
+  ) {
+    reasons.push('envie o arquivo do cabeçalho')
+  }
+  return reasons
+})
+const canSendTemplate = computed(() => Boolean(chosenTemplate.value) && templateMissingReasons.value.length === 0)
 
 async function sendTemplate() {
   if (!canSendTemplate.value || !chosenTemplate.value || !selected.value || sending.value) return
@@ -316,7 +328,8 @@ async function sendTemplate() {
         body: {
           template_name: chosenTemplate.value.name,
           language: chosenTemplate.value.language,
-          params: templateParams.value
+          params: templateParams.value,
+          header_media_id: templateHeaderMediaId.value
         }
       }
     )
@@ -772,9 +785,13 @@ const accountItems = computed(() =>
                 v-if="accountId"
                 v-model:template="chosenTemplate"
                 v-model:params="templateParams"
+                v-model:header-media-id="templateHeaderMediaId"
                 :company-id="companyId ?? 0"
                 :account-id="accountId"
               />
+              <p v-if="templateMissingReasons.length" class="text-xs text-warning">
+                Falta: {{ templateMissingReasons.join(', ') }}
+              </p>
               <UButton
                 block
                 icon="i-lucide-send"

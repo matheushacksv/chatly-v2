@@ -1,8 +1,20 @@
 import httpx
 
 from apps.chats.models import WhatsAppAccount
+from core.exceptions import ValidationError
 
 GRAPH_URL = 'https://graph.facebook.com/v25.0'
+
+def _graph_error(response: httpx.Response) -> None:
+    """Levanta ValidationError com a mensagem real da Meta"""
+    if response.is_success:
+        return
+    try:
+        error = response.json()['error']
+        message = error.get('error_user_msg') or error.get('message') or 'erro no WhatsApp'
+    except Exception:
+        message = 'erro no WhatsApp'
+    raise ValidationError(message)
 
 
 def send_text(account: WhatsAppAccount, wa_id: str, text: str) -> str:
@@ -69,17 +81,25 @@ def list_templates(account: WhatsAppAccount) -> list[dict]:
     response = httpx.get(
         f'{GRAPH_URL}/{account.waba_id}/message_templates',
         headers={'Authorization': f'Bearer {account.access_token}'},
-        params={'fields': 'name,status,language,category,components', 'limit': 100},
+        params={'fields': 'id,name,status,language,category,components', 'limit': 100},
         timeout=10,
     )
     response.raise_for_status()
     return response.json()['data']
 
 
-def send_template(account: WhatsAppAccount, wa_id: str, name: str, language: str, body_params: list[str]) -> str:
+def send_template(account: WhatsAppAccount, wa_id: str, name: str, language: str, body_params: list[str], header_media_id: str = '', header_media_type: str = '') -> str:
     template: dict = {'name': name, 'language': {'code': language}}
+    components = []
+    if header_media_id and header_media_type:
+        components.append({
+            'type': 'header',
+            'parameters': [{'type': header_media_type, header_media_type: {'id': header_media_id}}]
+        })
     if body_params:
-        template['components'] = [{'type': 'body', 'parameters': [{'type': 'text', 'text': p} for p in body_params]}]
+        components.append({'type': 'body', 'parameters': [{'type': 'text', 'text': p} for p in body_params]})
+    if components:
+        template['components'] = components
 
     response = httpx.post(
         f'{GRAPH_URL}/{account.phone_number_id}/messages',
@@ -89,3 +109,59 @@ def send_template(account: WhatsAppAccount, wa_id: str, name: str, language: str
     )
     response.raise_for_status()
     return response.json()['messages'][0]['id']
+
+def create_template(account: WhatsAppAccount, payload: dict) -> dict:
+    response = httpx.post(
+        f'{GRAPH_URL}/{account.waba_id}/message_templates',
+        headers={'Authorization': f'Bearer {account.access_token}'},
+        json=payload,
+        timeout=10,
+    )
+    _graph_error(response)
+    return response.json()
+
+def edit_template(account: WhatsAppAccount, template_id: str, components: list, category: str | None = None) -> dict:
+    payload: dict = {'components': components}
+    if category:
+        payload['category'] = category
+    response = httpx.post(
+        f'{GRAPH_URL}/{template_id}',
+        headers={'Authorization': f'Bearer {account.access_token}'},
+        json=payload,
+        timeout=10,
+    )
+    _graph_error(response)
+    return response.json()
+
+def delete_template(account: WhatsAppAccount, name: str, template_id: str | None = None) -> None:
+    params: dict = {'name': name}
+    if template_id:
+        params['hsm_id'] = template_id
+    response = httpx.delete(
+        f'{GRAPH_URL}/{account.waba_id}/message_templates',
+        headers={'Authorization': f'Bearer {account.access_token}'},
+        params=params,
+    )
+    _graph_error(response)
+
+def upload_sample_media(account: WhatsAppAccount, content: bytes, mime: str, filename: str) -> str:
+    if not account.app_id:
+        raise ValidationError('conta sem app_id configurado. necessário para cabeçalho de mídia')
+
+    session_response = httpx.post(
+        f'{GRAPH_URL}/{account.app_id}/uploads',
+        headers={'Authorization': f'Bearer {account.access_token}'},
+        params={'file_length': len(content), 'file_type': mime, 'file_name': filename},
+        timeout=10,
+    )
+    _graph_error(session_response)
+    session_id = session_response.json()['id']
+
+    upload_response = httpx.post(
+        f'{GRAPH_URL}/{session_id}',
+        headers={'Authorization': f'OAuth {account.access_token}', 'file_offset': '0'},
+        content=content,
+        timeout=30,
+    )
+    _graph_error(upload_response)
+    return upload_response.json()['h']

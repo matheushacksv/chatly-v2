@@ -94,12 +94,13 @@ const accountState = reactive({
   waba_id: '',
   access_token: '',
   app_secret: '',
-  verify_token: ''
+  verify_token: '',
+  app_id: ''
 })
 
 function openAccountCreate() {
   editingAccount.value = null
-  Object.assign(accountState, { agent_id: null, phone_number_id: '', waba_id: '', access_token: '', app_secret: '', verify_token: '' })
+  Object.assign(accountState, { agent_id: null, phone_number_id: '', waba_id: '', access_token: '', app_secret: '', verify_token: '', app_id: '' })
   accountOpen.value = true
 }
 
@@ -111,7 +112,8 @@ function openAccountEdit(account: WhatsAppAccount) {
     waba_id: account.waba_id,
     access_token: '', // write-only: vazio = manter
     app_secret: '',
-    verify_token: account.verify_token
+    verify_token: account.verify_token,
+    app_id: account.app_id
   })
   accountOpen.value = true
 }
@@ -123,7 +125,8 @@ async function saveAccount() {
       const body: Record<string, unknown> = {
         agent_id: accountState.agent_id,
         waba_id: accountState.waba_id,
-        verify_token: accountState.verify_token
+        verify_token: accountState.verify_token,
+        app_id: accountState.app_id
       }
       if (accountState.access_token.trim()) body.access_token = accountState.access_token.trim()
       if (accountState.app_secret.trim()) body.app_secret = accountState.app_secret.trim()
@@ -591,6 +594,10 @@ async function disconnectPipedrive() {
 
         <UFormField label="WABA ID" required>
           <UInput v-model="accountState.waba_id" class="w-full font-mono" />
+        </UFormField>
+
+        <UFormField label="App ID" help="ID do app da Meta - só necessário pra cabeçalho de imagem/vídeo/PDF em templates">
+          <UInput v-model="accountState.app_id" class="w-full font-mono" />
         </UFormField>
 
         <UFormField label="Access Token" :required="!editingAccount" :help="editingAccount ? 'Vazio = manter o atual' : 'Token permanente do System User'">

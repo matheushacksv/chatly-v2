@@ -13,7 +13,14 @@ def create_account_endpoint(request, company_id: int, payload: WhatsAppAccountIn
     return Status(
         201,
         services.create_account(
-            company, payload.agent_id, payload.phone_number_id, payload.waba_id, payload.access_token, payload.app_secret, payload.verify_token
+            company,
+            payload.agent_id,
+            payload.phone_number_id,
+            payload.waba_id,
+            payload.access_token,
+            payload.app_secret,
+            payload.verify_token,
+            payload.app_id,
         ),
     )
 

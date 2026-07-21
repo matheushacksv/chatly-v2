@@ -21,10 +21,10 @@ from django.core.files.base import ContentFile
 
 from apps.accounts.models import User
 from apps.agents.models import Agent, Credential, Document, DocumentChunk
-from apps.chats.models import Campaign, Contact, Message, Sticker, WhatsAppAccount
-from apps.companies.models import Company
+from apps.chats.models import Campaign, Contact, Message, Sticker, TemplateHeaderMedia, WhatsAppAccount
+from apps.companies.models import Company, Membership
 from apps.crm.models import PipedriveAccount
-from core.exceptions import PipedriveError
+from core.exceptions import NotFound, PipedriveError, ValidationError
 from apps.testing import auth_header
 
 # storage default é MinIO - em teste troca por filesystem local num tempdir,
@@ -117,6 +117,29 @@ class WhatsAppAccountTests(BaseChatsTestCase):
         return payload
 
     # create
+
+    def test_create_account_with_app_id(self):
+        response = self.client.post(
+            self.url(self.company.pk),
+            data=self.account_payload(app_id='app-123'),
+            content_type='application/json',
+            headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 201, response.json())
+        self.assertEqual(response.json()['app_id'], 'app-123')
+        account = WhatsAppAccount.objects.get(phone_number_id='333333')
+        self.assertEqual(account.app_id, 'app-123')
+
+    def test_update_account_app_id(self):
+        response = self.client.patch(
+            self.url(self.company.pk, self.account.pk),
+            data={'app_id': 'app-novo'},
+            content_type='application/json',
+            headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 200, response.json())
+        self.account.refresh_from_db()
+        self.assertEqual(self.account.app_id, 'app-novo')
 
     def test_create_account(self):
         response = self.client.post(
@@ -1993,6 +2016,7 @@ class UpdateContactMemoryTests(BaseChatsTestCase):
 # payload no formato real do GET /{waba_id}/message_templates da Meta
 TEMPLATES_FIXTURE = [
     {
+        'id': 'tpl-oferta',
         'name': 'oferta',
         'status': 'APPROVED',
         'language': 'pt_BR',
@@ -2004,6 +2028,7 @@ TEMPLATES_FIXTURE = [
         ],
     },
     {
+        'id': 'tpl-janela',
         'name': 'janela',
         'status': 'APPROVED',
         'language': 'pt_BR',
@@ -2011,11 +2036,23 @@ TEMPLATES_FIXTURE = [
         'components': [{'type': 'BODY', 'text': 'Podemos continuar seu atendimento?'}],
     },
     {
+        'id': 'tpl-pendente',
         'name': 'pendente',
         'status': 'PENDING',
         'language': 'pt_BR',
         'category': 'MARKETING',
         'components': [{'type': 'BODY', 'text': 'Aguardando {{1}}.'}],
+    },
+    {
+        'id': 'tpl-promo-imagem',
+        'name': 'promo_imagem',
+        'status': 'APPROVED',
+        'language': 'pt_BR',
+        'category': 'MARKETING',
+        'components': [
+            {'type': 'HEADER', 'format': 'IMAGE'},
+            {'type': 'BODY', 'text': 'Confira nossa promoção!'},
+        ],
     },
 ]
 
@@ -2026,8 +2063,8 @@ class TemplateTests(BaseChatsTestCase):
     def list_url(self, company_id: int, account_id: int) -> str:
         return f'/api/companies/{company_id}/accounts/{account_id}/templates'
 
-    def post_template(self, contact_id: int, template_name: str = 'oferta', params: list | None = None):
-        payload = {'template_name': template_name, 'language': 'pt_BR', 'params': params or []}
+    def post_template(self, contact_id: int, template_name: str = 'oferta', params: list | None = None, header_media_id: str = ''):
+        payload = {'template_name': template_name, 'language': 'pt_BR', 'params': params or [], 'header_media_id': header_media_id}
         return self.client.post(
             f'/api/companies/{self.company.pk}/contacts/{contact_id}/messages/template',
             data=json.dumps(payload), content_type='application/json', headers=self.auth,
@@ -2042,15 +2079,33 @@ class TemplateTests(BaseChatsTestCase):
         self.assertEqual(response.status_code, 200, response.json())
         mock_list.assert_called_once_with(self.account)
         body = response.json()
-        self.assertEqual(len(body), 3)
+        self.assertEqual(len(body), 4)
         oferta = body[0]
+        self.assertEqual(oferta['id'], 'tpl-oferta')
         self.assertEqual(oferta['name'], 'oferta')
         self.assertEqual(oferta['status'], 'APPROVED')
         # body_text vem só do component BODY (header/footer ficam de fora)
         self.assertEqual(oferta['body_text'], 'Oi {{1}}, temos {{2}} pra você.')
         self.assertEqual(oferta['param_count'], 2)
+        self.assertEqual(oferta['header_format'], 'TEXT')
         self.assertEqual(body[1]['param_count'], 0)
+        self.assertEqual(body[1]['header_format'], 'NONE')
         self.assertEqual(body[2]['status'], 'PENDING')
+        self.assertEqual(body[3]['header_format'], 'IMAGE')
+        self.assertFalse(body[3]['has_header_media'])
+
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_list_templates_reports_saved_media(self, mock_list):
+        mock_list.return_value = TEMPLATES_FIXTURE
+        TemplateHeaderMedia.objects.create(
+            account=self.account, template_name='promo_imagem', template_language='pt_BR', media_id='media-abc', media_type='image'
+        )
+
+        response = self.client.get(self.list_url(self.company.pk, self.account.pk), headers=self.auth)
+
+        body = response.json()
+        promo = next(t for t in body if t['name'] == 'promo_imagem')
+        self.assertTrue(promo['has_header_media'])
 
     @patch('apps.chats.whatsapp.list_templates')
     def test_list_templates_of_foreign_account_returns_404(self, mock_list):
@@ -2067,7 +2122,7 @@ class TemplateTests(BaseChatsTestCase):
         response = self.post_template(self.contact.pk, params=['{{nome}}', '10% off'])
 
         self.assertEqual(response.status_code, 201, response.json())
-        mock_send.assert_called_once_with(self.account, '5511999999999', 'oferta', 'pt_BR', ['Cliente A', '10% off'])
+        mock_send.assert_called_once_with(self.account, '5511999999999', 'oferta', 'pt_BR', ['Cliente A', '10% off'], '', '')
         message = Message.objects.get(wa_message_id='wamid.tpl')
         # content persiste o body renderizado: history da IA e preview da lista ficam legíveis
         self.assertEqual(message.content, 'Oi Cliente A, temos 10% off pra você.')
@@ -2096,7 +2151,7 @@ class TemplateTests(BaseChatsTestCase):
         response = self.post_template(self.contact.pk, template_name='janela')
 
         self.assertEqual(response.status_code, 201, response.json())
-        mock_send.assert_called_once_with(self.account, '5511999999999', 'janela', 'pt_BR', [])
+        mock_send.assert_called_once_with(self.account, '5511999999999', 'janela', 'pt_BR', [], '', '')
         self.assertEqual(Message.objects.get(wa_message_id='wamid.tpl2').content, 'Podemos continuar seu atendimento?')
 
     @patch('apps.chats.whatsapp.send_template')
@@ -2134,6 +2189,46 @@ class TemplateTests(BaseChatsTestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(Message.objects.filter(direction='out').count(), out_count)
+
+    @patch('apps.chats.whatsapp.send_template')
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_send_template_with_image_header_requires_media(self, mock_list, mock_send):
+        mock_list.return_value = TEMPLATES_FIXTURE
+
+        response = self.post_template(self.contact.pk, template_name='promo_imagem')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('cabeçalho', response.json()['detail'])
+        mock_send.assert_not_called()
+
+    @patch('apps.chats.whatsapp.send_template')
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_send_template_with_image_header_and_media_id_succeeds(self, mock_list, mock_send):
+        mock_list.return_value = TEMPLATES_FIXTURE
+        mock_send.return_value = 'wamid.img'
+
+        response = self.post_template(self.contact.pk, template_name='promo_imagem', header_media_id='media-abc')
+
+        self.assertEqual(response.status_code, 201, response.json())
+        mock_send.assert_called_once_with(
+            self.account, '5511999999999', 'promo_imagem', 'pt_BR', [], 'media-abc', 'image'
+        )
+
+    @patch('apps.chats.whatsapp.send_template')
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_send_template_with_image_header_uses_saved_media_when_not_provided(self, mock_list, mock_send):
+        mock_list.return_value = TEMPLATES_FIXTURE
+        mock_send.return_value = 'wamid.img'
+        TemplateHeaderMedia.objects.create(
+            account=self.account, template_name='promo_imagem', template_language='pt_BR', media_id='media-salva', media_type='image'
+        )
+
+        response = self.post_template(self.contact.pk, template_name='promo_imagem')
+
+        self.assertEqual(response.status_code, 201, response.json())
+        mock_send.assert_called_once_with(
+            self.account, '5511999999999', 'promo_imagem', 'pt_BR', [], 'media-salva', 'image'
+        )
 
     def test_list_contacts_exposes_last_inbound_at(self):
         # front usa pra detectar janela de 24h fechada; só msgs direction='in' contam
@@ -2283,6 +2378,46 @@ class CampaignTests(BaseChatsTestCase):
         response = self.client.get(self.url(self.company.pk, campaign.pk), headers=self.auth)
         self.assertEqual(response.status_code, 404)
 
+    @patch('apps.chats.tasks.run_campaign.delay')
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_create_campaign_with_image_header_requires_media(self, mock_list, mock_delay):
+        mock_list.return_value = TEMPLATES_FIXTURE
+
+        response = self.post_campaign(self.company.pk, template_name='promo_imagem', body_params=[])
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('cabeçalho', response.json()['detail'])
+        mock_delay.assert_not_called()
+
+    @patch('apps.chats.tasks.run_campaign.delay')
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_create_campaign_with_image_header_and_media_id_saves_it(self, mock_list, mock_delay):
+        mock_list.return_value = TEMPLATES_FIXTURE
+
+        response = self.post_campaign(
+            self.company.pk, template_name='promo_imagem', body_params=[], header_media_id='media-abc'
+        )
+
+        self.assertEqual(response.status_code, 201, response.json())
+        campaign = Campaign.objects.get(name='Promo de julho')
+        self.assertEqual(campaign.header_media_id, 'media-abc')
+        self.assertEqual(campaign.header_media_type, 'image')
+
+    @patch('apps.chats.tasks.run_campaign.delay')
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_create_campaign_with_image_header_uses_saved_media_when_not_provided(self, mock_list, mock_delay):
+        mock_list.return_value = TEMPLATES_FIXTURE
+        TemplateHeaderMedia.objects.create(
+            account=self.account, template_name='promo_imagem', template_language='pt_BR', media_id='media-salva', media_type='image'
+        )
+
+        response = self.post_campaign(self.company.pk, template_name='promo_imagem', body_params=[])
+
+        self.assertEqual(response.status_code, 201, response.json())
+        campaign = Campaign.objects.get(name='Promo de julho')
+        self.assertEqual(campaign.header_media_id, 'media-salva')
+        self.assertEqual(campaign.header_media_type, 'image')
+
 
 class RunCampaignTests(BaseChatsTestCase):
     """Task de disparo: contadores, render por contato e término com status certo."""
@@ -2313,13 +2448,27 @@ class RunCampaignTests(BaseChatsTestCase):
         self.assertEqual(self.campaign.failed, 1)
         self.assertEqual(self.campaign.status, 'done')
         # {{nome}} resolvido por contato em cada chamada
-        self.assertEqual(mock_send.call_args_list[0].args, (self.account, '5511999999999', 'oferta', 'pt_BR', ['Cliente A', '10% off']))
-        self.assertEqual(mock_send.call_args_list[1].args, (self.account, '5511666666666', 'oferta', 'pt_BR', ['Cliente B', '10% off']))
+        self.assertEqual(mock_send.call_args_list[0].args, (self.account, '5511999999999', 'oferta', 'pt_BR', ['Cliente A', '10% off'], '', ''))
+        self.assertEqual(mock_send.call_args_list[1].args, (self.account, '5511666666666', 'oferta', 'pt_BR', ['Cliente B', '10% off'], '', ''))
         message = Message.objects.get(wa_message_id='wamid.c1')
         self.assertEqual(message.campaign, self.campaign)
         self.assertEqual(message.content, 'Oi Cliente A, temos 10% off pra você.')
         self.assertTrue(message.from_human)
         self.assertFalse(Message.objects.filter(contact=self.contact_b, direction='out').exists())
+
+    @patch('apps.chats.whatsapp.send_template')
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_run_campaign_passes_header_media_to_every_send(self, mock_list, mock_send):
+        mock_list.return_value = TEMPLATES_FIXTURE
+        self.campaign.header_media_id = 'media-abc'
+        self.campaign.header_media_type = 'image'
+        self.campaign.save()
+        mock_send.side_effect = ['wamid.c1', 'wamid.c2']
+
+        tasks.run_campaign(self.campaign.pk, [self.contact.pk, self.contact_b.pk])
+
+        self.assertEqual(mock_send.call_args_list[0].args[-2:], ('media-abc', 'image'))
+        self.assertEqual(mock_send.call_args_list[1].args[-2:], ('media-abc', 'image'))
 
     @patch('apps.chats.whatsapp.send_template')
     @patch('apps.chats.whatsapp.list_templates')
@@ -2352,7 +2501,7 @@ class TemplateApiUnitTests(BaseChatsTestCase):
         args, kwargs = mock_get.call_args
         self.assertEqual(args[0], f'{whatsapp.GRAPH_URL}/waba-1/message_templates')
         self.assertEqual(kwargs['headers']['Authorization'], 'Bearer EAAG-meu-token-secreto')
-        self.assertEqual(kwargs['params'], {'fields': 'name,status,language,category,components', 'limit': 100})
+        self.assertEqual(kwargs['params'], {'fields': 'id,name,status,language,category,components', 'limit': 100})
 
     @patch('apps.chats.whatsapp.httpx.post')
     def test_send_template_with_body_params(self, mock_post):
@@ -2390,6 +2539,565 @@ class TemplateApiUnitTests(BaseChatsTestCase):
         )
         with self.assertRaises(httpx.HTTPStatusError):
             whatsapp.send_template(self.account, '5511999999999', 'oferta', 'pt_BR', [])
+
+    @patch('apps.chats.whatsapp.httpx.post')
+    def test_create_template_posts_payload_to_waba(self, mock_post):
+        mock_post.return_value.is_success = True
+        mock_post.return_value.json.return_value = {'id': 'tpl-1', 'status': 'PENDING', 'category': 'MARKETING'}
+        payload = {'name': 'boas_vindas', 'language': 'pt_BR', 'category': 'MARKETING', 'components': []}
+
+        result = whatsapp.create_template(self.account, payload)
+
+        self.assertEqual(result['id'], 'tpl-1')
+        args, kwargs = mock_post.call_args
+        self.assertEqual(args[0], f'{whatsapp.GRAPH_URL}/waba-1/message_templates')
+        self.assertEqual(kwargs['headers']['Authorization'], 'Bearer EAAG-meu-token-secreto')
+        self.assertEqual(kwargs['json'], payload)
+
+    @patch('apps.chats.whatsapp.httpx.post')
+    def test_create_template_raises_with_meta_message(self, mock_post):
+        mock_post.return_value.is_success = False
+        mock_post.return_value.json.return_value = {'error': {'error_user_msg': 'Nome de template duplicado'}}
+
+        with self.assertRaises(ValidationError) as ctx:
+            whatsapp.create_template(self.account, {'name': 'dup'})
+        self.assertEqual(ctx.exception.message, 'Nome de template duplicado')
+
+    @patch('apps.chats.whatsapp.httpx.post')
+    def test_create_template_falls_back_to_message_field(self, mock_post):
+        mock_post.return_value.is_success = False
+        mock_post.return_value.json.return_value = {'error': {'message': 'Invalid parameter'}}
+
+        with self.assertRaises(ValidationError) as ctx:
+            whatsapp.create_template(self.account, {})
+        self.assertEqual(ctx.exception.message, 'Invalid parameter')
+
+    @patch('apps.chats.whatsapp.httpx.post')
+    def test_create_template_error_without_json_body_uses_fallback_message(self, mock_post):
+        mock_post.return_value.is_success = False
+        mock_post.return_value.json.side_effect = ValueError('no json')
+
+        with self.assertRaises(ValidationError) as ctx:
+            whatsapp.create_template(self.account, {})
+        self.assertEqual(ctx.exception.message, 'erro no WhatsApp')
+
+    @patch('apps.chats.whatsapp.httpx.post')
+    def test_edit_template_posts_components_to_template_id(self, mock_post):
+        mock_post.return_value.is_success = True
+        mock_post.return_value.json.return_value = {'success': True}
+        components = [{'type': 'BODY', 'text': 'Olá {{1}}'}]
+
+        result = whatsapp.edit_template(self.account, 'tpl-1', components)
+
+        self.assertEqual(result, {'success': True})
+        args, kwargs = mock_post.call_args
+        self.assertEqual(args[0], f'{whatsapp.GRAPH_URL}/tpl-1')
+        self.assertEqual(kwargs['json'], {'components': components})
+
+    @patch('apps.chats.whatsapp.httpx.post')
+    def test_edit_template_includes_category_when_given(self, mock_post):
+        mock_post.return_value.is_success = True
+        mock_post.return_value.json.return_value = {'success': True}
+
+        whatsapp.edit_template(self.account, 'tpl-1', [], category='UTILITY')
+
+        self.assertEqual(mock_post.call_args.kwargs['json'], {'components': [], 'category': 'UTILITY'})
+
+    @patch('apps.chats.whatsapp.httpx.post')
+    def test_edit_template_raises_with_meta_message(self, mock_post):
+        mock_post.return_value.is_success = False
+        mock_post.return_value.json.return_value = {'error': {'error_user_msg': 'Template em análise, não pode editar'}}
+
+        with self.assertRaises(ValidationError) as ctx:
+            whatsapp.edit_template(self.account, 'tpl-1', [])
+        self.assertEqual(ctx.exception.message, 'Template em análise, não pode editar')
+
+    @patch('apps.chats.whatsapp.httpx.delete')
+    def test_delete_template_by_name_only_omits_hsm_id(self, mock_delete):
+        mock_delete.return_value.is_success = True
+        mock_delete.return_value.json.return_value = {'success': True}
+
+        whatsapp.delete_template(self.account, 'boas_vindas')
+
+        args, kwargs = mock_delete.call_args
+        self.assertEqual(args[0], f'{whatsapp.GRAPH_URL}/waba-1/message_templates')
+        self.assertEqual(kwargs['params'], {'name': 'boas_vindas'})
+
+    @patch('apps.chats.whatsapp.httpx.delete')
+    def test_delete_template_with_id_includes_hsm_id(self, mock_delete):
+        mock_delete.return_value.is_success = True
+        mock_delete.return_value.json.return_value = {'success': True}
+
+        whatsapp.delete_template(self.account, 'boas_vindas', template_id='tpl-1')
+
+        self.assertEqual(mock_delete.call_args.kwargs['params'], {'name': 'boas_vindas', 'hsm_id': 'tpl-1'})
+
+    @patch('apps.chats.whatsapp.httpx.delete')
+    def test_delete_template_raises_with_meta_message(self, mock_delete):
+        mock_delete.return_value.is_success = False
+        mock_delete.return_value.json.return_value = {'error': {'error_user_msg': 'Template não encontrado'}}
+
+        with self.assertRaises(ValidationError) as ctx:
+            whatsapp.delete_template(self.account, 'inexistente')
+        self.assertEqual(ctx.exception.message, 'Template não encontrado')
+
+
+class TemplateMediaUploadTests(BaseChatsTestCase):
+    """whatsapp.upload_sample_media: Resumable Upload API em 2 passos."""
+
+    def test_upload_without_app_id_raises(self):
+        with self.assertRaises(ValidationError) as ctx:
+            whatsapp.upload_sample_media(self.account, b'bytes', 'image/png', 'foto.png')
+        self.assertIn('app_id', ctx.exception.message)
+
+    @patch('apps.chats.whatsapp.httpx.post')
+    def test_upload_completes_two_step_flow(self, mock_post):
+        self.account.app_id = 'app-123'
+        self.account.save()
+        session_resp = MagicMock(is_success=True)
+        session_resp.json.return_value = {'id': 'upload:session-abc'}
+        upload_resp = MagicMock(is_success=True)
+        upload_resp.json.return_value = {'h': 'h:handle-xyz'}
+        mock_post.side_effect = [session_resp, upload_resp]
+
+        handle = whatsapp.upload_sample_media(self.account, b'conteudo', 'image/png', 'foto.png')
+
+        self.assertEqual(handle, 'h:handle-xyz')
+        first_call, second_call = mock_post.call_args_list
+        self.assertEqual(first_call.args[0], f'{whatsapp.GRAPH_URL}/app-123/uploads')
+        self.assertEqual(first_call.kwargs['headers']['Authorization'], 'Bearer EAAG-meu-token-secreto')
+        self.assertEqual(first_call.kwargs['params'], {'file_length': 8, 'file_type': 'image/png', 'file_name': 'foto.png'})
+        self.assertEqual(second_call.args[0], f'{whatsapp.GRAPH_URL}/upload:session-abc')
+        self.assertEqual(second_call.kwargs['headers']['Authorization'], 'OAuth EAAG-meu-token-secreto')
+        self.assertEqual(second_call.kwargs['content'], b'conteudo')
+
+    @patch('apps.chats.whatsapp.httpx.post')
+    def test_upload_session_error_raises_with_meta_message(self, mock_post):
+        self.account.app_id = 'app-123'
+        self.account.save()
+        session_resp = MagicMock(is_success=False)
+        session_resp.json.return_value = {'error': {'error_user_msg': 'App sem permissão de upload'}}
+        mock_post.return_value = session_resp
+
+        with self.assertRaises(ValidationError) as ctx:
+            whatsapp.upload_sample_media(self.account, b'x', 'image/png', 'foto.png')
+        self.assertEqual(ctx.exception.message, 'App sem permissão de upload')
+
+    @patch('apps.chats.whatsapp.httpx.post')
+    def test_upload_second_step_error_raises(self, mock_post):
+        self.account.app_id = 'app-123'
+        self.account.save()
+        session_resp = MagicMock(is_success=True)
+        session_resp.json.return_value = {'id': 'upload:session-abc'}
+        upload_resp = MagicMock(is_success=False)
+        upload_resp.json.return_value = {'error': {'error_user_msg': 'Upload expirado'}}
+        mock_post.side_effect = [session_resp, upload_resp]
+
+        with self.assertRaises(ValidationError) as ctx:
+            whatsapp.upload_sample_media(self.account, b'x', 'image/png', 'foto.png')
+        self.assertEqual(ctx.exception.message, 'Upload expirado')
+
+
+class BuildTemplateComponentsTests(BaseChatsTestCase):
+    """services.build_components: monta o array components no formato da Meta + validações."""
+
+    def base_data(self, **overrides) -> dict:
+        data = {'body_text': 'Oi {{1}}, tudo bem?', 'body_examples': ['Cliente A']}
+        data.update(overrides)
+        return data
+
+    def test_body_only(self):
+        components = services.build_components(self.base_data())
+        self.assertEqual(components, [
+            {'type': 'BODY', 'text': 'Oi {{1}}, tudo bem?', 'example': {'body_text': [['Cliente A']]}},
+        ])
+
+    def test_body_without_params_omits_example(self):
+        components = services.build_components({'body_text': 'Mensagem fixa.', 'body_examples': []})
+        self.assertEqual(components, [{'type': 'BODY', 'text': 'Mensagem fixa.'}])
+
+    def test_header_text_with_example(self):
+        data = self.base_data(header={'format': 'TEXT', 'text': 'Olá {{1}}', 'example': 'Cliente A'})
+        components = services.build_components(data)
+        self.assertEqual(components[0], {
+            'type': 'HEADER', 'format': 'TEXT', 'text': 'Olá {{1}}', 'example': {'header_text': ['Cliente A']},
+        })
+
+    def test_header_none_format_is_omitted(self):
+        data = self.base_data(header={'format': 'NONE'})
+        components = services.build_components(data)
+        self.assertEqual([c['type'] for c in components], ['BODY'])
+
+    def test_footer(self):
+        data = self.base_data(footer_text='Chatly')
+        components = services.build_components(data)
+        self.assertIn({'type': 'FOOTER', 'text': 'Chatly'}, components)
+
+    def test_footer_too_long_raises(self):
+        data = self.base_data(footer_text='x' * 61)
+        with self.assertRaises(ValidationError):
+            services.build_components(data)
+
+    def test_body_examples_count_mismatch_raises(self):
+        data = self.base_data(body_text='Oi {{1}} e {{2}}', body_examples=['só um'])
+        with self.assertRaises(ValidationError):
+            services.build_components(data)
+
+    def test_quick_reply_button(self):
+        data = self.base_data(buttons=[{'type': 'QUICK_REPLY', 'text': 'Confirmar'}])
+        components = services.build_components(data)
+        buttons = next(c for c in components if c['type'] == 'BUTTONS')
+        self.assertEqual(buttons['buttons'], [{'type': 'QUICK_REPLY', 'text': 'Confirmar'}])
+
+    def test_url_button(self):
+        data = self.base_data(buttons=[{'type': 'URL', 'text': 'Acessar', 'url': 'https://chatly.ia.br'}])
+        components = services.build_components(data)
+        buttons = next(c for c in components if c['type'] == 'BUTTONS')
+        self.assertEqual(buttons['buttons'], [{'type': 'URL', 'text': 'Acessar', 'url': 'https://chatly.ia.br'}])
+
+    def test_url_button_without_url_raises(self):
+        data = self.base_data(buttons=[{'type': 'URL', 'text': 'Acessar'}])
+        with self.assertRaises(ValidationError):
+            services.build_components(data)
+
+    def test_phone_button(self):
+        data = self.base_data(buttons=[{'type': 'PHONE_NUMBER', 'text': 'Ligar', 'phone_number': '+5511999999999'}])
+        components = services.build_components(data)
+        buttons = next(c for c in components if c['type'] == 'BUTTONS')
+        self.assertEqual(buttons['buttons'], [{'type': 'PHONE_NUMBER', 'text': 'Ligar', 'phone_number': '+5511999999999'}])
+
+    def test_phone_button_without_number_raises(self):
+        data = self.base_data(buttons=[{'type': 'PHONE_NUMBER', 'text': 'Ligar'}])
+        with self.assertRaises(ValidationError):
+            services.build_components(data)
+
+    def test_header_image_with_handle(self):
+        data = self.base_data(header={'format': 'IMAGE', 'handle': 'h:handle-xyz'})
+        components = services.build_components(data)
+        self.assertEqual(components[0], {'type': 'HEADER', 'format': 'IMAGE', 'example': {'header_handle': ['h:handle-xyz']}})
+
+    def test_header_image_without_handle_raises(self):
+        data = self.base_data(header={'format': 'IMAGE'})
+        with self.assertRaises(ValidationError):
+            services.build_components(data)
+
+
+class TemplateManagementServiceTests(BaseChatsTestCase):
+    """services.create/edit/delete_template + get_template_detail: validação de nome e mapeamento de detalhe."""
+
+    @patch('apps.chats.whatsapp.create_template')
+    def test_create_template_builds_payload_and_delegates_to_boundary(self, mock_create):
+        mock_create.return_value = {'id': 'tpl-1', 'status': 'PENDING', 'category': 'MARKETING'}
+        data = {'name': 'boas_vindas', 'language': 'pt_BR', 'category': 'MARKETING', 'body_text': 'Oi!', 'body_examples': []}
+
+        result = services.create_template(self.company, self.account.pk, data)
+
+        self.assertEqual(result['id'], 'tpl-1')
+        account_arg, payload_arg = mock_create.call_args.args
+        self.assertEqual(account_arg, self.account)
+        self.assertEqual(payload_arg['name'], 'boas_vindas')
+        self.assertEqual(payload_arg['components'], [{'type': 'BODY', 'text': 'Oi!'}])
+
+    @patch('apps.chats.whatsapp.create_template')
+    def test_create_template_with_invalid_name_raises_without_calling_boundary(self, mock_create):
+        data = {'name': 'Boas Vindas!', 'language': 'pt_BR', 'category': 'MARKETING', 'body_text': 'Oi!', 'body_examples': []}
+        with self.assertRaises(ValidationError):
+            services.create_template(self.company, self.account.pk, data)
+        mock_create.assert_not_called()
+
+    @patch('apps.chats.whatsapp.create_template')
+    def test_create_template_on_foreign_account_returns_404(self, mock_create):
+        data = {'name': 'boas_vindas', 'language': 'pt_BR', 'category': 'MARKETING', 'body_text': 'Oi!', 'body_examples': []}
+        with self.assertRaises(NotFound):
+            services.create_template(self.company, self.other_account.pk, data)
+        mock_create.assert_not_called()
+
+    @patch('apps.chats.whatsapp.edit_template')
+    def test_edit_template_delegates_components_and_category(self, mock_edit):
+        mock_edit.return_value = {'success': True}
+        data = {'name': 'oferta', 'language': 'pt_BR', 'category': 'UTILITY', 'body_text': 'Novo texto', 'body_examples': []}
+
+        result = services.edit_template(self.company, self.account.pk, 'tpl-1', data)
+
+        self.assertEqual(result, {'success': True})
+        args, kwargs = mock_edit.call_args
+        self.assertEqual(args[0], self.account)
+        self.assertEqual(args[1], 'tpl-1')
+        self.assertEqual(args[2], [{'type': 'BODY', 'text': 'Novo texto'}])
+        self.assertEqual(args[3], 'UTILITY')
+
+    @patch('apps.chats.whatsapp.create_template')
+    def test_create_template_with_image_header_saves_media(self, mock_create):
+        mock_create.return_value = {'id': 'tpl-1', 'status': 'PENDING', 'category': 'MARKETING'}
+        data = {
+            'name': 'promo', 'language': 'pt_BR', 'category': 'MARKETING', 'body_text': 'Oi!', 'body_examples': [],
+            'header': {'format': 'IMAGE', 'handle': 'h:xyz', 'media_id': 'media-abc'},
+        }
+
+        services.create_template(self.company, self.account.pk, data)
+
+        saved = TemplateHeaderMedia.objects.get(account=self.account, template_name='promo', template_language='pt_BR')
+        self.assertEqual(saved.media_id, 'media-abc')
+        self.assertEqual(saved.media_type, 'image')
+
+    @patch('apps.chats.whatsapp.create_template')
+    def test_create_template_without_media_header_does_not_save(self, mock_create):
+        mock_create.return_value = {'id': 'tpl-1', 'status': 'PENDING', 'category': 'MARKETING'}
+        data = {'name': 'boas_vindas', 'language': 'pt_BR', 'category': 'MARKETING', 'body_text': 'Oi!', 'body_examples': []}
+
+        services.create_template(self.company, self.account.pk, data)
+
+        self.assertFalse(TemplateHeaderMedia.objects.filter(account=self.account, template_name='boas_vindas').exists())
+
+    @patch('apps.chats.whatsapp.edit_template')
+    def test_edit_template_updates_saved_media(self, mock_edit):
+        mock_edit.return_value = {'success': True}
+        TemplateHeaderMedia.objects.create(
+            account=self.account, template_name='promo', template_language='pt_BR', media_id='media-antiga', media_type='image'
+        )
+        data = {
+            'name': 'promo', 'language': 'pt_BR', 'category': 'MARKETING', 'body_text': 'Novo texto', 'body_examples': [],
+            'header': {'format': 'IMAGE', 'handle': 'h:novo', 'media_id': 'media-nova'},
+        }
+
+        services.edit_template(self.company, self.account.pk, 'tpl-1', data)
+
+        self.assertEqual(TemplateHeaderMedia.objects.filter(account=self.account, template_name='promo').count(), 1)
+        saved = TemplateHeaderMedia.objects.get(account=self.account, template_name='promo')
+        self.assertEqual(saved.media_id, 'media-nova')
+
+    @patch('apps.chats.whatsapp.delete_template')
+    def test_delete_template_delegates_to_boundary(self, mock_delete):
+        services.delete_template(self.company, self.account.pk, 'boas_vindas', 'tpl-1')
+        mock_delete.assert_called_once_with(self.account, 'boas_vindas', 'tpl-1')
+
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_get_template_detail_maps_full_structure(self, mock_list):
+        mock_list.return_value = TEMPLATES_FIXTURE
+
+        detail = services.get_template_detail(self.company, self.account.pk, 'tpl-oferta')
+
+        self.assertEqual(detail['id'], 'tpl-oferta')
+        self.assertEqual(detail['header'], {'format': 'TEXT', 'text': 'Olá!', 'example': ''})
+        self.assertEqual(detail['body_text'], 'Oi {{1}}, temos {{2}} pra você.')
+        self.assertEqual(detail['footer_text'], 'Chatly')
+        self.assertEqual(detail['buttons'], [])
+        self.assertFalse(detail['has_header_media'])
+
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_get_template_detail_reports_saved_media(self, mock_list):
+        mock_list.return_value = TEMPLATES_FIXTURE
+        TemplateHeaderMedia.objects.create(
+            account=self.account, template_name='promo_imagem', template_language='pt_BR', media_id='media-abc', media_type='image'
+        )
+
+        detail = services.get_template_detail(self.company, self.account.pk, 'tpl-promo-imagem')
+
+        self.assertTrue(detail['has_header_media'])
+
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_get_template_detail_without_header_or_footer(self, mock_list):
+        mock_list.return_value = TEMPLATES_FIXTURE
+
+        detail = services.get_template_detail(self.company, self.account.pk, 'tpl-janela')
+
+        self.assertIsNone(detail['header'])
+        self.assertEqual(detail['footer_text'], '')
+
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_get_template_detail_not_found_raises_404(self, mock_list):
+        mock_list.return_value = TEMPLATES_FIXTURE
+        with self.assertRaises(NotFound):
+            services.get_template_detail(self.company, self.account.pk, 'tpl-inexistente')
+
+    @patch('apps.chats.whatsapp.upload_media')
+    @patch('apps.chats.whatsapp.upload_sample_media')
+    def test_upload_template_media_delegates_with_mime_and_name(self, mock_upload_sample, mock_upload_media):
+        mock_upload_sample.return_value = 'h:handle-xyz'
+        mock_upload_media.return_value = 'media-abc'
+        file = SimpleUploadedFile('foto.png', b'conteudo', content_type='image/png')
+
+        result = services.upload_template_media(self.company, self.account.pk, file)
+
+        self.assertEqual(result, {'handle': 'h:handle-xyz', 'media_id': 'media-abc'})
+        mock_upload_sample.assert_called_once_with(self.account, b'conteudo', 'image/png', 'foto.png')
+        mock_upload_media.assert_called_once_with(self.account, b'conteudo', 'image/png', 'foto.png')
+
+    @patch('apps.chats.whatsapp.upload_sample_media')
+    def test_upload_template_media_rejects_unsupported_type(self, mock_upload):
+        file = SimpleUploadedFile('audio.mp3', b'x', content_type='audio/mpeg')
+        with self.assertRaises(ValidationError):
+            services.upload_template_media(self.company, self.account.pk, file)
+        mock_upload.assert_not_called()
+
+    @patch('apps.chats.whatsapp.upload_sample_media')
+    def test_upload_template_media_document_requires_pdf(self, mock_upload):
+        file = SimpleUploadedFile('planilha.xlsx', b'x', content_type='application/vnd.ms-excel')
+        with self.assertRaises(ValidationError):
+            services.upload_template_media(self.company, self.account.pk, file)
+        mock_upload.assert_not_called()
+
+    @patch('apps.chats.whatsapp.upload_sample_media')
+    def test_upload_template_media_rejects_oversized_file(self, mock_upload):
+        big_content = b'x' * (5 * 2**20 + 1)
+        file = SimpleUploadedFile('foto.png', big_content, content_type='image/png')
+        with self.assertRaises(ValidationError):
+            services.upload_template_media(self.company, self.account.pk, file)
+        mock_upload.assert_not_called()
+
+
+class TemplateEndpointTests(BaseChatsTestCase):
+    """Endpoints de template: leitura é member, mutação é só owner (get_owned_company)."""
+
+    def setUp(self):
+        super().setUp()
+        self.member = User.objects.create_user(email='member@a.com', password='strongpass123')
+        Membership.objects.create(company=self.company, user=self.member)
+        self.member_auth = auth_header(self.member)
+
+    def create_payload(self, **overrides) -> dict:
+        payload = {
+            'name': 'boas_vindas', 'language': 'pt_BR', 'category': 'MARKETING',
+            'body_text': 'Oi, tudo bem?', 'body_examples': [],
+        }
+        payload.update(overrides)
+        return payload
+
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_get_template_detail(self, mock_list):
+        mock_list.return_value = TEMPLATES_FIXTURE
+        response = self.client.get(
+            f'/api/companies/{self.company.pk}/accounts/{self.account.pk}/templates/tpl-oferta', headers=self.auth
+        )
+        self.assertEqual(response.status_code, 200, response.json())
+        self.assertEqual(response.json()['name'], 'oferta')
+
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_get_template_detail_on_foreign_account_returns_404(self, mock_list):
+        response = self.client.get(
+            f'/api/companies/{self.company.pk}/accounts/{self.other_account.pk}/templates/tpl-oferta', headers=self.auth
+        )
+        self.assertEqual(response.status_code, 404)
+        mock_list.assert_not_called()
+
+    @patch('apps.chats.whatsapp.create_template')
+    def test_owner_creates_template(self, mock_create):
+        mock_create.return_value = {'id': 'tpl-1', 'status': 'PENDING', 'category': 'MARKETING'}
+        response = self.client.post(
+            f'/api/companies/{self.company.pk}/accounts/{self.account.pk}/templates',
+            data=json.dumps(self.create_payload()), content_type='application/json', headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 201, response.json())
+        self.assertEqual(response.json(), {'id': 'tpl-1', 'status': 'PENDING', 'category': 'MARKETING'})
+
+    @patch('apps.chats.whatsapp.create_template')
+    def test_member_cannot_create_template(self, mock_create):
+        response = self.client.post(
+            f'/api/companies/{self.company.pk}/accounts/{self.account.pk}/templates',
+            data=json.dumps(self.create_payload()), content_type='application/json', headers=self.member_auth,
+        )
+        self.assertEqual(response.status_code, 404)
+        mock_create.assert_not_called()
+
+    @patch('apps.chats.whatsapp.create_template')
+    def test_create_template_meta_error_leaks_real_message(self, mock_create):
+        mock_create.side_effect = ValidationError('Nome de template duplicado')
+        response = self.client.post(
+            f'/api/companies/{self.company.pk}/accounts/{self.account.pk}/templates',
+            data=json.dumps(self.create_payload()), content_type='application/json', headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()['detail'], 'Nome de template duplicado')
+
+    @patch('apps.chats.whatsapp.edit_template')
+    def test_owner_edits_template(self, mock_edit):
+        mock_edit.return_value = {'success': True}
+        response = self.client.patch(
+            f'/api/companies/{self.company.pk}/accounts/{self.account.pk}/templates/tpl-1',
+            data=json.dumps(self.create_payload()), content_type='application/json', headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 200, response.json())
+        self.assertEqual(response.json(), {'success': True})
+
+    @patch('apps.chats.whatsapp.edit_template')
+    def test_member_cannot_edit_template(self, mock_edit):
+        response = self.client.patch(
+            f'/api/companies/{self.company.pk}/accounts/{self.account.pk}/templates/tpl-1',
+            data=json.dumps(self.create_payload()), content_type='application/json', headers=self.member_auth,
+        )
+        self.assertEqual(response.status_code, 404)
+        mock_edit.assert_not_called()
+
+    @patch('apps.chats.whatsapp.delete_template')
+    def test_owner_deletes_template(self, mock_delete):
+        response = self.client.delete(
+            f'/api/companies/{self.company.pk}/accounts/{self.account.pk}/templates/tpl-1?name=boas_vindas',
+            headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 204)
+        mock_delete.assert_called_once_with(self.account, 'boas_vindas', 'tpl-1')
+
+    @patch('apps.chats.whatsapp.delete_template')
+    def test_member_cannot_delete_template(self, mock_delete):
+        response = self.client.delete(
+            f'/api/companies/{self.company.pk}/accounts/{self.account.pk}/templates/tpl-1?name=boas_vindas',
+            headers=self.member_auth,
+        )
+        self.assertEqual(response.status_code, 404)
+        mock_delete.assert_not_called()
+
+    @patch('apps.chats.whatsapp.upload_media')
+    @patch('apps.chats.whatsapp.upload_sample_media')
+    def test_owner_uploads_template_media(self, mock_upload_sample, mock_upload_media):
+        mock_upload_sample.return_value = 'h:handle-xyz'
+        mock_upload_media.return_value = 'media-abc'
+        file = SimpleUploadedFile('foto.png', b'conteudo', content_type='image/png')
+
+        response = self.client.post(
+            f'/api/companies/{self.company.pk}/accounts/{self.account.pk}/templates/media',
+            data={'file': file}, headers=self.auth,
+        )
+
+        self.assertEqual(response.status_code, 201, response.json())
+        self.assertEqual(response.json(), {'handle': 'h:handle-xyz', 'media_id': 'media-abc'})
+
+    @patch('apps.chats.whatsapp.upload_sample_media')
+    def test_member_cannot_upload_template_media(self, mock_upload):
+        file = SimpleUploadedFile('foto.png', b'conteudo', content_type='image/png')
+        response = self.client.post(
+            f'/api/companies/{self.company.pk}/accounts/{self.account.pk}/templates/media',
+            data={'file': file}, headers=self.member_auth,
+        )
+        self.assertEqual(response.status_code, 404)
+        mock_upload.assert_not_called()
+
+
+class AccountMediaUploadTests(BaseChatsTestCase):
+    """POST /accounts/{id}/media: upload de mídia real pra envio (Media Upload API, não a Resumable de exemplo)."""
+
+    @patch('apps.chats.whatsapp.upload_media')
+    def test_upload_returns_media_id(self, mock_upload):
+        mock_upload.return_value = 'media-abc'
+        file = SimpleUploadedFile('foto.png', b'conteudo', content_type='image/png')
+
+        response = self.client.post(
+            f'/api/companies/{self.company.pk}/accounts/{self.account.pk}/media',
+            data={'file': file}, headers=self.auth,
+        )
+
+        self.assertEqual(response.status_code, 201, response.json())
+        self.assertEqual(response.json(), {'media_id': 'media-abc'})
+        mock_upload.assert_called_once_with(self.account, b'conteudo', 'image/png', 'foto.png')
+
+    @patch('apps.chats.whatsapp.upload_media')
+    def test_upload_on_foreign_account_returns_404(self, mock_upload):
+        file = SimpleUploadedFile('foto.png', b'conteudo', content_type='image/png')
+        response = self.client.post(
+            f'/api/companies/{self.company.pk}/accounts/{self.other_account.pk}/media',
+            data={'file': file}, headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 404)
+        mock_upload.assert_not_called()
 
 
 class PipedriveToolsTests(BaseChatsTestCase):

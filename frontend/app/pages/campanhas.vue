@@ -58,6 +58,7 @@ const saving = ref(false)
 const name = ref('')
 const template = ref<Template | null>(null)
 const params = ref<string[]>([])
+const headerMediaId = ref('')
 
 type RecipientMode = 'all' | 'select' | 'csv'
 const mode = ref<RecipientMode>('all')
@@ -71,6 +72,7 @@ function openCreate() {
   name.value = ''
   template.value = null
   params.value = []
+  headerMediaId.value = ''
   mode.value = 'all'
   selectedContactIds.value = []
   csvNumbers.value = []
@@ -123,16 +125,19 @@ function onCsvPicked(event: Event) {
   ;(event.target as HTMLInputElement).value = ''
 }
 
-const canSubmit = computed(() =>
-  Boolean(
-    name.value.trim()
-    && template.value
-    && params.value.every(p => p.trim())
-    && (mode.value === 'all'
-      || (mode.value === 'select' && selectedContactIds.value.length)
-      || (mode.value === 'csv' && csvNumbers.value.length))
-  )
-)
+const campaignMissingReasons = computed(() => {
+  const reasons: string[] = []
+  if (!name.value.trim()) reasons.push('dê um nome pra campanha')
+  if (!template.value) reasons.push('escolha um template')
+  else if (!params.value.every(p => p.trim())) reasons.push('preencha todas as variáveis do corpo')
+  if (template.value && ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(template.value.header_format) && !template.value.has_header_media && !headerMediaId.value) {
+    reasons.push('envie o arquivo do cabeçalho')
+  }
+  if (mode.value === 'select' && !selectedContactIds.value.length) reasons.push('selecione ao menos um contato')
+  if (mode.value === 'csv' && !csvNumbers.value.length) reasons.push('importe um CSV com números')
+  return reasons
+})
+const canSubmit = computed(() => campaignMissingReasons.value.length === 0)
 
 async function create() {
   if (!canSubmit.value || !template.value || saving.value) return
@@ -143,7 +148,8 @@ async function create() {
       name: name.value.trim(),
       template_name: template.value.name,
       template_language: template.value.language,
-      body_params: params.value
+      body_params: params.value,
+      header_media_id: headerMediaId.value
     }
     if (mode.value === 'select') body.contact_ids = selectedContactIds.value
     if (mode.value === 'csv') {
@@ -272,6 +278,7 @@ async function create() {
           v-if="accountId"
           v-model:template="template"
           v-model:params="params"
+          v-model:header-media-id="headerMediaId"
           :company-id="companyId ?? 0"
           :account-id="accountId"
         />
@@ -317,6 +324,9 @@ async function create() {
           />
         </div>
 
+        <p v-if="campaignMissingReasons.length" class="text-xs text-warning">
+          Falta: {{ campaignMissingReasons.join(', ') }}
+        </p>
         <UButton
           block
           icon="i-lucide-send"

@@ -2,16 +2,10 @@ from ninja import Router, Status
 from ninja.pagination import paginate
 
 from apps.chats import services
-from apps.chats.schemas import CampaignInDTO, CampaignOutDTO, TemplateOutDTO
+from apps.chats.schemas import CampaignInDTO, CampaignOutDTO
 from apps.companies import services as companies_services
 
 router = Router(tags=['Campaigns'])
-
-
-@router.get('/{company_id}/accounts/{account_id}/templates', response=list[TemplateOutDTO])
-def list_templates_endpoint(request, company_id: int, account_id: int):
-    company = companies_services.get_company(request.auth, company_id)
-    return services.list_templates(company, account_id)
 
 
 @router.get('/{company_id}/campaigns', response=list[CampaignOutDTO])
@@ -33,6 +27,7 @@ def create_campaign_endpoint(request, company_id: int, payload: CampaignInDTO):
         payload.body_params,
         payload.contact_ids,
         [n.dict() for n in payload.numbers],
+        payload.header_media_id,
     )
     return Status(201, campaign)
 

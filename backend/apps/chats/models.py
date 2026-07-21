@@ -16,6 +16,7 @@ class WhatsAppAccount(models.Model):
     waba_id = models.CharField(max_length=64)
     access_token = EncryptedTextField()
     app_secret = EncryptedTextField()
+    app_id = models.CharField(max_length=32, blank=True, default='')
     verify_token = models.CharField(max_length=64)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -65,6 +66,7 @@ class Message(models.Model):
     message_type = models.CharField(max_length=10, choices=Type.choices, default=Type.TEXT)
     media_file = models.FileField(upload_to=chat_media_path, blank=True, null=True)
     media_id = models.CharField(max_length=128, blank=True, default='')
+    error_detail = models.CharField(max_length=255, blank=True, default='')
     wa_message_id = models.CharField(max_length=128, unique=True, null=True, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.RECEIVED)
     from_human = models.BooleanField(default=False)
@@ -92,6 +94,8 @@ class Campaign(models.Model):
     template_name = models.CharField(max_length=255)
     template_language = models.CharField(max_length=16)
     body_params = models.JSONField(default=list)
+    header_media_id = models.CharField(max_length=128, blank=True, default='')
+    header_media_type = models.CharField(max_length=16, blank=True, default='')
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.SENDING)
     total = models.PositiveIntegerField(default=0)
     sent = models.PositiveIntegerField(default=0)
@@ -100,3 +104,16 @@ class Campaign(models.Model):
 
     def __str__(self):
         return self.name
+
+class TemplateHeaderMedia(models.Model):
+    account = models.ForeignKey(WhatsAppAccount, on_delete=models.CASCADE, related_name='template_header_media')
+    template_name = models.CharField(max_length=255)
+    template_language = models.CharField(max_length=16)
+    media_id = models.CharField(max_length=128)
+    media_type = models.CharField(max_length=16)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['account', 'template_name', 'template_language'], name='unique_template_header_media')
+        ]
