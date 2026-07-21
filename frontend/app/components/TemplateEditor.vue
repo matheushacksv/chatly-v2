@@ -407,7 +407,6 @@ async function submit() {
           <UFormField label="Nome" required help="minúsculas, números e _">
             <UInput v-model="state.name" :disabled="editing" placeholder="boas_vindas" class="w-full" />
           </UFormField>
-<<<<<<< HEAD
           <UFormField label="Idioma" required>
             <USelectMenu
               v-model="state.language"
@@ -417,21 +416,13 @@ async function submit() {
               placeholder="Escolha o idioma"
               class="w-full"
             />
-=======
-          <UFormField label="Idioma" required help="código da Meta">
-            <UInput v-model="state.language" :disabled="editing" placeholder="pt_BR" class="w-full" />
->>>>>>> origin/main
           </UFormField>
         </div>
         <p v-if="state.name && !nameValid" class="text-xs text-error -mt-3">
           Só letras minúsculas, números e underscore.
         </p>
 
-<<<<<<< HEAD
         <UFormField label="Categoria" required :help="state.category === 'MARKETING' ? 'Fora da janela de 24h, entrega pra contatos sem interação recente pode não acontecer. Pra conteúdo transacional prefira Utilidade.' : undefined">
-=======
-        <UFormField label="Categoria" required>
->>>>>>> origin/main
           <URadioGroup
             v-model="state.category"
             orientation="horizontal"
