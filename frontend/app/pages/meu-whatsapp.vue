@@ -158,6 +158,9 @@ const formatSize = (bytes: number) =>
   bytes < 2 ** 20 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / 2 ** 20).toFixed(1)} MB`
 const isPlaceholder = (content: string) => /^\[.+\]$/.test(content)
 
+// nova conversa (modal compartilhado com o widget)
+const newChatOpen = ref(false)
+
 // figurinhas
 const stickerPickerOpen = ref(false)
 watch(stickerPickerOpen, open => open && loadStickers())
@@ -374,13 +377,21 @@ const time = (iso: string) => new Date(iso).toLocaleTimeString('pt-BR', { hour: 
           >
             {{ statusLabel(connection.status) }}
           </UBadge>
+          <UButton
+            icon="i-lucide-message-square-plus"
+            color="neutral"
+            variant="ghost"
+            size="xs"
+            aria-label="Nova conversa"
+            @click="newChatOpen = true"
+          />
         </div>
 
         <p
           v-if="!contacts.length"
           class="p-4 text-sm text-muted text-center"
         >
-          Nenhuma conversa ainda. Aparecem aqui quando alguém te manda mensagem.
+          Nenhuma conversa ainda. Comece uma em "Nova conversa", ou espere alguém te mandar mensagem.
         </p>
 
         <div
@@ -397,6 +408,7 @@ const time = (iso: string) => new Date(iso).toLocaleTimeString('pt-BR', { hour: 
             @click="selectedId = contact.id"
           >
             <UAvatar
+              :src="contact.avatar_url || undefined"
               :alt="contact.name || contact.wa_id"
               size="md"
             />
@@ -590,6 +602,8 @@ const time = (iso: string) => new Date(iso).toLocaleTimeString('pt-BR', { hour: 
           </section>
         </template>
       </div>
+
+      <AppEvolutionNewChat v-model:open="newChatOpen" />
     </template>
   </UDashboardPanel>
 
@@ -605,6 +619,7 @@ const time = (iso: string) => new Date(iso).toLocaleTimeString('pt-BR', { hour: 
         >
           <div class="flex items-center gap-2.5 min-w-0">
             <UAvatar
+              :src="selected.avatar_url || undefined"
               :alt="selected.name || selected.wa_id"
               size="sm"
             />
@@ -646,6 +661,13 @@ const time = (iso: string) => new Date(iso).toLocaleTimeString('pt-BR', { hour: 
             class="flex"
             :class="message.direction === 'out' ? 'justify-end' : 'justify-start'"
           >
+            <UAvatar
+              v-if="message.direction === 'in'"
+              :src="selected.avatar_url || undefined"
+              :alt="selected.name || selected.wa_id"
+              size="3xs"
+              class="self-end mr-1.5 shrink-0"
+            />
             <div
               class="max-w-[75%] rounded-2xl px-3.5 py-2 text-sm shadow-sm"
               :class="message.direction === 'out'

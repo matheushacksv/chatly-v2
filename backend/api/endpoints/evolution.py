@@ -12,9 +12,11 @@ from apps.evolution.schemas import (
     EvolutionConnectDTO,
     EvolutionConnectOutDTO,
     EvolutionContactOutDTO,
+    EvolutionDirectoryEntryDTO,
     EvolutionMessageOutDTO,
     EvolutionQRCodeOutDTO,
     EvolutionSendMessageDTO,
+    EvolutionStartConversationDTO,
 )
 
 router = Router(tags=['Evolution'])
@@ -72,6 +74,18 @@ def disconnect_endpoint(request, company_id: int, account_id: int):
 def list_contacts_endpoint(request, company_id: int, account_id: int):
     company = companies_services.get_company(request.auth, company_id)
     return services.list_contacts(company, request.auth, account_id)
+
+
+@router.get('/{company_id}/evolution-accounts/{account_id}/directory', response=list[EvolutionDirectoryEntryDTO])
+def list_directory_endpoint(request, company_id: int, account_id: int):
+    company = companies_services.get_company(request.auth, company_id)
+    return services.list_directory(company, request.auth, account_id)
+
+
+@router.post('/{company_id}/evolution-accounts/{account_id}/contacts', response={201: EvolutionContactOutDTO})
+def start_conversation_endpoint(request, company_id: int, account_id: int, payload: EvolutionStartConversationDTO):
+    company = companies_services.get_company(request.auth, company_id)
+    return Status(201, services.start_conversation(company, request.auth, account_id, payload.phone, payload.name))
 
 
 @router.get('/{company_id}/evolution-accounts/{account_id}/contacts/{contact_id}/messages', response=list[EvolutionMessageOutDTO])

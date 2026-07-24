@@ -34,6 +34,8 @@ class EvolutionContact(models.Model):
     account = models.ForeignKey(EvolutionAccount, on_delete=models.CASCADE, related_name='contacts')
     wa_id = models.CharField(max_length=100)
     name = models.CharField(max_length=100, blank=True)
+    avatar_url = models.TextField(blank=True, default='')
+    avatar_synced_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
