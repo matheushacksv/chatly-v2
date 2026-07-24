@@ -37,3 +37,7 @@ class Forbidden(DomainError):
 class PipedriveError(DomainError):
     status_code = 502
     default_message = 'Pipedrive request failed'
+
+class EvolutionError(DomainError):
+    status_code = 502
+    default_message = 'Evolution API request failed'

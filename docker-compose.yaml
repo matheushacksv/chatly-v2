@@ -16,6 +16,30 @@ services:
       timeout: 5s
       retries: 5
 
+  evolution-go:
+    image: evoapicloud/evolution-go:latest
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    volumes:
+      - evolution_data:/app/dbdata
+      - evolution_logs:/app/logs
+    environment:
+      SERVER_PORT: 4000
+      CLIENT_NAME: chatly-dev
+      GLOBAL_API_KEY: ${EVOLUTION_API_KEY}
+      POSTGRES_AUTH_DB: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/evogo_auth?sslmode=disable
+      POSTGRES_USERS_DB: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/evogo_users?sslmode=disable
+      DATABASE_SAVE_MESSAGES: "true"
+      WADEBUG: INFO
+      LOGTYPE: console
+      LOG_DIRECTORY: /app/logs
+      CONNECT_ON_STARTUP: "false"
+      OS_NAME: Linux
+    depends_on:
+      db:
+        condition: service_healthy
+
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -27,5 +51,31 @@ services:
       timeout: 3s
       retries: 5
 
+  api:
+    build: ./backend
+    restart: unless-stopped
+    env_file: .env
+    # o .env usa localhost (pro runserver no host); dentro da rede os nomes dos serviços resolvem
+    environment:
+      POSTGRES_HOST: db
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      EVOLUTION_API_URL: http://evolution-go:4000
+    command: sh -c "python manage.py migrate --noinput && python manage.py runserver 0.0.0.0:8000"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - /app/.venv  # preserva o venv da imagem (o mount de ./backend não pode escondê-lo)
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      evolution-go:
+        condition: service_started
+
 volumes:
   postgres_data:
+  evolution_data:
+  evolution_logs:

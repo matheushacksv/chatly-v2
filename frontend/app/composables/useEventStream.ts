@@ -1,5 +1,5 @@
 interface StreamHandlers {
-  onEvent: (event: { type: string, contact_id: number, name?: string }) => void
+  onEvent: (event: { type: string, contact_id: number, name?: string, channel?: string, account_id?: number, status?: string }) => void
   /** Chamado quando a conexão REabre - hora de re-buscar o que se perdeu offline. */
   onReconnect?: () => void
 }

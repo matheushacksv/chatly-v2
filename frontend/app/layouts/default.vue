@@ -6,6 +6,7 @@ const { companies, activeId, load, setActive, isOwner } = useCompany()
 const { connect } = useEventStream()
 const { lastEvent, openContact } = useChatEvents()
 const toast = useToast()
+const evo = useEvolutionChat()
 
 await useAsyncData('companies', async () => {
   await load()
@@ -57,8 +58,29 @@ watch(activeId, (id) => {
 }, { immediate: true })
 onUnmounted(() => disconnectStream?.())
 
+// ---- Evolution (WhatsApp pessoal): driver único do estado compartilhado (página + widget) ----
+watch(activeId, async () => {
+  evo.resetInbox()
+  await evo.loadConnection()
+  if (evo.connected.value) evo.loadContacts()
+}, { immediate: true })
+
+watch(evo.selectedId, evo.loadMessages)
+
+watch(lastEvent, (entry) => {
+  const e = entry?.event
+  if (!e || e.account_id !== evo.connection.value?.id) return
+  if (e.type === 'evolution_status') {
+    evo.loadConnection()
+  } else if (e.channel === 'evolution' && e.type === 'message') {
+    evo.loadContacts()
+    if (e.contact_id === evo.selectedId.value) evo.loadMessages()
+  }
+})
+
 const nav = computed<NavigationMenuItem[]>(() => [
   { label: 'Conversas', icon: 'i-lucide-messages-square', to: '/conversas' },
+  { label: 'Meu WhatsApp', icon: 'i-lucide-smartphone', to: '/meu-whatsapp' },
   { label: 'Contatos', icon: 'i-lucide-book-user', to: '/contatos' },
   { label: 'Campanhas', icon: 'i-lucide-megaphone', to: '/campanhas' },
   { label: 'Templates', icon: 'i-lucide-layout-template', to: '/templates' },
@@ -142,5 +164,7 @@ const userMenuItems = computed(() => [
     </UDashboardSidebar>
 
     <slot />
+
+    <AppChatWidget />
   </UDashboardGroup>
 </template>

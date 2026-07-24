@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     'apps.agents',
     'apps.chats',
     'apps.crm',
+    'apps.evolution'
 ]
 
 MIDDLEWARE = [
@@ -187,3 +188,8 @@ EMBEDDING_API_KEY = config('EMBEDDING_API_KEY')
 
 # Frontend
 FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:3000')
+
+# Evolution
+EVOLUTION_API_KEY = config('EVOLUTION_API_KEY')
+EVOLUTION_API_URL = config('EVOLUTION_API_URL')
+EVOLUTION_WEBHOOK_URL = config('EVOLUTION_WEBHOOK_URL')
