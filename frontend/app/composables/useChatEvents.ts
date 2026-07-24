@@ -4,6 +4,10 @@ export interface ChatEvent {
   type: string
   contact_id: number
   name?: string
+  // conexões Evolution (WhatsApp pessoal) marcam o canal pra não colidir com o inbox oficial
+  channel?: string
+  account_id?: number
+  status?: string
 }
 
 /**

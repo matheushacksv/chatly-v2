@@ -147,6 +147,8 @@ const { lastEvent, openContact, openContactData } = useChatEvents()
 watch(lastEvent, (entry) => {
   if (!entry) return
   const event = entry.event
+  // eventos de conexão pessoal (Evolution) têm tabela/endpoints próprios - ignora aqui
+  if (event.channel === 'evolution' || event.type === 'evolution_status') return
   if (event.type === 'reconnect') {
     // ficou offline: catch-up do que perdeu
     loadMessages()

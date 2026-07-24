@@ -230,3 +230,39 @@ export interface PipedriveActivity {
   due_date: string | null
   done: boolean
 }
+
+// ---- WhatsApp não-oficial (Evolution) ----
+// conexão pessoal do atendente: só texto 1:1, sem IA/campanha/template
+
+export interface EvolutionAccount {
+  id: number
+  instance_name: string
+  status: 'connecting' | 'connected' | 'disconnected'
+  phone_number: string
+  created_at: string
+  user_email: string
+}
+
+export interface EvolutionContact {
+  id: number
+  wa_id: string
+  name: string
+  created_at: string
+}
+
+export interface EvolutionMessage {
+  id: number
+  direction: 'in' | 'out'
+  content: string
+  message_type: 'text' | 'image' | 'audio' | 'video' | 'document' | 'sticker'
+  media_url: string | null
+  status: string
+  error_detail: string | null
+  wa_message_id: string | null
+  created_at: string
+}
+
+export interface EvolutionConnect {
+  qrcode: string
+  pair_code: string
+}
