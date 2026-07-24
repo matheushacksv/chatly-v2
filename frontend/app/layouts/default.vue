@@ -72,6 +72,8 @@ watch(lastEvent, (entry) => {
   if (!e || e.account_id !== evo.connection.value?.id) return
   if (e.type === 'evolution_status') {
     evo.loadConnection()
+  } else if (e.type === 'evolution_contacts') {
+    evo.loadContacts() // sync de fotos terminou no worker
   } else if (e.channel === 'evolution' && e.type === 'message') {
     evo.loadContacts()
     if (e.contact_id === evo.selectedId.value) evo.loadMessages()

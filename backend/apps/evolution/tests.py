@@ -1,16 +1,19 @@
 import base64
 import tempfile
+from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 import httpx
 from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
+from django.utils import timezone
 
 from apps.accounts.models import User
-from apps.chats.models import Sticker
+from apps.agents.models import Agent, Credential
+from apps.chats.models import Contact, Sticker, WhatsAppAccount
 from apps.companies.models import Company, Membership
-from apps.evolution import evolution, services
+from apps.evolution import evolution, services, tasks
 from apps.evolution.models import EvolutionAccount, EvolutionContact, EvolutionMessage
 from apps.testing import auth_header
 from core.exceptions import Conflict, EvolutionError, Forbidden, NotFound, ValidationError
@@ -120,6 +123,72 @@ class EvolutionBoundaryTests(TestCase):
         self.assertEqual(kwargs['headers'], {'apikey': 'inst-tok'})
         self.assertEqual(kwargs['data'], {'number': '5511999999999', 'type': 'document', 'caption': 'legenda', 'filename': 'rel.pdf'})
         self.assertEqual(kwargs['files']['file'], ('rel.pdf', b'PDFDATA', 'application/pdf'))
+
+    def test_check_number_returns_canonical_wa_id(self, mock_request):
+        # evogo normaliza o formato: entra com nono dígito, sai o JID real (sem ele, no caso BR)
+        mock_request.return_value = _resp(
+            {'data': {'Users': [{'Query': '+5548996436646@s.whatsapp.net', 'IsInWhatsapp': True, 'JID': '554896436646@s.whatsapp.net'}]}}
+        )
+        self.assertEqual(evolution.check_number('inst-tok', '5548996436646'), '554896436646')
+        kwargs = mock_request.call_args.kwargs
+        self.assertTrue(kwargs['url'].endswith('/user/check'))
+        self.assertEqual(kwargs['json'], {'number': ['5548996436646']})
+
+    def test_check_number_absent_returns_empty(self, mock_request):
+        # número que não existe some de Users (o evogo devolve null, não uma entrada com false)
+        mock_request.return_value = _resp({'data': {'Users': None}})
+        self.assertEqual(evolution.check_number('inst-tok', '5511000000000'), '')
+
+    def test_check_number_not_on_whatsapp_returns_empty(self, mock_request):
+        mock_request.return_value = _resp({'data': {'Users': [{'IsInWhatsapp': False, 'JID': '5511000000000@s.whatsapp.net'}]}})
+        self.assertEqual(evolution.check_number('inst-tok', '5511000000000'), '')
+
+    def test_get_device_contacts_maps_wa_id_to_name(self, mock_request):
+        mock_request.return_value = _resp({'data': [
+            {'Jid': '554197487225@s.whatsapp.net', 'FullName': 'Clube Da Barba', 'FirstName': 'Clube'},
+            {'Jid': '555199899261@s.whatsapp.net', 'FullName': '', 'FirstName': 'Eduardo'},
+            {'Jid': '554899592104@s.whatsapp.net', 'FullName': '', 'FirstName': '', 'BusinessName': 'Padaria'},
+            {'Jid': '554811111111@s.whatsapp.net', 'FullName': '', 'FirstName': '', 'PushName': 'Ze'},
+            {'Jid': '554822222222@s.whatsapp.net', 'FullName': ''},          # sem nome nenhum: fica de fora
+            {'Jid': '135544906506468@lid', 'FullName': 'Anônimo'},           # @lid não é número
+            {'Jid': '12345-678@g.us', 'FullName': 'Grupo'},                  # grupo não entra
+        ]})
+        self.assertEqual(
+            evolution.get_device_contacts('inst-tok'),
+            {'554197487225': 'Clube Da Barba', '555199899261': 'Eduardo', '554899592104': 'Padaria', '554811111111': 'Ze'},
+        )
+        self.assertTrue(mock_request.call_args.kwargs['url'].endswith('/user/contacts'))
+
+    def test_get_device_contacts_empty_payload(self, mock_request):
+        mock_request.return_value = _resp({'data': None})
+        self.assertEqual(evolution.get_device_contacts('inst-tok'), {})
+
+    def test_get_user_avatar_sends_full_jid(self, mock_request):
+        # regressão: com número puro o evogo monta '+<num>@s.whatsapp.net' e a chamada
+        # só falha depois de 75s ("info query timed out")
+        mock_request.return_value = _resp({'data': {'url': 'https://pps.whatsapp.net/v/foto.jpg', 'type': 'preview'}})
+        self.assertEqual(evolution.get_user_avatar('inst-tok', '554896436646'), 'https://pps.whatsapp.net/v/foto.jpg')
+        kwargs = mock_request.call_args.kwargs
+        self.assertTrue(kwargs['url'].endswith('/user/avatar'))
+        self.assertEqual(kwargs['json'], {'number': '554896436646@s.whatsapp.net', 'preview': True})
+
+    def test_get_user_avatar_full_size(self, mock_request):
+        mock_request.return_value = _resp({'data': {'url': 'https://pps.whatsapp.net/v/full.jpg', 'type': 'image'}})
+        evolution.get_user_avatar('inst-tok', '554896436646', preview=False)
+        self.assertIs(mock_request.call_args.kwargs['json']['preview'], False)
+
+    def test_get_user_avatar_without_picture_returns_empty(self, mock_request):
+        # "that user or group does not have a profile picture" chega como 500, não é erro de infra
+        mock_request.return_value = _resp(status=500)
+        self.assertEqual(evolution.get_user_avatar('inst-tok', '5511000000000'), '')
+
+    def test_get_user_avatar_404_returns_empty(self, mock_request):
+        mock_request.return_value = _resp(status=404)
+        self.assertEqual(evolution.get_user_avatar('inst-tok', '5511000000000'), '')
+
+    def test_get_user_avatar_payload_without_url_returns_empty(self, mock_request):
+        mock_request.return_value = _resp({'data': {}})
+        self.assertEqual(evolution.get_user_avatar('inst-tok', '554896436646'), '')
 
     def test_404_raises_not_found(self, mock_request):
         mock_request.return_value = _resp(status=404)
@@ -302,6 +371,268 @@ class EvolutionPermissionHelperTests(BaseEvolutionTestCase):
     def test_missing_account_not_found(self):
         with self.assertRaises(NotFound):
             services._get_own_or_owned_account(self.company, self.owner, 999999)
+
+
+@patch('apps.evolution.tasks.sync_avatars.delay')
+class EvolutionListContactsTests(BaseEvolutionTestCase):
+    """Ordem por atividade + nomes preenchidos pela agenda do celular."""
+
+    def setUp(self):
+        super().setUp()
+        self.account = EvolutionAccount.objects.create(company=self.company, user=self.owner, instance_name='c1u1', instance_api_key='tok')
+
+    def _contact(self, wa_id, name='', created_at=None):
+        contact = EvolutionContact.objects.create(account=self.account, wa_id=wa_id, name=name)
+        if created_at:  # created_at é auto_now_add: só dá pra forjar via update
+            EvolutionContact.objects.filter(pk=contact.pk).update(created_at=created_at)
+        return contact
+
+    def _message(self, contact, created_at):
+        msg = EvolutionMessage.objects.create(contact=contact, direction=EvolutionMessage.Direction.IN, content='oi')
+        EvolutionMessage.objects.filter(pk=msg.pk).update(created_at=created_at)
+        return msg
+
+    @patch('apps.evolution.evolution.get_device_contacts', return_value={})
+    def test_queues_avatar_sync_when_something_is_stale(self, mock_agenda, mock_delay):
+        self._contact('5511000000001', 'Sem foto')
+        services.list_contacts(self.company, self.owner, self.account.id)
+        mock_delay.assert_called_once_with(self.account.pk)
+
+    @patch('apps.evolution.evolution.get_device_contacts', return_value={})
+    def test_does_not_queue_when_all_avatars_are_fresh(self, mock_agenda, mock_delay):
+        contact = self._contact('5511000000001', 'Com foto')
+        EvolutionContact.objects.filter(pk=contact.pk).update(avatar_synced_at=timezone.now())
+        services.list_contacts(self.company, self.owner, self.account.id)
+        mock_delay.assert_not_called()
+
+    @patch('apps.evolution.evolution.get_device_contacts', return_value={})
+    def test_orders_by_last_message_then_created_at(self, mock_agenda, mock_delay):
+        now = timezone.now()
+        old = self._contact('5511000000001', 'Antigo', created_at=now - timedelta(hours=3))
+        recent = self._contact('5511000000002', 'Recente', created_at=now - timedelta(hours=3))
+        fresh = self._contact('5511000000003', 'Novo', created_at=now - timedelta(minutes=30))  # sem mensagem
+        self._message(old, now - timedelta(hours=2))
+        self._message(recent, now - timedelta(hours=1))
+        result = services.list_contacts(self.company, self.owner, self.account.id)
+        self.assertEqual([c.pk for c in result], [fresh.pk, recent.pk, old.pk])
+
+    @patch('apps.evolution.evolution.get_device_contacts')
+    def test_fills_only_missing_names_and_persists(self, mock_agenda, mock_delay):
+        mock_agenda.return_value = {'5511000000001': 'Da Agenda', '5511000000002': 'Ignorado'}
+        sem_nome = self._contact('5511000000001')
+        com_nome = self._contact('5511000000002', 'PushName Antigo')
+        services.list_contacts(self.company, self.owner, self.account.id)
+        sem_nome.refresh_from_db()
+        com_nome.refresh_from_db()
+        self.assertEqual(sem_nome.name, 'Da Agenda')
+        self.assertEqual(com_nome.name, 'PushName Antigo')  # nome existente nunca é sobrescrito
+
+    @patch('apps.evolution.evolution.get_device_contacts')
+    def test_all_named_skips_agenda_call(self, mock_agenda, mock_delay):
+        self._contact('5511000000001', 'Já tem nome')
+        services.list_contacts(self.company, self.owner, self.account.id)
+        mock_agenda.assert_not_called()
+
+    @patch('apps.evolution.evolution.get_device_contacts', return_value={})
+    def test_contact_absent_from_agenda_stays_empty(self, mock_agenda, mock_delay):
+        contact = self._contact('5511000000001')
+        services.list_contacts(self.company, self.owner, self.account.id)
+        contact.refresh_from_db()
+        self.assertEqual(contact.name, '')
+
+    @patch('apps.evolution.evolution.get_device_contacts', side_effect=EvolutionError('down'))
+    def test_agenda_down_does_not_break_listing(self, mock_agenda, mock_delay):
+        self._contact('5511000000001')
+        result = services.list_contacts(self.company, self.owner, self.account.id)
+        self.assertEqual(len(result), 1)
+
+
+class EvolutionDirectoryTests(BaseEvolutionTestCase):
+    """Diretório de destinatários: agenda do celular + contatos do canal oficial."""
+
+    def setUp(self):
+        super().setUp()
+        self.account = EvolutionAccount.objects.create(company=self.company, user=self.owner, instance_name='c1u1', instance_api_key='tok')
+        credential = Credential.objects.create(company=self.company, provider='anthropic', api_key='sk-x')
+        agent = Agent.objects.create(company=self.company, name='Vendedor', prompt='...', credential=credential)
+        self.official_account = WhatsAppAccount.objects.create(
+            company=self.company, agent=agent, phone_number_id='111', waba_id='waba-1',
+            access_token='tok', app_secret='sec', verify_token='v1',
+        )
+
+    def _official(self, wa_id, name):
+        return Contact.objects.create(account=self.official_account, wa_id=wa_id, name=name)
+
+    @patch('apps.evolution.evolution.get_device_contacts')
+    def test_merges_agenda_and_official_sorted_by_name(self, mock_agenda):
+        mock_agenda.return_value = {'5511000000001': 'Bruno'}
+        self._official('5511000000002', 'Ana')
+        result = services.list_directory(self.company, self.owner, self.account.id)
+        self.assertEqual(result, [
+            {'wa_id': '5511000000002', 'name': 'Ana', 'source': 'oficial'},
+            {'wa_id': '5511000000001', 'name': 'Bruno', 'source': 'agenda'},
+        ])
+
+    @patch('apps.evolution.evolution.get_device_contacts')
+    def test_agenda_wins_on_duplicate_wa_id(self, mock_agenda):
+        mock_agenda.return_value = {'5511000000001': 'Nome Da Agenda'}
+        self._official('5511000000001', 'Nome Do CRM')
+        result = services.list_directory(self.company, self.owner, self.account.id)
+        self.assertEqual(result, [{'wa_id': '5511000000001', 'name': 'Nome Da Agenda', 'source': 'agenda'}])
+
+    @patch('apps.evolution.evolution.get_device_contacts', side_effect=EvolutionError('down'))
+    def test_agenda_down_still_returns_official(self, mock_agenda):
+        self._official('5511000000002', 'Ana')
+        result = services.list_directory(self.company, self.owner, self.account.id)
+        self.assertEqual(result, [{'wa_id': '5511000000002', 'name': 'Ana', 'source': 'oficial'}])
+
+    @patch('apps.evolution.evolution.get_device_contacts', return_value={})
+    def test_other_company_official_contacts_are_not_leaked(self, mock_agenda):
+        other_company = Company.objects.create(name='Alheia', owner=self.outsider)
+        credential = Credential.objects.create(company=other_company, provider='anthropic', api_key='sk-y')
+        agent = Agent.objects.create(company=other_company, name='Outro', prompt='...', credential=credential)
+        other_account = WhatsAppAccount.objects.create(
+            company=other_company, agent=agent, phone_number_id='222', waba_id='waba-2',
+            access_token='tok', app_secret='sec', verify_token='v2',
+        )
+        Contact.objects.create(account=other_account, wa_id='5511000000009', name='Alheio')
+        self.assertEqual(services.list_directory(self.company, self.owner, self.account.id), [])
+
+    def test_other_users_account_forbidden(self):
+        with self.assertRaises(Forbidden):
+            services.list_directory(self.company, self.member, self.account.id)
+
+
+@patch('apps.evolution.tasks.sync_avatars.delay')
+class EvolutionStartConversationTests(BaseEvolutionTestCase):
+    def setUp(self):
+        super().setUp()
+        self.account = EvolutionAccount.objects.create(company=self.company, user=self.owner, instance_name='c1u1', instance_api_key='tok')
+
+    @patch('apps.evolution.evolution.check_number', return_value='554896436646')
+    def test_queues_avatar_sync_for_new_contact(self, mock_check, mock_delay):
+        # contato novo busca a foto na hora, sem esperar a próxima listagem
+        services.start_conversation(self.company, self.owner, self.account.id, '5548996436646')
+        mock_delay.assert_called_once_with(self.account.pk)
+
+    @patch('apps.evolution.evolution.check_number', return_value='554896436646')
+    def test_creates_contact_with_canonical_wa_id(self, mock_check, mock_delay):
+        # o front manda o número com nono dígito; quem manda no wa_id é o JID do evogo
+        contact = services.start_conversation(self.company, self.owner, self.account.id, '+55 (48) 99643-6646', 'Patrícia')
+        mock_check.assert_called_once_with('tok', '5548996436646')  # normalize_number tira a máscara
+        self.assertEqual(contact.wa_id, '554896436646')
+        self.assertEqual(contact.name, 'Patrícia')
+        self.assertEqual(contact.account, self.account)
+
+    @patch('apps.evolution.evolution.check_number', return_value='')
+    def test_number_without_whatsapp_is_rejected(self, mock_check, mock_delay):
+        with self.assertRaises(ValidationError):
+            services.start_conversation(self.company, self.owner, self.account.id, '5511000000000')
+        self.assertFalse(EvolutionContact.objects.exists())
+
+    @patch('apps.evolution.evolution.check_number')
+    def test_invalid_number_never_reaches_evogo(self, mock_check, mock_delay):
+        with self.assertRaises(ValidationError):
+            services.start_conversation(self.company, self.owner, self.account.id, '123')
+        mock_check.assert_not_called()
+
+    @patch('apps.evolution.evolution.check_number', return_value='5511999999999')
+    def test_existing_contact_is_reused(self, mock_check, mock_delay):
+        existing = EvolutionContact.objects.create(account=self.account, wa_id='5511999999999', name='Cliente')
+        contact = services.start_conversation(self.company, self.owner, self.account.id, '5511999999999', 'Outro Nome')
+        self.assertEqual(contact.pk, existing.pk)
+        self.assertEqual(contact.name, 'Cliente')  # não renomeia conversa existente
+        self.assertEqual(EvolutionContact.objects.count(), 1)
+
+    @patch('apps.evolution.evolution.check_number', return_value='5511999999999')
+    def test_other_users_account_forbidden(self, mock_check, mock_delay):
+        with self.assertRaises(Forbidden):
+            services.start_conversation(self.company, self.member, self.account.id, '5511999999999')
+
+
+@patch('apps.chats.events.publish')
+class EvolutionAvatarSyncTaskTests(BaseEvolutionTestCase):
+    """Sync de fotos de perfil: roda no worker, publica SSE quando termina."""
+
+    def setUp(self):
+        super().setUp()
+        self.account = EvolutionAccount.objects.create(company=self.company, user=self.owner, instance_name='c1u1', instance_api_key='tok')
+
+    def _contact(self, wa_id, synced_at=None):
+        contact = EvolutionContact.objects.create(account=self.account, wa_id=wa_id)
+        if synced_at:
+            EvolutionContact.objects.filter(pk=contact.pk).update(avatar_synced_at=synced_at)
+        return contact
+
+    @patch('apps.evolution.evolution.get_user_avatar', return_value='https://pps.whatsapp.net/v/foto.jpg')
+    def test_stores_url_and_stamps_sync(self, mock_avatar, mock_publish):
+        contact = self._contact('5511000000001')
+        tasks.sync_avatars(self.account.pk)
+        contact.refresh_from_db()
+        self.assertEqual(contact.avatar_url, 'https://pps.whatsapp.net/v/foto.jpg')
+        self.assertIsNotNone(contact.avatar_synced_at)
+        mock_avatar.assert_called_once_with('tok', '5511000000001')
+        mock_publish.assert_called_once_with(self.company.id, {'type': 'evolution_contacts', 'account_id': self.account.pk})
+
+    @patch('apps.evolution.evolution.get_user_avatar')
+    def test_reserves_batch_before_fetching(self, mock_avatar, mock_publish):
+        # a reserva é o que impede task duplicada: enquanto a sync roda, uma nova
+        # listagem não pode achar ninguém vencido (senão enfileira outra igual e
+        # dobra as chamadas ao servidor do WhatsApp)
+        self._contact('5511000000001')
+        self._contact('5511000000002')
+        pending_during_fetch = []
+
+        def fake_avatar(api_key, wa_id):
+            pending_during_fetch.append(tasks.stale_avatars(self.account).count())
+            return 'https://pps.whatsapp.net/v/foto.jpg'
+
+        mock_avatar.side_effect = fake_avatar
+        tasks.sync_avatars(self.account.pk)
+        self.assertEqual(pending_during_fetch, [0, 0])
+
+    @patch('apps.evolution.evolution.get_user_avatar', return_value='')
+    def test_contact_without_picture_is_still_stamped(self, mock_avatar, mock_publish):
+        # sem carimbo, toda listagem re-perguntaria pelo mesmo contato sem foto
+        contact = self._contact('5511000000001')
+        tasks.sync_avatars(self.account.pk)
+        contact.refresh_from_db()
+        self.assertEqual(contact.avatar_url, '')
+        self.assertIsNotNone(contact.avatar_synced_at)
+
+    @patch('apps.evolution.evolution.get_user_avatar', return_value='https://pps.whatsapp.net/v/foto.jpg')
+    def test_skips_recently_synced_contact(self, mock_avatar, mock_publish):
+        self._contact('5511000000001', synced_at=timezone.now() - timedelta(days=1))
+        tasks.sync_avatars(self.account.pk)
+        mock_avatar.assert_not_called()
+        mock_publish.assert_not_called()
+
+    @patch('apps.evolution.evolution.get_user_avatar', return_value='https://pps.whatsapp.net/v/foto.jpg')
+    def test_resyncs_contact_past_ttl(self, mock_avatar, mock_publish):
+        self._contact('5511000000001', synced_at=timezone.now() - tasks.AVATAR_TTL - timedelta(minutes=1))
+        tasks.sync_avatars(self.account.pk)
+        mock_avatar.assert_called_once()
+
+    @patch('apps.evolution.evolution.get_user_avatar')
+    def test_no_contacts_is_noop(self, mock_avatar, mock_publish):
+        tasks.sync_avatars(self.account.pk)
+        mock_avatar.assert_not_called()
+        mock_publish.assert_not_called()
+
+    @patch('apps.evolution.evolution.get_user_avatar')
+    def test_missing_account_is_noop(self, mock_avatar, mock_publish):
+        tasks.sync_avatars(999999)
+        mock_avatar.assert_not_called()
+
+    @patch('apps.evolution.evolution.get_user_avatar', return_value='https://pps.whatsapp.net/v/foto.jpg')
+    def test_other_accounts_contacts_are_untouched(self, mock_avatar, mock_publish):
+        other = EvolutionAccount.objects.create(company=self.company, user=self.member, instance_name='c1um', instance_api_key='tok2')
+        alheio = EvolutionContact.objects.create(account=other, wa_id='5511000000009')
+        self._contact('5511000000001')
+        tasks.sync_avatars(self.account.pk)
+        alheio.refresh_from_db()
+        self.assertEqual(alheio.avatar_url, '')
+        self.assertIsNone(alheio.avatar_synced_at)
 
 
 @override_settings(MEDIA_ROOT=_MEDIA_TMP)
@@ -493,6 +824,39 @@ class EvolutionWebhookHandlerTests(BaseEvolutionTestCase):
         self.assertEqual(msg.mime_type, '')
         mock_publish.assert_called_once()
 
+    def _text_webhook(self, push_name, wa_id='5511999999999', msg_id='MSG-PN'):
+        services.handle_message_webhook({
+            'instanceToken': 'inst-tok',
+            'data': {
+                'Info': {
+                    'IsFromMe': False, 'IsGroup': False, 'Sender': f'{wa_id}@s.whatsapp.net',
+                    'Type': 'text', 'ID': msg_id, 'PushName': push_name,
+                },
+                'Message': {'conversation': 'olá'},
+            },
+        })
+
+    def test_incoming_message_saves_push_name(self, mock_publish):
+        self._text_webhook('Fulano da Silva')
+        self.assertEqual(EvolutionContact.objects.get(account=self.account, wa_id='5511999999999').name, 'Fulano da Silva')
+
+    def test_push_name_fills_contact_without_name(self, mock_publish):
+        contact = EvolutionContact.objects.create(account=self.account, wa_id='5511999999999')
+        self._text_webhook('Fulano da Silva')
+        contact.refresh_from_db()
+        self.assertEqual(contact.name, 'Fulano da Silva')
+
+    def test_push_name_does_not_overwrite_existing_name(self, mock_publish):
+        # nome da agenda vale mais que o PushName (que a pessoa troca à vontade)
+        contact = EvolutionContact.objects.create(account=self.account, wa_id='5511999999999', name='Nome Da Agenda')
+        self._text_webhook('apelido do zap')
+        contact.refresh_from_db()
+        self.assertEqual(contact.name, 'Nome Da Agenda')
+
+    def test_missing_push_name_keeps_contact_unnamed(self, mock_publish):
+        self._text_webhook('')
+        self.assertEqual(EvolutionContact.objects.get(account=self.account, wa_id='5511999999999').name, '')
+
     def test_from_me_is_ignored(self, mock_publish):
         services.handle_message_webhook({
             'instanceToken': 'inst-tok',
@@ -562,16 +926,59 @@ class EvolutionEndpointTests(BaseEvolutionTestCase):
         response = self.client.delete(f'{self.base}/evolution-accounts/{account.id}', headers=self.member_auth)
         self.assertEqual(response.status_code, 403)
 
-    def test_list_contacts_and_messages(self):
+    @patch('apps.evolution.tasks.sync_avatars.delay')
+    def test_list_contacts_and_messages(self, mock_delay):
         account = EvolutionAccount.objects.create(company=self.company, user=self.member, instance_name='c1um')
         contact = EvolutionContact.objects.create(account=account, wa_id='5511999999999', name='Cliente')
+        EvolutionContact.objects.filter(pk=contact.pk).update(avatar_url='https://pps.whatsapp.net/v/foto.jpg')
         EvolutionMessage.objects.create(contact=contact, direction=EvolutionMessage.Direction.IN, content='oi')
         r1 = self.client.get(f'{self.base}/evolution-accounts/{account.id}/contacts', headers=self.member_auth)
         self.assertEqual(r1.status_code, 200)
         self.assertEqual(r1.json()[0]['wa_id'], '5511999999999')
+        self.assertEqual(r1.json()[0]['avatar_url'], 'https://pps.whatsapp.net/v/foto.jpg')
         r2 = self.client.get(f'{self.base}/evolution-accounts/{account.id}/contacts/{contact.id}/messages', headers=self.member_auth)
         self.assertEqual(r2.status_code, 200)
         self.assertEqual(r2.json()[0]['content'], 'oi')
+
+    @patch('apps.evolution.evolution.get_device_contacts', return_value={'5511000000001': 'Bruno'})
+    def test_directory_endpoint(self, mock_agenda):
+        account = EvolutionAccount.objects.create(company=self.company, user=self.member, instance_name='c1um', instance_api_key='tok')
+        response = self.client.get(f'{self.base}/evolution-accounts/{account.id}/directory', headers=self.member_auth)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), [{'wa_id': '5511000000001', 'name': 'Bruno', 'source': 'agenda'}])
+
+    @patch('apps.evolution.tasks.sync_avatars.delay')
+    @patch('apps.evolution.evolution.check_number', return_value='554896436646')
+    def test_start_conversation_endpoint(self, mock_check, mock_delay):
+        account = EvolutionAccount.objects.create(company=self.company, user=self.member, instance_name='c1um', instance_api_key='tok')
+        response = self.client.post(
+            f'{self.base}/evolution-accounts/{account.id}/contacts',
+            {'phone': '5548996436646', 'name': 'Patrícia'}, content_type='application/json', headers=self.member_auth,
+        )
+        self.assertEqual(response.status_code, 201)
+        body = response.json()
+        self.assertEqual(body['wa_id'], '554896436646')
+        self.assertEqual(body['name'], 'Patrícia')
+        self.assertTrue(EvolutionContact.objects.filter(account=account, wa_id='554896436646').exists())
+
+    @patch('apps.evolution.evolution.check_number', return_value='')
+    def test_start_conversation_endpoint_number_without_whatsapp(self, mock_check):
+        account = EvolutionAccount.objects.create(company=self.company, user=self.member, instance_name='c1um', instance_api_key='tok')
+        response = self.client.post(
+            f'{self.base}/evolution-accounts/{account.id}/contacts',
+            {'phone': '5511000000000'}, content_type='application/json', headers=self.member_auth,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()['detail'], 'number not on whatsapp')  # string que o front traduz no toast
+
+    @patch('apps.evolution.evolution.check_number', return_value='5511999999999')
+    def test_start_conversation_other_users_account_forbidden(self, mock_check):
+        account = EvolutionAccount.objects.create(company=self.company, user=self.owner, instance_name='c1u1', instance_api_key='tok')
+        response = self.client.post(
+            f'{self.base}/evolution-accounts/{account.id}/contacts',
+            {'phone': '5511999999999'}, content_type='application/json', headers=self.member_auth,
+        )
+        self.assertEqual(response.status_code, 403)
 
     @patch('apps.evolution.evolution.send_text')
     def test_send_message_endpoint(self, mock_send):

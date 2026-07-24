@@ -29,6 +29,8 @@ class EvolutionQRCodeOutDTO(Schema):
 
 
 class EvolutionContactOutDTO(ModelSchema):
+    avatar_url: str
+
     class Meta:
         model = EvolutionContact
         fields = ['id', 'wa_id', 'name', 'created_at']
@@ -48,3 +50,14 @@ class EvolutionMessageOutDTO(ModelSchema):
 
 class EvolutionSendMessageDTO(Schema):
     content: str
+
+
+class EvolutionDirectoryEntryDTO(Schema):
+    wa_id: str
+    name: str = ''
+    source: str
+
+
+class EvolutionStartConversationDTO(Schema):
+    phone: str
+    name: str = ''

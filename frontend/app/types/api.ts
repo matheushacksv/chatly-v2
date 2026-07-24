@@ -247,7 +247,14 @@ export interface EvolutionContact {
   id: number
   wa_id: string
   name: string
+  avatar_url: string
   created_at: string
+}
+
+export interface EvolutionDirectoryEntry {
+  wa_id: string
+  name: string
+  source: 'agenda' | 'oficial'
 }
 
 export interface EvolutionMessage {

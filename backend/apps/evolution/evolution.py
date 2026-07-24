@@ -128,6 +128,31 @@ def download_media(instance_api_key: str, message: dict) -> tuple[bytes, str]:
 # * ----- User ------
 
 
-def get_user_avatar(instance_api_key: str, number: str):
-    avatar = _req(api_key=instance_api_key, method='POST', path='/user/avatar', json={'number': number})
-    return avatar['avatar']
+def check_number(instance_api_key: str, number: str) -> str:
+    res = _req(api_key=instance_api_key, method='POST', path='/user/check', json={'number': [number]})
+    users = res.get('data', {}).get('Users') or []
+    if not users or not users[0].get('IsInWhatsapp'):
+        return ''
+    return users[0].get('JID', '').split('@')[0]
+
+
+def get_device_contacts(instance_api_key: str) -> dict[str, str]:
+    res = _req(api_key=instance_api_key, method='GET', path='/user/contacts')
+    out = {}
+    for c in res.get('data') or []:
+        jid = c.get('Jid', '')
+        if not jid.endswith('@s.whatsapp.net'):
+            continue
+        name = c.get('FullName') or c.get('FirstName') or c.get('BusinessName') or c.get('PushName') or ''
+
+        if name:
+            out[jid.split('@')[0]] = name
+    return out
+
+
+def get_user_avatar(instance_api_key: str, number: str, preview: bool = True) -> str:
+    try:
+        avatar = _req(api_key=instance_api_key, method='POST', path='/user/avatar', json={'number': f'{number}@s.whatsapp.net', 'preview': preview})
+    except (EvolutionError, NotFound):
+        return ''
+    return avatar.get('data', {}).get('url', '')

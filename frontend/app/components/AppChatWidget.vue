@@ -12,6 +12,7 @@ const hidden = computed(() => route.path === '/meu-whatsapp')
 const raised = computed(() => route.path === '/conversas')
 
 const open = ref(false)
+const newChatOpen = ref(false)
 const draft = ref('')
 const sending = ref(false)
 
@@ -147,6 +148,7 @@ const time = (iso: string) => new Date(iso).toLocaleTimeString('pt-BR', { hour: 
         />
         <template v-if="selected">
           <UAvatar
+            :src="selected.avatar_url || undefined"
             :alt="selected.name || selected.wa_id"
             size="xs"
           />
@@ -166,6 +168,15 @@ const time = (iso: string) => new Date(iso).toLocaleTimeString('pt-BR', { hour: 
           />
           <span class="font-display font-semibold text-sm flex-1">Meu WhatsApp</span>
         </template>
+        <UButton
+          v-if="connected && !selected"
+          icon="i-lucide-message-square-plus"
+          color="neutral"
+          variant="ghost"
+          size="xs"
+          aria-label="Nova conversa"
+          @click="newChatOpen = true"
+        />
         <UButton
           icon="i-lucide-x"
           color="neutral"
@@ -205,7 +216,7 @@ const time = (iso: string) => new Date(iso).toLocaleTimeString('pt-BR', { hour: 
           v-if="!contacts.length"
           class="p-6 text-sm text-muted text-center"
         >
-          Nenhuma conversa ainda. Aparecem aqui quando alguém te manda mensagem.
+          Nenhuma conversa ainda. Comece uma no botão "+" acima, ou espere alguém te mandar mensagem.
         </p>
         <button
           v-for="contact in contacts"
@@ -214,6 +225,7 @@ const time = (iso: string) => new Date(iso).toLocaleTimeString('pt-BR', { hour: 
           @click="selectedId = contact.id"
         >
           <UAvatar
+            :src="contact.avatar_url || undefined"
             :alt="contact.name || contact.wa_id"
             size="sm"
           />
@@ -236,6 +248,13 @@ const time = (iso: string) => new Date(iso).toLocaleTimeString('pt-BR', { hour: 
             class="flex"
             :class="message.direction === 'out' ? 'justify-end' : 'justify-start'"
           >
+            <UAvatar
+              v-if="message.direction === 'in'"
+              :src="selected.avatar_url || undefined"
+              :alt="selected.name || selected.wa_id"
+              size="3xs"
+              class="self-end mr-1.5 shrink-0"
+            />
             <div
               class="max-w-[80%] rounded-2xl px-3 py-2 text-sm shadow-sm"
               :class="message.direction === 'out'
@@ -435,5 +454,7 @@ const time = (iso: string) => new Date(iso).toLocaleTimeString('pt-BR', { hour: 
         class="absolute top-1 right-1 size-2.5 rounded-full bg-success ring-2 ring-primary"
       />
     </UButton>
+
+    <AppEvolutionNewChat v-model:open="newChatOpen" />
   </div>
 </template>

@@ -1,4 +1,4 @@
-import type { EvolutionAccount, EvolutionContact, EvolutionMessage, Sticker } from '~/types/api'
+import type { EvolutionAccount, EvolutionContact, EvolutionDirectoryEntry, EvolutionMessage, Sticker } from '~/types/api'
 
 // Estado compartilhado (useState) entre a página /meu-whatsapp e o widget flutuante,
 // pra seleção/mensagens/conexão não divergirem. O "driver" (carga inicial, SSE,
@@ -14,6 +14,8 @@ export function useEvolutionChat() {
   const messages = useState<EvolutionMessage[]>('evo-messages', () => [])
   // galeria de figurinhas é company-scoped (compartilhada com o canal oficial)
   const stickers = useState<Sticker[]>('evo-stickers', () => [])
+  // destinatários possíveis pra iniciar conversa: agenda do celular + contatos do canal oficial
+  const directory = useState<EvolutionDirectoryEntry[]>('evo-directory', () => [])
 
   const selected = computed(() => contacts.value.find(c => c.id === selectedId.value) ?? null)
   const connected = computed(() => connection.value?.status === 'connected')
@@ -46,6 +48,23 @@ export function useEvolutionChat() {
     contacts.value = []
     messages.value = []
     selectedId.value = null
+    directory.value = []
+  }
+
+  async function loadDirectory() {
+    if (!connection.value) return
+    directory.value = await api<EvolutionDirectoryEntry[]>(`${base.value}/${connection.value.id}/directory`)
+  }
+
+  // cria (ou reaproveita) o contato e abre a conversa; o watcher do layout carrega a thread
+  async function startConversation(phone: string, name = '') {
+    if (!connection.value) return
+    const contact = await api<EvolutionContact>(
+      `${base.value}/${connection.value.id}/contacts`,
+      { method: 'POST', body: { phone, name } }
+    )
+    if (!contacts.value.some(c => c.id === contact.id)) contacts.value = [contact, ...contacts.value]
+    selectedId.value = contact.id
   }
 
   async function send(content: string) {
@@ -104,11 +123,14 @@ export function useEvolutionChat() {
     selectedId,
     messages,
     stickers,
+    directory,
     selected,
     connected,
     loadConnection,
     loadContacts,
     loadMessages,
+    loadDirectory,
+    startConversation,
     resetInbox,
     send,
     sendMedia,

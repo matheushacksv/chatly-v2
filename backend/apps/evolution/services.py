@@ -4,10 +4,12 @@ import random
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.files.base import ContentFile
+from django.db.models import F, OuterRef, Subquery
+from django.db.models.functions import Coalesce
 
 from apps.chats import events
-from apps.chats.models import Sticker
-from apps.chats.services import MEDIA_SPECS
+from apps.chats.models import Contact, Sticker
+from apps.chats.services import MEDIA_SPECS, normalize_number
 from apps.companies.models import Company
 from apps.evolution import evolution
 from apps.evolution.models import EvolutionAccount, EvolutionContact, EvolutionMessage
@@ -141,7 +143,13 @@ def handle_message_webhook(payload: dict):
 
     sender = info.get('Sender')
     wa_id = sender.split('@')[0].split(':')[0]
-    contact, _ = EvolutionContact.objects.get_or_create(account=account, wa_id=wa_id)
+
+    push_name = info.get('PushName') or ''
+    contact, created = EvolutionContact.objects.get_or_create(account=account, wa_id=wa_id, defaults={'name': push_name})
+    if not created and not contact.name and push_name:
+        contact.name = push_name
+        contact.save(update_fields=['name'])
+
     message_type = info.get('Type')
 
     if message_type == 'text':
@@ -225,6 +233,30 @@ EVENT_HANDLERS.update(
 # * ----- Contacts ------
 
 
+def _queue_avatar_sync(account: EvolutionAccount) -> None:
+    from apps.evolution.tasks import stale_avatars, sync_avatars
+
+    if stale_avatars(account).exists():
+        sync_avatars.delay(account.pk)
+
+
+def _fill_missing_names(account: EvolutionAccount, contacts: list[EvolutionContact]) -> None:
+    missing = [c for c in contacts if not c.name]
+    if not missing:
+        return
+    try:
+        agenda = evolution.get_device_contacts(account.instance_api_key)
+    except EvolutionError:
+        return
+    changed = []
+    for contact in missing:
+        name = agenda.get(contact.wa_id)
+        if name:
+            contact.name = name
+            changed.append(contact)
+    EvolutionContact.objects.bulk_update(changed, ['name'])
+
+
 def _get_own_contact(company: Company, user: User, account_id: int, contact_id: int) -> EvolutionContact:
     account = _get_own_or_owned_account(company, user, account_id)
     contact = EvolutionContact.objects.filter(account=account, pk=contact_id).first()
@@ -235,7 +267,39 @@ def _get_own_contact(company: Company, user: User, account_id: int, contact_id: 
 
 def list_contacts(company: Company, user: User, account_id: int) -> list[EvolutionContact]:
     account = _get_own_or_owned_account(company, user, account_id)
-    return list(EvolutionContact.objects.filter(account=account))
+    last = EvolutionMessage.objects.filter(contact=OuterRef('pk')).order_by('-id')
+    contacts = list(
+        EvolutionContact.objects.filter(account=account)
+        .annotate(activity=Coalesce(Subquery(last.values('created_at')[:1]), F('created_at')))
+        .order_by('-activity')
+    )
+    _fill_missing_names(account, contacts)
+    _queue_avatar_sync(account)
+    return contacts
+
+
+def list_directory(company: Company, user: User, account_id: int) -> list[dict]:
+    account = _get_own_or_owned_account(company, user, account_id)
+    entries: dict[str, dict] = {}
+    try:
+        for wa_id, name in evolution.get_device_contacts(account.instance_api_key).items():
+            entries[wa_id] = {'wa_id': wa_id, 'name': name, 'source': 'agenda'}
+    except EvolutionError:
+        pass
+    for wa_id, name in Contact.objects.filter(account__company=company).values_list('wa_id', 'name'):
+        entries.setdefault(wa_id, {'wa_id': wa_id, 'name': name, 'source': 'oficial'})
+
+    return sorted(entries.values(), key=lambda e: e['name'].lower())
+
+
+def start_conversation(company: Company, user: User, account_id: int, phone: str, name: str = '') -> EvolutionContact:
+    account = _get_own_or_owned_account(company, user, account_id)
+    wa_id = evolution.check_number(account.instance_api_key, normalize_number(phone))
+    if not wa_id:
+        raise ValidationError('number not on whatsapp')
+    contact, _ = EvolutionContact.objects.get_or_create(account=account, wa_id=wa_id, defaults={'name': name})
+    _queue_avatar_sync(account)
+    return contact
 
 
 # * ----- Messages ------
