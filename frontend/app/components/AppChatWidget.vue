@@ -8,10 +8,18 @@ const { connection, connected, contacts, selected, selectedId, messages, sticker
 
 // /meu-whatsapp já é o chat inteiro, bolha lá é redundante
 const hidden = computed(() => route.path === '/meu-whatsapp')
-// em /conversas a barra de envio fica no rodapé; sobe a bolha pra não tapar o botão
-const raised = computed(() => route.path === '/conversas')
+
+const { bubbleStyle, panelStyle, handleClass, handleIcon, dragged, startDrag, startResize } = useWidgetPosition()
 
 const open = ref(false)
+
+function toggle() {
+  if (dragged.value) {
+    dragged.value = false // soltou depois de arrastar: não abre/fecha
+    return
+  }
+  open.value = !open.value
+}
 const newChatOpen = ref(false)
 const draft = ref('')
 const sending = ref(false)
@@ -125,18 +133,18 @@ const time = (iso: string) => new Date(iso).toLocaleTimeString('pt-BR', { hour: 
 </script>
 
 <template>
-  <div
-    v-if="!hidden"
-    class="fixed right-4 z-50 flex flex-col items-end gap-3"
-    :class="raised ? 'bottom-24' : 'bottom-4'"
-  >
+  <div v-if="!hidden">
     <!-- painel -->
     <div
       v-if="open"
-      class="w-[calc(100vw-2rem)] sm:w-96 h-[32rem] max-h-[calc(100vh-6rem)] flex flex-col rounded-2xl bg-default ring-1 ring-default shadow-xl overflow-hidden"
+      class="fixed z-50 flex flex-col rounded-2xl bg-default ring-1 ring-default shadow-xl overflow-hidden"
+      :style="panelStyle"
     >
-      <!-- header -->
-      <div class="flex items-center gap-2 px-3 py-2.5 border-b border-default bg-elevated/50">
+      <!-- header (também é a pegada de arrasto do painel aberto) -->
+      <div
+        class="flex items-center gap-2 px-3 py-2.5 border-b border-default bg-elevated/50 cursor-grab active:cursor-grabbing select-none touch-none"
+        @pointerdown="startDrag"
+      >
         <UButton
           v-if="selected"
           icon="i-lucide-arrow-left"
@@ -438,6 +446,18 @@ const time = (iso: string) => new Date(iso).toLocaleTimeString('pt-BR', { hour: 
           </template>
         </form>
       </template>
+
+      <!-- handle de redimensionamento, no canto oposto às bordas ancoradas -->
+      <div
+        class="hidden sm:flex absolute size-4 items-center justify-center text-dimmed hover:text-muted touch-none"
+        :class="handleClass"
+        @pointerdown="startResize"
+      >
+        <UIcon
+          :name="handleIcon"
+          class="size-3"
+        />
+      </div>
     </div>
 
     <!-- bolha -->
@@ -445,9 +465,11 @@ const time = (iso: string) => new Date(iso).toLocaleTimeString('pt-BR', { hour: 
       :icon="open ? 'i-lucide-chevron-down' : 'i-lucide-message-circle'"
       color="primary"
       size="xl"
-      class="rounded-full shadow-lg size-14 justify-center relative"
+      class="fixed z-50 rounded-full shadow-lg size-14 justify-center touch-none"
+      :style="bubbleStyle"
       :aria-label="open ? 'Fechar chat' : 'Abrir chat'"
-      @click="open = !open"
+      @pointerdown="startDrag"
+      @click="toggle"
     >
       <span
         v-if="connected && !open"
