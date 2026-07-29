@@ -42,6 +42,6 @@ def import_contacts_endpoint(request, company_id: int, account_id: int, payload:
 
 @router.delete('/{company_id}/contacts/{contact_id}', response={204: None})
 def delete_contact_endpoint(request, company_id: int, contact_id: int):
-    company = companies_services.get_company(request.auth, company_id)
+    company = companies_services.get_owned_company(request.auth, company_id)
     services.delete_contact(company, contact_id)
     return Status(204, None)

@@ -301,6 +301,10 @@ def start_conversation(company: Company, user: User, account_id: int, phone: str
     _queue_avatar_sync(account)
     return contact
 
+def delete_conversation(company: Company, user: User, account_id: int, contact_id: int) -> None:
+    contact = _get_own_contact(company, user, account_id, contact_id)
+    contact.delete()
+
 
 # * ----- Messages ------
 

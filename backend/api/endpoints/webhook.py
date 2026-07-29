@@ -39,11 +39,18 @@ def receive_webhook_endpoint(request):
 
     for message in value.get('messages', []):
         msg_type = message.get('type')
-        if msg_type not in ('text', 'image', 'audio', 'video', 'document', 'sticker'):
+        if msg_type not in ('text', 'image', 'audio', 'video', 'document', 'sticker', 'interactive'):
             continue
         contact = services.get_or_create_contact(account, message['from'], name)
+        button_id = ''
         if msg_type == 'text':
             content, media_id = message['text']['body'], ''
+        elif msg_type == 'interactive':
+            reply = message.get('interactive', {}).get('button_reply', {})
+            content, media_id, button_id = reply.get('title', ''), '', reply.get('id', '')
+            msg_type = 'text'
+            if not content and not button_id:
+                continue
         else:
             media = message.get(msg_type, {})
             media_id = media.get('id', '')
@@ -56,7 +63,7 @@ def receive_webhook_endpoint(request):
                 'document': f'[documento: {media.get("filename", "")}]',
             }
             content = media.get('caption', '') or placeholders.get(msg_type, '')
-        record, created = services.record_incoming_message(contact, message['id'], content, msg_type, media_id)
+        record, created = services.record_incoming_message(contact, message['id'], content, msg_type, media_id, button_id)
         if created:
             process_incoming_message.apply_async(args=(record.pk,), countdown=account.agent.response_delay)
 

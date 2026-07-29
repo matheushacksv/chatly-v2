@@ -88,7 +88,12 @@ const nav = computed<NavigationMenuItem[]>(() => [
   { label: 'Templates', icon: 'i-lucide-layout-template', to: '/templates' },
   { label: 'Agentes', icon: 'i-lucide-bot', to: '/agentes' },
   // member não administra nada - backend devolve 404 nas rotas de admin de qualquer forma
-  ...(isOwner.value ? [{ label: 'Configurações', icon: 'i-lucide-settings', to: '/configuracoes' }] : [])
+  ...(isOwner.value
+    ? [
+        { label: 'Automações', icon: 'i-lucide-workflow', to: '/automacoes' },
+        { label: 'Configurações', icon: 'i-lucide-settings', to: '/configuracoes' }
+      ]
+    : [])
 ])
 
 const companyItems = computed(() =>
@@ -120,9 +125,19 @@ const userMenuItems = computed(() => [
   <UDashboardGroup storage="localStorage">
     <UDashboardSidebar collapsible>
       <template #header="{ collapsed }">
-        <div class="flex items-center gap-2 w-full" :class="collapsed ? 'justify-center' : ''">
-          <UIcon v-if="!collapsed" name="i-lucide-message-circle-heart" class="size-6 text-primary shrink-0" />
-          <span v-if="!collapsed" class="flex-1 font-display font-bold text-lg tracking-tight">Chatly</span>
+        <div
+          class="flex items-center gap-2 w-full"
+          :class="collapsed ? 'justify-center' : ''"
+        >
+          <UIcon
+            v-if="!collapsed"
+            name="i-lucide-message-circle-heart"
+            class="size-6 text-primary shrink-0"
+          />
+          <span
+            v-if="!collapsed"
+            class="flex-1 font-display font-bold text-lg tracking-tight"
+          >Chatly</span>
           <UDashboardSidebarCollapse />
         </div>
       </template>

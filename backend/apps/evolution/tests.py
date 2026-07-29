@@ -1035,3 +1035,75 @@ class EvolutionEndpointTests(BaseEvolutionTestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.json()['message_type'], 'sticker')
         mock_sticker.assert_called_once()
+
+
+class EvolutionDeleteConversationTests(BaseEvolutionTestCase):
+    """Apagar conversa só no Chatly (nossa DB): remove o contato + mensagens, não toca no evolution-go."""
+
+    def setUp(self):
+        super().setUp()
+        self.account = EvolutionAccount.objects.create(company=self.company, user=self.owner, instance_name='c1u1', instance_api_key='tok')
+
+    def _contact(self, wa_id='5511000000001', name='Fulano'):
+        return EvolutionContact.objects.create(account=self.account, wa_id=wa_id, name=name)
+
+    def test_deletes_contact(self):
+        contact = self._contact()
+        services.delete_conversation(self.company, self.owner, self.account.id, contact.id)
+        self.assertFalse(EvolutionContact.objects.filter(pk=contact.pk).exists())
+
+    def test_cascades_messages(self):
+        contact = self._contact()
+        EvolutionMessage.objects.create(contact=contact, direction=EvolutionMessage.Direction.IN, content='oi')
+        EvolutionMessage.objects.create(contact=contact, direction=EvolutionMessage.Direction.OUT, content='ola')
+        other = self._contact('5511000000002', 'Beltrano')
+        keep = EvolutionMessage.objects.create(contact=other, direction=EvolutionMessage.Direction.IN, content='fica')
+
+        services.delete_conversation(self.company, self.owner, self.account.id, contact.id)
+
+        self.assertEqual(EvolutionMessage.objects.filter(contact=contact).count(), 0)
+        self.assertTrue(EvolutionMessage.objects.filter(pk=keep.pk).exists())
+
+    def test_missing_contact_raises_not_found(self):
+        with self.assertRaises(NotFound):
+            services.delete_conversation(self.company, self.owner, self.account.id, 999999)
+
+    def test_member_cannot_delete_from_owners_account(self):
+        contact = self._contact()
+        with self.assertRaises(Forbidden):
+            services.delete_conversation(self.company, self.member, self.account.id, contact.id)
+        self.assertTrue(EvolutionContact.objects.filter(pk=contact.pk).exists())
+
+    def test_member_deletes_own_account_contact(self):
+        member_account = EvolutionAccount.objects.create(company=self.company, user=self.member, instance_name='c1um', instance_api_key='tok')
+        contact = EvolutionContact.objects.create(account=member_account, wa_id='5511000000003', name='Do Membro')
+        services.delete_conversation(self.company, self.member, member_account.id, contact.id)
+        self.assertFalse(EvolutionContact.objects.filter(pk=contact.pk).exists())
+
+    def test_other_company_account_raises_not_found(self):
+        other_company = Company.objects.create(name='Alheia', owner=self.outsider)
+        other_account = EvolutionAccount.objects.create(company=other_company, user=self.outsider, instance_name='c2u1', instance_api_key='tok')
+        contact = EvolutionContact.objects.create(account=other_account, wa_id='5511000000009', name='Alheio')
+        # a conta nem aparece no escopo da company do owner
+        with self.assertRaises(NotFound):
+            services.delete_conversation(self.company, self.owner, other_account.id, contact.id)
+        self.assertTrue(EvolutionContact.objects.filter(pk=contact.pk).exists())
+
+    def test_endpoint_returns_204(self):
+        # regressão: response={204: None} tem que casar com o Status(204) do endpoint (o bug do ConfigError)
+        contact = self._contact()
+        response = self.client.delete(
+            f'{self.base}/evolution-accounts/{self.account.id}/contacts/{contact.id}',
+            headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(EvolutionContact.objects.filter(pk=contact.pk).exists())
+
+    def test_endpoint_outsider_gets_404(self):
+        contact = self._contact()
+        response = self.client.delete(
+            f'{self.base}/evolution-accounts/{self.account.id}/contacts/{contact.id}',
+            headers=self.outsider_auth,
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertTrue(EvolutionContact.objects.filter(pk=contact.pk).exists())

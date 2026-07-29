@@ -16,6 +16,8 @@ export function useEvolutionChat() {
   const stickers = useState<Sticker[]>('evo-stickers', () => [])
   // destinatários possíveis pra iniciar conversa: agenda do celular + contatos do canal oficial
   const directory = useState<EvolutionDirectoryEntry[]>('evo-directory', () => [])
+  // aberto/fechado da bolha flutuante: compartilhado pra outras páginas abrirem o widget
+  const widgetOpen = useState<boolean>('evo-widget-open', () => false)
 
   const selected = computed(() => contacts.value.find(c => c.id === selectedId.value) ?? null)
   const connected = computed(() => connection.value?.status === 'connected')
@@ -65,6 +67,22 @@ export function useEvolutionChat() {
     )
     if (!contacts.value.some(c => c.id === contact.id)) contacts.value = [contact, ...contacts.value]
     selectedId.value = contact.id
+  }
+
+  // apaga a conversa só no Chatly (nossa DB); não toca no WhatsApp do atendente
+  async function deleteConversation(contactId: number) {
+    if (!connection.value) return
+    try {
+      await api(`${base.value}/${connection.value.id}/contacts/${contactId}`, { method: 'DELETE' })
+    } catch (error) {
+      // 404 = já não existe no servidor (estado local ficou stale): objetivo cumprido, limpa mesmo assim
+      if ((error as { status?: number }).status !== 404) throw error
+    }
+    contacts.value = contacts.value.filter(c => c.id !== contactId)
+    if (selectedId.value === contactId) {
+      selectedId.value = null
+      messages.value = []
+    }
   }
 
   async function send(content: string) {
@@ -124,6 +142,7 @@ export function useEvolutionChat() {
     messages,
     stickers,
     directory,
+    widgetOpen,
     selected,
     connected,
     loadConnection,
@@ -131,6 +150,7 @@ export function useEvolutionChat() {
     loadMessages,
     loadDirectory,
     startConversation,
+    deleteConversation,
     resetInbox,
     send,
     sendMedia,

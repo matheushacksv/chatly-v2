@@ -3,7 +3,8 @@ import type { Contact, Message, Paginated, Sticker, Template, WhatsAppAccount } 
 
 const api = useApi()
 const toast = useToast()
-const { activeId: companyId } = useCompany()
+const confirmModal = useConfirm()
+const { activeId: companyId, isOwner } = useCompany()
 
 // ---- contas WhatsApp ----
 const { data: accounts } = await useAsyncData(
@@ -404,8 +405,49 @@ async function clearMemory() {
   }
 }
 
+// ---- apagar conversa (só dono) ----
+// remove contato + histórico do Chatly; não mexe no WhatsApp do cliente (é só o registro local)
+async function deleteConversation(contact: Contact) {
+  const ok = await confirmModal({
+    title: 'Apagar conversa',
+    description: `A conversa com ${contact.name || contact.wa_id} e todo o histórico somem do Chatly. Não afeta o WhatsApp do cliente.`,
+    confirmLabel: 'Apagar'
+  })
+  if (!ok) return
+  try {
+    await api(`/companies/${companyId.value}/contacts/${contact.id}`, { method: 'DELETE' })
+    contacts.value = contacts.value.filter(c => c.id !== contact.id)
+    if (selectedId.value === contact.id) selectedId.value = null
+    toast.add({ title: 'Conversa apagada', icon: 'i-lucide-trash-2' })
+  } catch (error) {
+    toast.add({ title: apiErrorDetail(error, 'Falha ao apagar'), color: 'error' })
+  }
+}
+
 // ---- painel de detalhes ----
 const detailOpen = ref(false)
+
+// ---- abrir no meu WhatsApp (canal pessoal / evolution) ----
+// reusa o estado global do useEvolutionChat: startConversation seta o selecionado,
+// o watcher do layout carrega a thread, e navegar pra /meu-whatsapp já mostra a conversa.
+const { connected: evoConnected, startConversation: startEvoConversation, widgetOpen: evoWidgetOpen } = useEvolutionChat()
+const openingEvo = ref(false)
+async function openInEvolution() {
+  if (!selected.value || openingEvo.value) return
+  openingEvo.value = true
+  try {
+    await startEvoConversation(selected.value.wa_id, selected.value.name)
+    evoWidgetOpen.value = true
+  } catch (error) {
+    const detail = apiErrorDetail(error, '')
+    toast.add({
+      title: detail.includes('not on whatsapp') ? 'Esse número não tem WhatsApp' : detail || 'Não foi possível abrir no seu WhatsApp',
+      color: 'error'
+    })
+  } finally {
+    openingEvo.value = false
+  }
+}
 
 // ---- helpers ----
 const timeFmt = new Intl.DateTimeFormat('pt-BR', { hour: '2-digit', minute: '2-digit' })
@@ -575,6 +617,17 @@ const accountItems = computed(() =>
         </template>
         <template #right>
           <template v-if="selected">
+            <UButton
+              v-if="evoConnected"
+              icon="i-lucide-smartphone"
+              color="neutral"
+              variant="ghost"
+              size="sm"
+              :loading="openingEvo"
+              aria-label="Falar pelo meu WhatsApp"
+              title="Falar pelo meu WhatsApp"
+              @click="openInEvolution"
+            />
             <UBadge
               :color="selected.ai_paused ? 'warning' : 'success'"
               variant="subtle"
@@ -598,6 +651,16 @@ const accountItems = computed(() =>
               class="hidden lg:inline-flex"
               :aria-label="detailOpen ? 'Ocultar detalhes' : 'Mostrar detalhes'"
               @click="detailOpen = !detailOpen"
+            />
+            <UButton
+              v-if="isOwner"
+              icon="i-lucide-trash-2"
+              color="error"
+              variant="ghost"
+              size="sm"
+              aria-label="Apagar conversa"
+              title="Apagar conversa"
+              @click="deleteConversation(selected)"
             />
           </template>
         </template>

@@ -352,6 +352,16 @@ class ContactTests(BaseChatsTestCase):
         self.assertEqual(response.status_code, 404)
         self.assertTrue(Contact.objects.filter(pk=self.other_contact.pk).exists())
 
+    def test_member_cannot_delete_contact(self):
+        # apagar conversa é só do dono (get_owned_company); membro comum recebe 404 e nada some
+        member = User.objects.create_user(email='member@a.com', password='strongpass123')
+        Membership.objects.create(company=self.company, user=member)
+        response = self.client.delete(
+            f'/api/companies/{self.company.pk}/contacts/{self.contact.pk}', headers=auth_header(member)
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertTrue(Contact.objects.filter(pk=self.contact.pk).exists())
+
     # memória
 
     def memory_url(self, company_id: int, contact_id: int) -> str:
@@ -1058,11 +1068,29 @@ class WebhookTests(BaseChatsTestCase):
             }],
         }
 
+    def interactive_payload(self, wa_id='5511777777777', wamid='wamid.btn', button_id='b1', title='Sim'):
+        payload = self.message_payload(wa_id=wa_id, wamid=wamid)
+        payload['entry'][0]['changes'][0]['value']['messages'][0] = {
+            'from': wa_id, 'id': wamid, 'timestamp': '1720000000',
+            'type': 'interactive',
+            'interactive': {'type': 'button_reply', 'button_reply': {'id': button_id, 'title': title}},
+        }
+        return payload
+
     def post_webhook(self, payload: dict, signature: str | None = None):
         # assina os MESMOS bytes enviados - HMAC é sobre o body cru
         body = json.dumps(payload).encode()
         headers = {'X-Hub-Signature-256': signature if signature is not None else self.sign(body)}
         return self.client.post(self.URL, data=body, content_type='application/json', headers=headers)
+
+    def test_interactive_button_reply_stores_button_id(self):
+        response = self.post_webhook(self.interactive_payload())
+        self.assertEqual(response.status_code, 200)
+        msg = Message.objects.get(wa_message_id='wamid.btn')
+        self.assertEqual(msg.button_id, 'b1')      # id do botão sobrevive pro dispatch_incoming
+        self.assertEqual(msg.content, 'Sim')       # título vira o content
+        self.assertEqual(msg.message_type, 'text')  # guardado como text (cabe no max_length)
+        self.mock_enqueue.assert_called_once()
 
     # GET verificação
 

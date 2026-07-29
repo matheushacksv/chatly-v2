@@ -116,3 +116,10 @@ def save_evolution_sticker_endpoint(request, company_id: int, account_id: int, p
 def send_evolution_sticker_endpoint(request, company_id: int, account_id: int, contact_id: int, payload: SendStickerDTO):
     company = companies_services.get_company(request.auth, company_id)
     return Status(201, services.send_saved_sticker(company, request.auth, account_id, contact_id, payload.sticker_id))
+
+
+@router.delete('/{company_id}/evolution-accounts/{account_id}/contacts/{contact_id}', response={204: None})
+def delete_conversation_endpoint(request, company_id: int, account_id: int, contact_id: int):
+    company = companies_services.get_company(request.auth, company_id)
+    services.delete_conversation(company, request.auth, account_id, contact_id)
+    return Status(204, None)

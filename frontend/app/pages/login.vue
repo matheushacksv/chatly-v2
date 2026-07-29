@@ -13,6 +13,10 @@ const schema = z.object({
 
 const state = reactive({ email: '', password: '' })
 const loading = ref(false)
+const showPassword = ref(false)
+function togglePassword() {
+  showPassword.value = !showPassword.value
+}
 const hasInvite = !!localStorage.getItem('chatly_invite')
 
 async function onSubmit() {
@@ -58,7 +62,26 @@ async function onSubmit() {
           </UFormField>
 
           <UFormField name="password" label="Senha" required>
-            <UInput v-model="state.password" type="password" size="lg" class="w-full" />
+            <UInput
+              v-model="state.password"
+              :type="showPassword ? 'text' : 'password'"
+              size="lg"
+              class="w-full"
+              :ui="{ trailing: 'pe-1' }"
+            >
+              <template #trailing>
+                <UButton
+                  color="neutral"
+                  variant="link"
+                  size="sm"
+                  :icon="showPassword ? 'i-lucide-eye-off' : 'i-lucide-eye'"
+                  :aria-label="showPassword ? 'Ocultar senha' : 'Mostrar senha'"
+                  :aria-pressed="showPassword"
+                  tabindex="-1"
+                  @click="togglePassword"
+                />
+              </template>
+            </UInput>
           </UFormField>
 
           <UButton type="submit" block size="lg" :loading="loading">Entrar</UButton>

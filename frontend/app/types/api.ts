@@ -273,3 +273,101 @@ export interface EvolutionConnect {
   qrcode: string
   pair_code: string
 }
+
+// ---- Automações (fluxos) ----
+// Rotas que o front consome (router montado em /automations):
+//   GET|POST    /automations/{company_id}/flows
+//   GET|PUT|DELETE /automations/{company_id}/flows/{id}
+//   POST        /automations/{company_id}/flows/{id}/activate   (body: {active: bool})
+//   GET         /automations/{company_id}/flows/{id}/runs       (paginado)
+//   GET|POST    /automations/{company_id}/lead-sources
+//   DELETE      /automations/{company_id}/lead-sources/{id}
+//   POST        /automations/leads/{token}                      (público, auth=None)
+
+export type FlowNodeType
+  = 'start' | 'template' | 'message' | 'buttons' | 'wait' | 'condition' | 'delay' | 'crm' | 'pause' | 'handoff' | 'ai' | 'end'
+
+export type FlowTrigger = 'lead' | 'first_message' | 'keyword'
+
+export interface FlowButton {
+  id: string
+  title: string
+}
+
+/** Config do nó. Cada tipo usa um subconjunto, por isso tudo opcional. */
+export interface FlowNodeData {
+  template_name?: string
+  language?: string
+  body_params?: string[]
+  header_media_id?: string
+  text?: string
+  buttons?: FlowButton[]
+  var?: string
+  timeout_minutes?: number
+  source?: string
+  op?: 'contains' | 'equals' | 'regex'
+  value?: string
+  minutes?: number
+  action?: 'person' | 'deal' | 'note' | 'stage'
+  title?: string
+  stage_id?: number
+}
+
+export interface FlowNode {
+  id: string
+  type: FlowNodeType
+  position: { x: number, y: number }
+  data: FlowNodeData
+}
+
+export interface FlowEdge {
+  id: string
+  source: string
+  target: string
+  // saída de origem: id do botão, 'sim'/'nao' na condição, null quando o nó tem saída única
+  sourceHandle?: string | null
+}
+
+export interface FlowGraph {
+  nodes: FlowNode[]
+  edges: FlowEdge[]
+}
+
+export interface Flow {
+  id: number
+  name: string
+  account: number
+  trigger: FlowTrigger
+  trigger_config: { source_id?: number, keyword?: string }
+  graph: FlowGraph
+  active: boolean
+  updated_at: string
+  run_count: number
+}
+
+export interface FlowRunStep {
+  node: string
+  type: string
+  at: string
+  result: string
+}
+
+export interface FlowRun {
+  id: number
+  contact_id: number
+  contact_name: string
+  status: 'running' | 'waiting' | 'done' | 'failed'
+  node_id: string
+  steps: FlowRunStep[]
+  created_at: string
+  updated_at: string
+}
+
+export interface LeadSource {
+  id: number
+  name: string
+  account: number
+  token: string
+  active: boolean
+  created_at: string
+}
