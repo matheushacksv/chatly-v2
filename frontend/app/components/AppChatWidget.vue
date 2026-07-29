@@ -4,14 +4,12 @@
 const toast = useToast()
 const route = useRoute()
 const { activeId: companyId } = useCompany()
-const { connection, connected, contacts, selected, selectedId, messages, stickers, send, sendMedia, loadStickers, saveSticker, sendSticker, deleteSticker } = useEvolutionChat()
+const { connection, connected, contacts, selected, selectedId, messages, stickers, widgetOpen: open, send, sendMedia, loadStickers, saveSticker, sendSticker, deleteSticker } = useEvolutionChat()
 
 // /meu-whatsapp já é o chat inteiro, bolha lá é redundante
 const hidden = computed(() => route.path === '/meu-whatsapp')
 
 const { bubbleStyle, panelStyle, handleClass, handleIcon, dragged, startDrag, startResize } = useWidgetPosition()
-
-const open = ref(false)
 
 function toggle() {
   if (dragged.value) {

@@ -5,6 +5,7 @@ from core.exceptions import ValidationError
 
 GRAPH_URL = 'https://graph.facebook.com/v25.0'
 
+
 def _graph_error(response: httpx.Response) -> None:
     """Levanta ValidationError com a mensagem real da Meta"""
     if response.is_success:
@@ -88,14 +89,13 @@ def list_templates(account: WhatsAppAccount) -> list[dict]:
     return response.json()['data']
 
 
-def send_template(account: WhatsAppAccount, wa_id: str, name: str, language: str, body_params: list[str], header_media_id: str = '', header_media_type: str = '') -> str:
+def send_template(
+    account: WhatsAppAccount, wa_id: str, name: str, language: str, body_params: list[str], header_media_id: str = '', header_media_type: str = ''
+) -> str:
     template: dict = {'name': name, 'language': {'code': language}}
     components = []
     if header_media_id and header_media_type:
-        components.append({
-            'type': 'header',
-            'parameters': [{'type': header_media_type, header_media_type: {'id': header_media_id}}]
-        })
+        components.append({'type': 'header', 'parameters': [{'type': header_media_type, header_media_type: {'id': header_media_id}}]})
     if body_params:
         components.append({'type': 'body', 'parameters': [{'type': 'text', 'text': p} for p in body_params]})
     if components:
@@ -110,6 +110,7 @@ def send_template(account: WhatsAppAccount, wa_id: str, name: str, language: str
     response.raise_for_status()
     return response.json()['messages'][0]['id']
 
+
 def create_template(account: WhatsAppAccount, payload: dict) -> dict:
     response = httpx.post(
         f'{GRAPH_URL}/{account.waba_id}/message_templates',
@@ -119,6 +120,7 @@ def create_template(account: WhatsAppAccount, payload: dict) -> dict:
     )
     _graph_error(response)
     return response.json()
+
 
 def edit_template(account: WhatsAppAccount, template_id: str, components: list, category: str | None = None) -> dict:
     payload: dict = {'components': components}
@@ -133,6 +135,7 @@ def edit_template(account: WhatsAppAccount, template_id: str, components: list, 
     _graph_error(response)
     return response.json()
 
+
 def delete_template(account: WhatsAppAccount, name: str, template_id: str | None = None) -> None:
     params: dict = {'name': name}
     if template_id:
@@ -143,6 +146,7 @@ def delete_template(account: WhatsAppAccount, name: str, template_id: str | None
         params=params,
     )
     _graph_error(response)
+
 
 def upload_sample_media(account: WhatsAppAccount, content: bytes, mime: str, filename: str) -> str:
     if not account.app_id:
@@ -165,3 +169,23 @@ def upload_sample_media(account: WhatsAppAccount, content: bytes, mime: str, fil
     )
     _graph_error(upload_response)
     return upload_response.json()['h']
+
+
+def send_interactive(account: WhatsAppAccount, wa_id: str, text: str, buttons: list[dict]) -> str:
+    response = httpx.post(
+        f'{GRAPH_URL}/{account.phone_number_id}/messages',
+        headers={'Authorization': f'Bearer {account.access_token}'},
+        json={
+            'messaging_product': 'whatsapp',
+            'to': wa_id,
+            'type': 'interactive',
+            'interactive': {
+                'type': 'button',
+                'body': {'text': text},
+                'action': {'buttons': [{'type': 'reply', 'reply': {'id': b['id'], 'title': b['title'][:20]}} for b in buttons[:3]]},
+            },
+        },
+        timeout=10,
+    )
+    response.raise_for_status()
+    return response.json()['messages'][0]['id']

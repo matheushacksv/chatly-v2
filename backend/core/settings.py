@@ -44,7 +44,8 @@ INSTALLED_APPS = [
     'apps.agents',
     'apps.chats',
     'apps.crm',
-    'apps.evolution'
+    'apps.evolution',
+    'apps.automations',
 ]
 
 MIDDLEWARE = [

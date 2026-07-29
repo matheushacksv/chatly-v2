@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { EvolutionAccount, EvolutionConnect } from '~/types/api'
+import type { EvolutionAccount, EvolutionConnect, EvolutionContact } from '~/types/api'
 
 const api = useApi()
 const toast = useToast()
@@ -18,6 +18,7 @@ const {
   loadConnection,
   loadContacts,
   resetInbox,
+  deleteConversation,
   send: sendMessage,
   sendMedia,
   loadStickers,
@@ -160,6 +161,21 @@ const isPlaceholder = (content: string) => /^\[.+\]$/.test(content)
 
 // nova conversa (modal compartilhado com o widget)
 const newChatOpen = ref(false)
+
+async function removeConversation(contact: EvolutionContact) {
+  const ok = await confirmModal({
+    title: 'Apagar conversa',
+    description: `A conversa com ${contact.name || contact.wa_id} some do Chatly. Não apaga nada no seu WhatsApp.`,
+    confirmLabel: 'Apagar'
+  })
+  if (!ok) return
+  try {
+    await deleteConversation(contact.id)
+    toast.add({ title: 'Conversa apagada', icon: 'i-lucide-trash-2' })
+  } catch (error) {
+    toast.add({ title: apiErrorDetail(error, 'Falha ao apagar'), color: 'error' })
+  }
+}
 
 // figurinhas
 const stickerPickerOpen = ref(false)
@@ -398,25 +414,38 @@ const time = (iso: string) => new Date(iso).toLocaleTimeString('pt-BR', { hour: 
           v-else
           class="-mx-4"
         >
-          <button
+          <div
             v-for="contact in contacts"
             :key="contact.id"
-            class="w-full text-left px-3 py-2.5 flex items-center gap-3 border-l-2 transition-colors"
-            :class="contact.id === selectedId
-              ? 'border-primary bg-primary/5'
-              : 'border-transparent hover:bg-elevated/60'"
-            @click="selectedId = contact.id"
+            class="relative group"
           >
-            <UAvatar
-              :src="contact.avatar_url || undefined"
-              :alt="contact.name || contact.wa_id"
-              size="md"
+            <button
+              class="w-full text-left pl-3 pr-10 py-2.5 flex items-center gap-3 border-l-2 transition-colors"
+              :class="contact.id === selectedId
+                ? 'border-primary bg-primary/5'
+                : 'border-transparent hover:bg-elevated/60'"
+              @click="selectedId = contact.id"
+            >
+              <UAvatar
+                :src="contact.avatar_url || undefined"
+                :alt="contact.name || contact.wa_id"
+                size="md"
+              />
+              <div class="flex-1 min-w-0">
+                <span class="font-medium truncate block">{{ contact.name || contact.wa_id }}</span>
+                <span class="text-[11px] text-muted font-mono truncate block">{{ contact.wa_id }}</span>
+              </div>
+            </button>
+            <UButton
+              icon="i-lucide-trash-2"
+              color="error"
+              variant="ghost"
+              size="xs"
+              class="absolute right-1.5 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus:opacity-100"
+              aria-label="Apagar conversa"
+              @click="removeConversation(contact)"
             />
-            <div class="flex-1 min-w-0">
-              <span class="font-medium truncate block">{{ contact.name || contact.wa_id }}</span>
-              <span class="text-[11px] text-muted font-mono truncate block">{{ contact.wa_id }}</span>
-            </div>
-          </button>
+          </div>
         </div>
       </template>
 

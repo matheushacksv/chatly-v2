@@ -25,6 +25,12 @@ def process_incoming_message(self, message_id: int):
             audio_bytes, audio_mime = whatsapp.download_media(account, message.media_id)
             message.content = ai.transcribe_audio(audio_bytes, audio_mime)
             message.save(update_fields=['content'])
+
+        from apps.automations import services as flow_services
+
+        if flow_services.dispatch_incoming(message):
+            return
+
         if contact.ai_paused:
             return
         if Message.objects.filter(contact=contact, direction='in', pk__gt=message.pk).exists():

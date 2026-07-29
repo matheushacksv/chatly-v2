@@ -570,11 +570,18 @@ def get_or_create_contact(account: WhatsAppAccount, wa_id: str, name: str = '') 
 
 
 def record_incoming_message(
-    contact: Contact, wa_mesage_id: str, content: str, message_type: str = 'text', media_id: str = ''
+    contact: Contact, wa_mesage_id: str, content: str, message_type: str = 'text', media_id: str = '', button_id: str = ''
 ) -> tuple[Message, bool]:
     message, created = Message.objects.get_or_create(
         wa_message_id=wa_mesage_id,
-        defaults={'contact': contact, 'direction': 'in', 'content': content, 'message_type': message_type, 'media_id': media_id},
+        defaults={
+            'contact': contact,
+            'direction': 'in',
+            'content': content,
+            'message_type': message_type,
+            'media_id': media_id,
+            'button_id': button_id,
+        },
     )
     events.publish(contact.account.company_id, {'type': 'message', 'contact_id': contact.pk})
     return message, created

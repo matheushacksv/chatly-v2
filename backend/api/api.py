@@ -3,6 +3,7 @@ from ninja_jwt.authentication import JWTAuth
 
 from api.endpoints.accounts import router as accounts_router
 from api.endpoints.agents import router as agents_router
+from api.endpoints.automations import router as automations_router
 from api.endpoints.campaign import router as campaigns_router
 from api.endpoints.companies import router as companies_router
 from api.endpoints.contacts import router as contacts_router
@@ -41,3 +42,4 @@ api.add_router('/companies', campaigns_router)
 api.add_router('/companies', crm_router)
 api.add_router('/companies', templates_router)
 api.add_router('/evolution', evolution_router)
+api.add_router('/automations', automations_router)

@@ -11,7 +11,12 @@ export default defineNuxtConfig({
     enabled: true
   },
 
-  css: ['~/assets/css/main.css'],
+  css: [
+    '~/assets/css/main.css',
+    // canvas do editor de automações
+    '@vue-flow/core/dist/style.css',
+    '@vue-flow/core/dist/theme-default.css'
+  ],
 
   runtimeConfig: {
     public: {

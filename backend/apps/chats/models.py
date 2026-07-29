@@ -69,6 +69,7 @@ class Message(models.Model):
     error_detail = models.CharField(max_length=255, blank=True, default='')
     wa_message_id = models.CharField(max_length=128, unique=True, null=True, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.RECEIVED)
+    button_id = models.CharField(max_length=64, blank=True, default='')
     from_human = models.BooleanField(default=False)
     campaign = models.ForeignKey('Campaign', on_delete=models.SET_NULL, null=True, blank=True, related_name='messages')
     created_at = models.DateTimeField(auto_now_add=True)
