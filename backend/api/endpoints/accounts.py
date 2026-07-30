@@ -18,7 +18,7 @@ router = Router(tags=['Auth'])
 
 @router.post('/register', response={201: UserOutDTO}, auth=None)
 def register_endpoint(request, payload: RegisterUserDTO):
-    return Status(201, services.register_user(payload.email, payload.password, payload.name))
+    return Status(201, services.register_user(payload.email, payload.password, payload.name, invite=payload.invite))
 
 
 @router.post('/login', response=TokenOutDTO, auth=None)

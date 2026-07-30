@@ -1,13 +1,16 @@
+from datetime import timedelta
 from typing import cast
 from unittest.mock import patch
 
 from django.contrib.auth.tokens import default_token_generator
 from django.test import TestCase
+from django.utils import timezone
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
 from ninja_jwt.tokens import RefreshToken
 
-from apps.accounts.models import User
+from apps.accounts.models import SiteConfig, User
+from apps.companies.models import Company, Invite
 
 
 class RegisterTests(TestCase):
@@ -26,6 +29,56 @@ class RegisterTests(TestCase):
             self.url, data={'email': 'a@a.com', 'password': 'strongpass123', 'repeat_password': 'strongpass123'}, content_type='application/json'
         )
         self.assertEqual(response.status_code, 409)
+
+
+class RegistrationControlTests(TestCase):
+    url = '/api/auth/register'
+
+    def _post(self, email, invite=None):
+        data = {'email': email, 'password': 'strongpass123', 'repeat_password': 'strongpass123'}
+        if invite is not None:
+            data['invite'] = invite
+        return self.client.post(self.url, data=data, content_type='application/json')
+
+    def _invite(self, days_old=0):
+        owner = User.objects.create_user(email=f'owner{days_old}@a.com', password='strongpass123')
+        company = Company.objects.create(name='Acme', owner=owner)
+        invite = Invite.objects.create(company=company)
+        if days_old:
+            # created_at é auto_now_add; sobrescreve via .update pra simular convite velho
+            Invite.objects.filter(pk=invite.pk).update(created_at=timezone.now() - timedelta(days=days_old))
+        return invite
+
+    def test_open_by_default_no_config_row(self):
+        self.assertTrue(SiteConfig.registration_is_open())
+        self.assertEqual(self._post('open@a.com').status_code, 201)
+
+    def test_closed_blocks_registration(self):
+        SiteConfig.objects.create(registration_open=False)
+        response = self._post('blocked@a.com')
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json(), {'detail': 'cadastros fechados no momento'})
+        self.assertFalse(User.objects.filter(email='blocked@a.com').exists())
+
+    def test_open_config_allows_registration(self):
+        SiteConfig.objects.create(registration_open=True)
+        self.assertEqual(self._post('allowed@a.com').status_code, 201)
+
+    def test_closed_with_valid_invite_allows(self):
+        SiteConfig.objects.create(registration_open=False)
+        invite = self._invite()
+        response = self._post('invited@a.com', invite=invite.token)
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(User.objects.filter(email='invited@a.com').exists())
+
+    def test_closed_with_expired_invite_blocks(self):
+        SiteConfig.objects.create(registration_open=False)
+        invite = self._invite(days_old=8)
+        self.assertEqual(self._post('late@a.com', invite=invite.token).status_code, 403)
+
+    def test_closed_with_unknown_invite_blocks(self):
+        SiteConfig.objects.create(registration_open=False)
+        self.assertEqual(self._post('fake@a.com', invite='does-not-exist').status_code, 403)
 
 
 class LoginTests(TestCase):
