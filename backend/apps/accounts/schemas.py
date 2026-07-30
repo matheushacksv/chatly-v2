@@ -12,6 +12,7 @@ class RegisterUserDTO(Schema):
     password: str
     repeat_password: str
     name: str | None = None
+    invite: str | None = None
 
     @model_validator(mode='after')
     def _validate_fields(self) -> Self:

@@ -35,3 +35,18 @@ class User(AbstractUser):
 
     def __str__(self):
         return self.name if self.name else self.email
+
+class SiteConfig(models.Model):
+    registration_open = models.BooleanField(default=True)
+
+    class Meta:
+        verbose_name = 'Configuração do site'
+        verbose_name_plural = 'Configuração do site'
+
+    def __str__(self):
+        return 'Configuração do site'
+
+    @classmethod
+    def registration_is_open(cls):
+        obj = cls.objects.first()
+        return obj.registration_open if obj else True
