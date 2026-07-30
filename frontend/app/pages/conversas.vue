@@ -486,7 +486,7 @@ const accountItems = computed(() =>
 </script>
 
 <template>
-  <UDashboardPanel id="contacts" resizable :default-size="25" :min-size="18" :max-size="35">
+  <UDashboardPanel id="contacts" resizable :default-size="25" :min-size="15" :max-size="50">
     <template #header>
       <UDashboardNavbar title="Conversas">
         <template #right>
@@ -644,15 +644,6 @@ const accountItems = computed(() =>
               @click="setPaused(!selected.ai_paused)"
             />
             <UButton
-              :icon="detailOpen ? 'i-lucide-panel-right-close' : 'i-lucide-panel-right-open'"
-              color="neutral"
-              variant="ghost"
-              size="sm"
-              class="hidden lg:inline-flex"
-              :aria-label="detailOpen ? 'Ocultar detalhes' : 'Mostrar detalhes'"
-              @click="detailOpen = !detailOpen"
-            />
-            <UButton
               v-if="isOwner"
               icon="i-lucide-trash-2"
               color="error"
@@ -661,6 +652,15 @@ const accountItems = computed(() =>
               aria-label="Apagar conversa"
               title="Apagar conversa"
               @click="deleteConversation(selected)"
+            />
+            <UButton
+              :icon="detailOpen ? 'i-lucide-panel-right-close' : 'i-lucide-panel-right-open'"
+              color="neutral"
+              variant="ghost"
+              size="sm"
+              class="hidden lg:inline-flex"
+              :aria-label="detailOpen ? 'Ocultar detalhes' : 'Mostrar detalhes'"
+              @click="detailOpen = !detailOpen"
             />
           </template>
         </template>
@@ -913,6 +913,8 @@ const accountItems = computed(() =>
           <pre v-if="selected.memory" class="text-xs bg-elevated rounded-lg p-3 whitespace-pre-wrap break-words font-sans">{{ selected.memory }}</pre>
           <p v-else class="text-sm text-muted">Nada anotado ainda.</p>
         </div>
+
+        <USeparator v-if="companyId" icon="i-lucide-handshake" />
 
         <PipedrivePanel v-if="companyId" :company-id="companyId" :contact="selected" />
       </div>

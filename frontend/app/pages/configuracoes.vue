@@ -1,5 +1,15 @@
 <script setup lang="ts">
+import type { TabsItem } from '@nuxt/ui'
 import type { Agent, Credential, Invite, Member, PipedriveConfig, PipedrivePipeline, WhatsAppAccount } from '~/types/api'
+
+const tab = ref('credenciais')
+const settingsTabs: TabsItem[] = [
+  { label: 'Credenciais de IA', icon: 'i-lucide-key-round', value: 'credenciais', slot: 'credenciais' },
+  { label: 'Pipedrive', icon: 'i-lucide-handshake', value: 'pipedrive', slot: 'pipedrive' },
+  { label: 'WhatsApp', icon: 'i-lucide-phone', value: 'whatsapp', slot: 'whatsapp' },
+  { label: 'Membros', icon: 'i-lucide-users', value: 'membros', slot: 'membros' },
+  { label: 'Empresa', icon: 'i-lucide-building-2', value: 'empresa', slot: 'empresa' }
+]
 
 const api = useApi()
 const toast = useToast()
@@ -375,9 +385,10 @@ async function disconnectPipedrive() {
           color="neutral"
         />
 
-        <template v-else>
+        <UTabs v-else v-model="tab" :items="settingsTabs" variant="link" class="w-full">
+          <template #credenciais>
           <!-- Credenciais -->
-          <section class="space-y-3">
+          <section class="space-y-3 pt-4">
             <div>
               <h2 class="font-display font-semibold text-lg">Credenciais de IA</h2>
               <p class="text-sm text-muted">Chaves de API usadas pelos seus agentes. A chave nunca é exibida depois de salva.</p>
@@ -408,11 +419,11 @@ async function disconnectPipedrive() {
               <UButton type="submit" label="Adicionar" :loading="savingCredential" :disabled="!newCredential.api_key.trim()" />
             </form>
           </section>
+          </template>
 
-          <USeparator />
-
+          <template #pipedrive>
           <!-- Pipedrive -->
-          <section class="space-y-3">
+          <section class="space-y-3 pt-4">
             <div class="flex items-start justify-between gap-4">
               <div>
                 <h2 class="font-display font-semibold text-lg">Pipedrive</h2>
@@ -450,11 +461,11 @@ async function disconnectPipedrive() {
               </div>
             </template>
           </section>
+          </template>
 
-          <USeparator />
-
+          <template #whatsapp>
           <!-- Contas WhatsApp -->
-          <section class="space-y-3">
+          <section class="space-y-3 pt-4">
             <div class="flex items-start justify-between gap-4">
               <div>
                 <h2 class="font-display font-semibold text-lg">Contas WhatsApp</h2>
@@ -490,11 +501,11 @@ async function disconnectPipedrive() {
             </div>
             <p v-else-if="agents.length" class="text-sm text-muted">Nenhum número conectado ainda.</p>
           </section>
+          </template>
 
-          <USeparator />
-
+          <template #membros>
           <!-- Membros -->
-          <section class="space-y-3">
+          <section class="space-y-3 pt-4">
             <div class="flex items-start justify-between gap-4">
               <div>
                 <h2 class="font-display font-semibold text-lg">Membros</h2>
@@ -549,11 +560,11 @@ async function disconnectPipedrive() {
               </div>
             </div>
           </section>
+          </template>
 
-          <USeparator />
-
+          <template #empresa>
           <!-- Empresa -->
-          <section class="space-y-3">
+          <section class="space-y-3 pt-4">
             <div>
               <h2 class="font-display font-semibold text-lg">Empresa</h2>
               <p class="text-sm text-muted">Dados da empresa ativa.</p>
@@ -572,7 +583,8 @@ async function disconnectPipedrive() {
               <UButton label="Excluir" color="error" variant="soft" icon="i-lucide-trash-2" @click="removeCompany()" />
             </div>
           </section>
-        </template>
+          </template>
+        </UTabs>
       </div>
     </template>
   </UDashboardPanel>
