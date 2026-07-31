@@ -293,8 +293,11 @@ const pipedriveKey = ref('')
 const connectingPipedrive = ref(false)
 const pipelineId = ref<number | undefined>()
 const stageId = ref<number | undefined>()
+const leadAccountId = ref<number | undefined>()
 const savingDefaults = ref(false)
 
+// selector só faz sentido com mais de um número; com um só o backend já auto-vincula
+const accountItems = computed(() => accounts.value.map(a => ({ label: a.phone_number_id, value: a.id })))
 const pipelineItems = computed(() => pipelines.value.map(p => ({ label: p.name, value: p.id })))
 const stageItems = computed(() =>
   pipelines.value.find(p => p.id === pipelineId.value)?.stages.map(s => ({ label: s.name, value: s.id })) ?? []
@@ -310,6 +313,7 @@ async function loadPipedrive() {
   }
   pipelineId.value = pipedrive.value.default_pipeline_id ?? undefined
   stageId.value = pipedrive.value.default_stage_id ?? undefined
+  leadAccountId.value = pipedrive.value.lead_account_id ?? undefined
   try {
     pipelines.value = await api<PipedrivePipeline[]>(`/companies/${companyId.value}/pipedrive/pipelines`)
   } catch (error) {
@@ -337,7 +341,7 @@ async function savePipedriveDefaults() {
   savingDefaults.value = true
   try {
     pipedrive.value = await api<PipedriveConfig>(`/companies/${companyId.value}/pipedrive`, {
-      method: 'PATCH', body: { pipeline_id: pipelineId.value ?? null, stage_id: stageId.value ?? null }
+      method: 'PATCH', body: { pipeline_id: pipelineId.value ?? null, stage_id: stageId.value ?? null, lead_account_id: leadAccountId.value ?? null }
     })
     toast.add({ title: 'Funil padrão salvo', color: 'success' })
   } catch (error) {
@@ -360,6 +364,7 @@ async function disconnectPipedrive() {
     pipelines.value = []
     pipelineId.value = undefined
     stageId.value = undefined
+    leadAccountId.value = undefined
     toast.add({ title: 'Pipedrive desconectado', icon: 'i-lucide-trash-2' })
   } catch (error) {
     toast.add({ title: apiErrorDetail(error), color: 'error' })
@@ -429,7 +434,10 @@ async function disconnectPipedrive() {
                 <h2 class="font-display font-semibold text-lg">Pipedrive</h2>
                 <p class="text-sm text-muted">CRM integrado: a IA e os atendentes criam negócios e anotações. A chave nunca é exibida depois de salva.</p>
               </div>
-              <UBadge v-if="pipedrive" color="success" variant="subtle">Conectado</UBadge>
+              <div v-if="pipedrive" class="flex items-center gap-2">
+                <UBadge color="success" variant="subtle">Conectado</UBadge>
+                <UBadge v-if="pipedrive.receiving_events" color="primary" variant="subtle" icon="i-lucide-webhook">Recebendo leads</UBadge>
+              </div>
             </div>
 
             <form v-if="!pipedrive" class="flex gap-2" @submit.prevent="connectPipedrive">
@@ -452,6 +460,13 @@ async function disconnectPipedrive() {
                   <USelect v-model="stageId" :items="stageItems" placeholder="Escolha" class="w-full" :disabled="!pipelineId" />
                 </UFormField>
               </div>
+              <UFormField
+                v-if="accounts.length > 1"
+                label="Número que recebe leads do Pipedrive"
+                help="Negócios novos ou movidos no Pipedrive viram/atualizam contatos neste número."
+              >
+                <USelect v-model="leadAccountId" :items="accountItems" placeholder="Escolha o número" class="w-full" />
+              </UFormField>
               <div class="flex items-center justify-between gap-4">
                 <p class="text-xs text-muted">Usados quando a IA cria um negócio.</p>
                 <div class="flex items-center gap-2">

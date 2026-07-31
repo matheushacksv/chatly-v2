@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Flow, FlowRun, FlowTrigger, LeadSource, Paginated, WhatsAppAccount } from '~/types/api'
+import type { Flow, FlowRun, FlowTrigger, LeadSource, Paginated, PipedrivePipeline, WhatsAppAccount } from '~/types/api'
 
 const api = useApi()
 const toast = useToast()
@@ -45,9 +45,27 @@ const tabItems = [
 const triggerLabels: Record<FlowTrigger, string> = {
   lead: 'Lead recebido',
   first_message: 'Primeira mensagem',
-  keyword: 'Palavra-chave'
+  keyword: 'Palavra-chave',
+  pipedrive: 'Negócio no Pipedrive'
 }
 const triggerItems = Object.entries(triggerLabels).map(([value, label]) => ({ label, value }))
+
+const pdEventItems = [
+  { label: 'Negócio criado na etapa', value: 'deal_added' },
+  { label: 'Movido para a etapa', value: 'stage_changed' }
+]
+// stage_id é único por funil no Pipedrive, então basta ele (dispensa pipeline_id no filtro)
+const pdStageItems = ref<{ label: string, value: number }[]>([])
+const pdStagesError = ref('')
+async function loadPipedriveStages() {
+  if (pdStageItems.value.length || !companyId.value) return
+  try {
+    const pipelines = await api<PipedrivePipeline[]>(`/companies/${companyId.value}/pipedrive/pipelines`)
+    pdStageItems.value = pipelines.flatMap(p => p.stages.map(s => ({ label: `${p.name} · ${s.name}`, value: s.id })))
+  } catch (error) {
+    pdStagesError.value = apiErrorDetail(error, 'Conecte o Pipedrive em Configurações')
+  }
+}
 
 const dateFmt = new Intl.DateTimeFormat('pt-BR', {
   day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit'
@@ -79,7 +97,9 @@ const draft = reactive({
   trigger: 'lead' as FlowTrigger,
   accountId: undefined as number | undefined,
   keyword: '',
-  sourceId: undefined as number | undefined
+  sourceId: undefined as number | undefined,
+  pipedriveEvent: 'stage_changed',
+  pipedriveStageId: undefined as number | undefined
 })
 
 function openCreate() {
@@ -88,8 +108,15 @@ function openCreate() {
   draft.accountId = accounts.value?.[0]?.id
   draft.keyword = ''
   draft.sourceId = sources.value[0]?.id
+  draft.pipedriveEvent = 'stage_changed'
+  draft.pipedriveStageId = undefined
   createOpen.value = true
 }
+
+// carrega os estágios só quando o gatilho Pipedrive é escolhido
+watch(() => draft.trigger, (t) => {
+  if (t === 'pipedrive') loadPipedriveStages()
+})
 
 const canCreate = computed(() => Boolean(draft.name.trim() && draft.accountId))
 
@@ -100,6 +127,10 @@ async function createFlow() {
     const triggerConfig: Record<string, unknown> = {}
     if (draft.trigger === 'keyword') triggerConfig.keyword = draft.keyword.trim()
     if (draft.trigger === 'lead' && draft.sourceId) triggerConfig.source_id = draft.sourceId
+    if (draft.trigger === 'pipedrive') {
+      triggerConfig.event = draft.pipedriveEvent
+      if (draft.pipedriveStageId) triggerConfig.stage_id = draft.pipedriveStageId
+    }
 
     const created = await api<Flow>(`/automations/${companyId.value}/flows`, {
       method: 'POST',
@@ -311,6 +342,7 @@ const waLink = computed(() => {
                 <p class="text-xs text-muted truncate">
                   {{ triggerLabels[flow.trigger] }}
                   <span v-if="flow.trigger_config.keyword"> · "{{ flow.trigger_config.keyword }}"</span>
+                  <span v-if="flow.trigger === 'pipedrive'"> · {{ flow.trigger_config.event === 'deal_added' ? 'criado' : 'movido' }}</span>
                   · {{ flow.graph.nodes.length }} bloco(s)
                   · editado {{ dateFmt.format(new Date(flow.updated_at)) }}
                 </p>
@@ -533,6 +565,30 @@ const waLink = computed(() => {
             class="w-full"
           />
         </UFormField>
+        <template v-if="draft.trigger === 'pipedrive'">
+          <UFormField
+            label="Quando"
+            required
+          >
+            <USelect
+              v-model="draft.pipedriveEvent"
+              :items="pdEventItems"
+              class="w-full"
+            />
+          </UFormField>
+          <UFormField
+            label="Etapa"
+            help="Deixe vazio pra valer pra qualquer etapa. Use o mesmo número configurado em 'recebe leads do Pipedrive'."
+          >
+            <USelect
+              v-model="draft.pipedriveStageId"
+              :items="pdStageItems"
+              :placeholder="pdStagesError || 'Escolha a etapa'"
+              :disabled="!pdStageItems.length"
+              class="w-full"
+            />
+          </UFormField>
+        </template>
         <UButton
           block
           icon="i-lucide-pencil-ruler"
