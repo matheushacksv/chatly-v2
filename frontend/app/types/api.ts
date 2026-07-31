@@ -186,6 +186,8 @@ export interface PipedriveConfig {
   id: number
   default_pipeline_id: number | null
   default_stage_id: number | null
+  lead_account_id: number | null
+  receiving_events: boolean
   created_at: string
 }
 
@@ -287,7 +289,7 @@ export interface EvolutionConnect {
 export type FlowNodeType
   = 'start' | 'template' | 'message' | 'buttons' | 'wait' | 'condition' | 'delay' | 'crm' | 'pause' | 'handoff' | 'ai' | 'end'
 
-export type FlowTrigger = 'lead' | 'first_message' | 'keyword'
+export type FlowTrigger = 'lead' | 'first_message' | 'keyword' | 'pipedrive'
 
 export interface FlowButton {
   id: string
@@ -338,7 +340,7 @@ export interface Flow {
   name: string
   account: number
   trigger: FlowTrigger
-  trigger_config: { source_id?: number, keyword?: string }
+  trigger_config: { source_id?: number, keyword?: string, event?: string, stage_id?: number }
   graph: FlowGraph
   active: boolean
   updated_at: string

@@ -6,6 +6,7 @@ from django.test import TestCase
 
 from apps.accounts.models import User
 from apps.agents.models import Agent, Credential
+from apps.automations.models import Flow, FlowRun
 from apps.chats.models import Contact, WhatsAppAccount
 from apps.companies.models import Company, Membership
 from apps.crm import pipedrive
@@ -422,3 +423,203 @@ class PipedriveNoteActivityTests(BaseCrmTestCase):
         response = self.client.get(f'{self.base}/pipedrive/deals/3/notes', headers=self.auth)
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json()['detail'], 'pipedrive not connected')
+
+
+class PipedriveLeadAccountTests(BaseCrmTestCase):
+    def test_patch_sets_lead_account(self):
+        response = self.client.patch(
+            f'{self.base}/pipedrive',
+            {'pipeline_id': 1, 'stage_id': 2, 'lead_account_id': self.account.id},
+            content_type='application/json', headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['lead_account_id'], self.account.id)
+        self.pd.refresh_from_db()
+        self.assertEqual(self.pd.lead_account, self.account)
+
+    def test_patch_foreign_lead_account_rejected(self):
+        response = self.client.patch(
+            f'{self.base}/pipedrive', {'lead_account_id': 999999},
+            content_type='application/json', headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('lead account', response.json()['detail'])
+
+    def test_out_dto_reports_receiving_events(self):
+        self.pd.webhook_ids = [1, 2]
+        self.pd.save(update_fields=['webhook_ids'])
+        response = self.client.get(f'{self.base}/pipedrive', headers=self.member_auth)
+        self.assertTrue(response.json()['receiving_events'])
+
+
+class PipedriveWebhookRegistrationTests(BaseCrmTestCase):
+    @patch('apps.crm.pipedrive.register_webhook', side_effect=[111, 222])
+    @patch('apps.crm.pipedrive.validate')
+    def test_connect_registers_two_webhooks_and_sets_lead_account(self, mock_validate, mock_register):
+        self.pd.delete()  # first connect: lead_account auto = único número da company
+        response = self.client.post(
+            f'{self.base}/pipedrive', {'api_key': 'nova'}, content_type='application/json', headers=self.auth
+        )
+        self.assertEqual(response.status_code, 201)
+        pd = PipedriveAccount.objects.get(company=self.company)
+        self.assertEqual(pd.webhook_ids, [111, 222])
+        self.assertEqual(pd.lead_account, self.account)
+        self.assertEqual([c.args[2] for c in mock_register.call_args_list], ['create', 'change'])
+        self.assertEqual([c.args[3] for c in mock_register.call_args_list], ['deal', 'deal'])
+
+    @patch('apps.crm.pipedrive.validate')
+    @patch('apps.crm.pipedrive.register_webhook', side_effect=PipedriveError('boom'))
+    def test_connect_survives_webhook_failure(self, mock_register, mock_validate):
+        self.pd.delete()
+        response = self.client.post(
+            f'{self.base}/pipedrive', {'api_key': 'nova'}, content_type='application/json', headers=self.auth
+        )
+        self.assertEqual(response.status_code, 201)  # best-effort: registro do webhook falhou, connect não
+        self.assertEqual(PipedriveAccount.objects.get(company=self.company).webhook_ids, [])
+
+    @patch('apps.crm.pipedrive.delete_webhook')
+    def test_disconnect_deletes_webhooks(self, mock_delete):
+        self.pd.webhook_ids = [10, 20]
+        self.pd.save(update_fields=['webhook_ids'])
+        response = self.client.delete(f'{self.base}/pipedrive', headers=self.auth)
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual([c.args for c in mock_delete.call_args_list], [('pd-key', 10), ('pd-key', 20)])
+
+
+class PipedriveWebhookIngestTests(BaseCrmTestCase):
+    """Pipedrive -> Chatly: webhook v2 sincroniza contato sem duplicar (dedup por pipedrive_person_id + telefone)."""
+
+    def setUp(self):
+        super().setUp()
+        self.pd.lead_account = self.account
+        self.pd.save(update_fields=['lead_account'])
+        self.webhook_url = f'/api/companies/pipedrive/webhook/{self.pd.webhook_token}'
+
+    def _post(self, action='create', data=None, previous=None, url=None):
+        body = {'meta': {'action': action, 'entity': 'deal'}, 'data': data or {}, 'previous': previous}
+        return self.client.post(url or self.webhook_url, body, content_type='application/json')
+
+    @patch('apps.crm.pipedrive.get_person')
+    def test_deal_added_creates_linked_contact(self, mock_get_person):
+        # phones: escolhe o primary, ignora o não-primary (exercita _first_phone)
+        mock_get_person.return_value = {
+            'id': 500, 'name': 'Novo Lead',
+            'phones': [{'value': 'lixo', 'primary': False}, {'value': '+55 11 88888-8888', 'primary': True}],
+        }
+        before = Contact.objects.count()
+        response = self._post(data={'id': 90, 'person_id': 500})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Contact.objects.count(), before + 1)
+        contact = Contact.objects.get(account=self.account, wa_id='5511888888888')
+        self.assertEqual(contact.pipedrive_person_id, 500)
+        self.assertEqual(contact.name, 'Novo Lead')
+        mock_get_person.assert_called_once_with('pd-key', 500)
+
+    @patch('apps.crm.pipedrive.get_person')
+    def test_existing_phone_links_without_duplicate(self, mock_get_person):
+        mock_get_person.return_value = {'id': 501, 'name': 'Cliente A', 'phones': [{'value': '5511999999999', 'primary': True}]}
+        before = Contact.objects.count()
+        response = self._post(data={'id': 91, 'person_id': 501})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Contact.objects.count(), before)  # linkou o existente, não criou novo
+        self.contact.refresh_from_db()
+        self.assertEqual(self.contact.pipedrive_person_id, 501)
+
+    @patch('apps.crm.pipedrive.get_person')
+    def test_already_linked_person_is_noop(self, mock_get_person):
+        self.contact.pipedrive_person_id = 502  # eco do próprio create do Chatly
+        self.contact.save(update_fields=['pipedrive_person_id'])
+        before = Contact.objects.count()
+        response = self._post(data={'id': 92, 'person_id': 502})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Contact.objects.count(), before)
+        mock_get_person.assert_not_called()  # dedup passo 1: nem busca telefone
+
+    @patch('apps.crm.pipedrive.get_person')
+    def test_deal_change_also_syncs(self, mock_get_person):
+        mock_get_person.return_value = {'id': 503, 'name': 'Muda', 'phones': [{'value': '5511777777777', 'primary': True}]}
+        response = self._post(action='change', data={'id': 93, 'person_id': 503}, previous={'stage_id': 1})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(Contact.objects.filter(account=self.account, wa_id='5511777777777', pipedrive_person_id=503).exists())
+
+    @patch('apps.crm.pipedrive.get_person')
+    def test_invalid_phone_no_contact(self, mock_get_person):
+        mock_get_person.return_value = {'id': 504, 'name': 'Sem Fone', 'phones': []}
+        before = Contact.objects.count()
+        response = self._post(data={'id': 94, 'person_id': 504})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Contact.objects.count(), before)
+
+    @patch('apps.crm.pipedrive.get_deal')
+    def test_deal_without_person_no_contact(self, mock_get_deal):
+        mock_get_deal.return_value = {'id': 95, 'person_id': None}
+        before = Contact.objects.count()
+        response = self._post(data={'id': 95})  # sem person_id -> fallback get_deal
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Contact.objects.count(), before)
+        mock_get_deal.assert_called_once_with('pd-key', 95)
+
+    def test_unknown_token_returns_404(self):
+        response = self._post(data={'id': 96, 'person_id': 1}, url='/api/companies/pipedrive/webhook/nao-existe')
+        self.assertEqual(response.status_code, 404)
+
+    def test_malformed_payload_returns_200(self):
+        response = self.client.post(self.webhook_url, {}, content_type='application/json')  # sem meta/data
+        self.assertEqual(response.status_code, 200)
+
+    @patch('apps.crm.pipedrive.get_person')
+    def test_idempotent_repeated_event(self, mock_get_person):
+        mock_get_person.return_value = {'id': 505, 'name': 'Dup', 'phones': [{'value': '5511666666666', 'primary': True}]}
+        before = Contact.objects.count()
+        self._post(data={'id': 97, 'person_id': 505})
+        self._post(data={'id': 97, 'person_id': 505})
+        self.assertEqual(Contact.objects.count(), before + 1)
+
+    # ---- seam: webhook dispara fluxo de automação ----
+
+    def _pd_flow(self, cfg):
+        graph = {
+            'nodes': [
+                {'id': 'start', 'type': 'start', 'position': {'x': 0, 'y': 0}, 'data': {}},
+                {'id': 't', 'type': 'template', 'position': {'x': 0, 'y': 0}, 'data': {'template_name': 'oi', 'language': 'pt_BR'}},
+                {'id': 'e', 'type': 'end', 'position': {'x': 0, 'y': 0}, 'data': {}},
+            ],
+            'edges': [
+                {'id': 'e0', 'source': 'start', 'target': 't', 'sourceHandle': None},
+                {'id': 'e1', 'source': 't', 'target': 'e', 'sourceHandle': None},
+            ],
+        }
+        return Flow.objects.create(
+            company=self.company, account=self.account, name='PD', trigger='pipedrive', trigger_config=cfg, graph=graph, active=True
+        )
+
+    @patch('apps.chats.services.send_template_message')
+    @patch('apps.crm.pipedrive.get_person')
+    def test_stage_change_fires_flow(self, mock_get_person, mock_tpl):
+        self._pd_flow({'event': 'stage_changed', 'stage_id': 20})
+        mock_get_person.return_value = {'id': 600, 'name': 'Lead', 'phones': [{'value': '5511555550000', 'primary': True}]}
+        body = {
+            'meta': {'action': 'change', 'entity': 'deal', 'change_source': 'app'},
+            'data': {'id': 70, 'person_id': 600, 'stage_id': 20, 'pipeline_id': 7},
+            'previous': {'stage_id': 19},
+        }
+        response = self.client.post(self.webhook_url, body, content_type='application/json')
+        self.assertEqual(response.status_code, 200)
+        contact = Contact.objects.get(account=self.account, pipedrive_person_id=600)
+        self.assertEqual(FlowRun.objects.filter(contact=contact).count(), 1)
+        mock_tpl.assert_called_once()
+
+    @patch('apps.chats.services.send_template_message')
+    @patch('apps.crm.pipedrive.get_person')
+    def test_api_source_does_not_fire_flow(self, mock_get_person, mock_tpl):
+        self._pd_flow({'event': 'stage_changed', 'stage_id': 20})
+        mock_get_person.return_value = {'id': 601, 'name': 'Lead', 'phones': [{'value': '5511555551111', 'primary': True}]}
+        body = {
+            'meta': {'action': 'change', 'entity': 'deal', 'change_source': 'api'},  # eco do próprio Chatly
+            'data': {'id': 71, 'person_id': 601, 'stage_id': 20, 'pipeline_id': 7},
+            'previous': {'stage_id': 19},
+        }
+        response = self.client.post(self.webhook_url, body, content_type='application/json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(FlowRun.objects.count(), 0)
+        mock_tpl.assert_not_called()

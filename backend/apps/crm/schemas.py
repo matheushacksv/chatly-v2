@@ -1,19 +1,27 @@
-from ninja import Schema, ModelSchema
-from apps.crm.models import PipedriveAccount
 from typing import Literal
+
+from ninja import ModelSchema, Schema
+
+from apps.crm.models import PipedriveAccount
+
 
 class PipedriveConnectDTO(Schema):
     api_key: str
 
+
 class PipedriveDefaultsDTO(Schema):
     pipeline_id: int | None = None
     stage_id: int | None = None
+    lead_account_id: int | None = None
+
 
 class PersonLinkDTO(Schema):
     person_id: int
 
+
 class PersonCreateDTO(Schema):
     name: str
+
 
 class DealCreateDTO(Schema):
     title: str
@@ -21,26 +29,39 @@ class DealCreateDTO(Schema):
     pipeline_id: int | None = None
     stage_id: int | None = None
 
+
 class DealPatchDTO(Schema):
     stage_id: int | None = None
     status: Literal['open', 'won', 'lost'] | None = None
 
+
 class NoteInDTO(Schema):
     content: str
 
+
 class PipedriveAccountOutDTO(ModelSchema):
+    lead_account_id: int | None = None
+    receiving_events: bool = False
+
     class Meta:
         model = PipedriveAccount
         fields = ['id', 'default_pipeline_id', 'default_stage_id', 'created_at']
+
+    @staticmethod
+    def resolve_receiving_events(obj):
+        return bool(obj.webhook_ids)
+
 
 class StageBriefDTO(Schema):
     id: int
     name: str
 
+
 class PipelineOutDTO(Schema):
     id: int
     name: str
     stages: list[StageBriefDTO] = []
+
 
 class PersonBriefDTO(Schema):
     id: int
@@ -51,9 +72,11 @@ class PersonBriefDTO(Schema):
     def resolve_phones(obj):
         return [p['value'] if isinstance(p, dict) else p for p in obj.get('phones') or []]
 
+
 class PersonResolveDTO(Schema):
     person: PersonBriefDTO | None = None
     suggestions: list[PersonBriefDTO] = []
+
 
 class DealBriefDTO(Schema):
     id: int
@@ -65,10 +88,12 @@ class DealBriefDTO(Schema):
     status: str | None = None
     update_time: str | None = None
 
+
 class NoteOutDTO(Schema):
     id: int
     content: str
     add_time: str | None = None
+
 
 class ActivityOutDTO(Schema):
     id: int
@@ -76,4 +101,3 @@ class ActivityOutDTO(Schema):
     type: str | None = None
     due_date: str | None = None
     done: bool = False
-

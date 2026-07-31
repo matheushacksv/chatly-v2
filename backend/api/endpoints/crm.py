@@ -1,3 +1,6 @@
+import json
+
+from django.http import HttpResponse
 from ninja import Router, Status
 
 from apps.companies import services as companies_services
@@ -18,6 +21,7 @@ from apps.crm.schemas import (
     PipedriveDefaultsDTO,
     PipelineOutDTO,
 )
+from core.exceptions import PipedriveError
 
 router = Router(tags=['Pipedrive'])
 
@@ -37,7 +41,7 @@ def get_pipedrive_endpoint(request, company_id: int):
 @router.patch('/{company_id}/pipedrive', response=PipedriveAccountOutDTO)
 def update_pipedrive_defaults_endpoint(request, company_id: int, payload: PipedriveDefaultsDTO):
     company = companies_services.get_owned_company(request.auth, company_id)
-    return services.update_defaults(company, payload.pipeline_id, payload.stage_id)
+    return services.update_defaults(company, payload.pipeline_id, payload.stage_id, payload.lead_account_id)
 
 
 @router.delete('/{company_id}/pipedrive', response={204: None})
@@ -139,3 +143,25 @@ def mark_acitivity_done_endpoint(request, company_id: int, activity_id: int):
     company = companies_services.get_company(request.auth, company_id)
     pd = services.get_pipedrive_account(company)
     return pipedrive.mark_activity_done(pd.api_key, activity_id)
+
+
+@router.post('/pipedrive/webhook/{token}', auth=None)
+def pipedrive_webhook_endpoint(request, token: str):
+    account = services.get_account_by_webhook_token(token)
+    if account is None:
+        return HttpResponse(status=404)
+
+    try:
+        payload = json.loads(request.body)
+        meta = payload['meta']
+        action, entity = meta['action'], meta['entity']
+        data = payload['data']
+    except (KeyError, ValueError, TypeError):
+        return HttpResponse(status=200)
+
+    if entity == 'deal' and action in ('create', 'change') and isinstance(data, dict):
+        try:
+            services.ingest_deal_event(account, action, data, payload.get('previous'), meta.get('change_source', ''))
+        except PipedriveError:
+            pass
+    return HttpResponse(status=200)

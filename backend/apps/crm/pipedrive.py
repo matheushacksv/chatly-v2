@@ -4,6 +4,7 @@ from core.exceptions import NotFound, PipedriveError
 
 V1_URL = 'https://api.pipedrive.com/v1'
 V2_URL = 'https://api.pipedrive.com/api/v2'
+WEBHOOK_VERSION = '2.0'
 
 
 def _req(api_key: str, method: str, url: str, *, params: dict | None = None, json: dict | None = None) -> dict:
@@ -107,3 +108,16 @@ def list_open_activities(api_key: str, deal_id: int) -> list[dict]:
 
 def mark_activity_done(api_key: str, activity_id: int) -> dict:
     return _req(api_key, 'PATCH', f'{V2_URL}/activities/{activity_id}', json={'done': True})['data']
+
+
+def get_deal(api_key: str, deal_id: int) -> dict:
+    return _req(api_key, 'GET', f'{V2_URL}/deals/{deal_id}')['data']
+
+
+def register_webhook(api_key: str, subscription_url: str, event_action: str, event_object: str) -> int:
+    payload = {'subscription_url': subscription_url, 'event_action': event_action, 'event_object': event_object, 'version': WEBHOOK_VERSION}
+    return _req(api_key, 'POST', f'{V1_URL}/webhooks', json=payload)['data']['id']
+
+
+def delete_webhook(api_key: str, webhook_id: int) -> None:
+    _req(api_key, 'DELETE', f'{V1_URL}/webhooks/{webhook_id}')

@@ -861,3 +861,101 @@ class AdvanceFailureTests(BaseAutomationsTestCase):
         # dois runs (ambos failed): o 1º FAILED não bloqueou o 2º disparo
         self.assertEqual(FlowRun.objects.filter(contact=contact).count(), 2)
         self.assertEqual(FlowRun.objects.filter(contact=contact, status=FlowRun.Status.FAILED).count(), 2)
+
+
+# graph mínimo válido pro trigger Pipedrive: start -> template -> end (template precisa de saída)
+_PD_FLOW = _graph(
+    [('start', 'start', {}), ('t', 'template', {'template_name': 'oi', 'language': 'pt_BR'}), ('e', 'end', {})],
+    [('start', 't', None), ('t', 'e', None)],
+)
+
+
+class PipedriveMatchTests(TestCase):
+    def _deal(self, stage_id=20, pipeline_id=7):
+        return {'id': 1, 'title': 'D', 'pipeline_id': pipeline_id, 'stage_id': stage_id}
+
+    def test_deal_added_matches_target_stage(self):
+        cfg = {'event': 'deal_added', 'stage_id': 20}
+        self.assertTrue(services._pipedrive_match(cfg, 'create', self._deal(20), None))
+        self.assertFalse(services._pipedrive_match(cfg, 'create', self._deal(99), None))
+
+    def test_deal_added_ignores_change_action(self):
+        cfg = {'event': 'deal_added', 'stage_id': 20}
+        self.assertFalse(services._pipedrive_match(cfg, 'change', self._deal(20), {'stage_id': 19}))
+
+    def test_deal_added_no_stage_matches_any_create(self):
+        self.assertTrue(services._pipedrive_match({'event': 'deal_added'}, 'create', self._deal(5), None))
+
+    def test_stage_changed_matches_entry_into_target(self):
+        cfg = {'event': 'stage_changed', 'stage_id': 20}
+        self.assertTrue(services._pipedrive_match(cfg, 'change', self._deal(20), {'stage_id': 19}))
+
+    def test_stage_changed_rejects_when_not_entering_target(self):
+        cfg = {'event': 'stage_changed', 'stage_id': 20}
+        self.assertFalse(services._pipedrive_match(cfg, 'change', self._deal(19), {'stage_id': 18}))  # entrou na 19, não na 20
+        self.assertFalse(services._pipedrive_match(cfg, 'change', self._deal(20), {'title': 'x'}))  # stage não mudou
+
+    def test_stage_changed_no_stage_matches_any_move(self):
+        self.assertTrue(services._pipedrive_match({'event': 'stage_changed'}, 'change', self._deal(20), {'stage_id': 19}))
+
+    def test_pipeline_filter_narrows(self):
+        cfg = {'event': 'deal_added', 'stage_id': 20, 'pipeline_id': 7}
+        self.assertTrue(services._pipedrive_match(cfg, 'create', self._deal(20, 7), None))
+        self.assertFalse(services._pipedrive_match(cfg, 'create', self._deal(20, 99), None))
+
+    def test_unknown_event_is_false(self):
+        self.assertFalse(services._pipedrive_match({'event': 'nope'}, 'create', self._deal(), None))
+
+
+@patch('apps.chats.services.send_template_message')
+class PipedriveDispatchTests(BaseAutomationsTestCase):
+    def _contact(self, account=None, wa='5511999990000'):
+        return Contact.objects.create(account=account or self.account, wa_id=wa)
+
+    def _deal(self, stage_id=20):
+        return {'id': 1, 'title': 'Deal', 'pipeline_id': 7, 'stage_id': stage_id}
+
+    def test_dispatch_starts_matching_flow(self, mock_tpl):
+        self.make_flow(trigger=Flow.Trigger.PIPEDRIVE, trigger_config={'event': 'stage_changed', 'stage_id': 20}, graph=_PD_FLOW, active=True)
+        contact = self._contact()
+        services.dispatch_pipedrive_event(contact, 'change', self._deal(20), {'stage_id': 19})
+        self.assertEqual(FlowRun.objects.filter(contact=contact).count(), 1)
+        mock_tpl.assert_called_once()
+
+    def test_dispatch_once_per_contact_flow(self, mock_tpl):
+        self.make_flow(trigger=Flow.Trigger.PIPEDRIVE, trigger_config={'event': 'stage_changed', 'stage_id': 20}, graph=_PD_FLOW, active=True)
+        contact = self._contact()
+        services.dispatch_pipedrive_event(contact, 'change', self._deal(20), {'stage_id': 19})
+        services.dispatch_pipedrive_event(contact, 'change', self._deal(20), {'stage_id': 19})  # reentrada
+        self.assertEqual(FlowRun.objects.filter(contact=contact).count(), 1)
+
+    def test_dispatch_skips_non_matching_stage(self, mock_tpl):
+        self.make_flow(trigger=Flow.Trigger.PIPEDRIVE, trigger_config={'event': 'stage_changed', 'stage_id': 20}, graph=_PD_FLOW, active=True)
+        contact = self._contact()
+        services.dispatch_pipedrive_event(contact, 'change', self._deal(99), {'stage_id': 19})
+        self.assertEqual(FlowRun.objects.filter(contact=contact).count(), 0)
+
+    def test_dispatch_ignores_other_account_flow(self, mock_tpl):
+        self.make_flow(company=self.other_company, account=self.other_account, trigger=Flow.Trigger.PIPEDRIVE,
+                       trigger_config={'event': 'deal_added'}, graph=_PD_FLOW, active=True)
+        services.dispatch_pipedrive_event(self._contact(), 'create', self._deal(20), None)
+        self.assertEqual(FlowRun.objects.count(), 0)
+
+    def test_dispatch_ignores_inactive_flow(self, mock_tpl):
+        self.make_flow(trigger=Flow.Trigger.PIPEDRIVE, trigger_config={'event': 'deal_added'}, graph=_PD_FLOW, active=False)
+        services.dispatch_pipedrive_event(self._contact(), 'create', self._deal(20), None)
+        self.assertEqual(FlowRun.objects.count(), 0)
+
+
+class PipedriveValidateGraphTests(BaseAutomationsTestCase):
+    def test_pipedrive_requires_template_first(self):
+        flow = self.make_flow(
+            trigger=Flow.Trigger.PIPEDRIVE,
+            graph=_graph([('start', 'start', {}), ('m', 'message', {'text': 'oi'})], [('start', 'm', None)]),
+        )
+        with self.assertRaises(ValidationError):
+            services.set_active(self.company, flow.id, True)
+
+    def test_pipedrive_template_first_activates(self):
+        flow = self.make_flow(trigger=Flow.Trigger.PIPEDRIVE, graph=_PD_FLOW)
+        self.assertTrue(services.set_active(self.company, flow.id, True).active)

@@ -32,15 +32,17 @@ def _next_id(graph: dict, source: str, handle: str = '') -> str:
             return e['target']
     return ''
 
+
 def _match_condition(subject: str, op: str, value: str) -> bool:
-        if op == 'equals':
-            return subject.strip().lower() == value.strip().lower()
-        if op == 'regex':
-            try:
-                return bool(re.search(value, subject))
-            except re.error:
-                return False
-        return value.lower() in subject.lower()
+    if op == 'equals':
+        return subject.strip().lower() == value.strip().lower()
+    if op == 'regex':
+        try:
+            return bool(re.search(value, subject))
+        except re.error:
+            return False
+    return value.lower() in subject.lower()
+
 
 def _run_crm(node: dict, run: FlowRun) -> None:
     from apps.crm import pipedrive
@@ -110,12 +112,14 @@ def _execute(node: dict, run: FlowRun, message: Message | None) -> str | None:
         return 'sim' if _match_condition(subject, data.get('op', 'contains'), data.get('value', '')) else 'nao'
     if t == 'delay':
         from apps.automations import tasks
+
         tasks.resume_flow.apply_async(args=(run.pk,), countdown=int(data.get('minutes', 0)) * 60)
         return None
     if t == 'wait':
         if data.get('timeout_minutes'):
             from apps.automations import tasks
-            tasks.resume_flow.apply_async(args=(run.pk,), countdown=int(data['timeout_minutes']) * 60 )
+
+            tasks.resume_flow.apply_async(args=(run.pk,), countdown=int(data['timeout_minutes']) * 60)
         return None
     if t == 'crm':
         _run_crm(node, run)
@@ -145,13 +149,13 @@ def advance(run: FlowRun, message: Message | None = None) -> None:
                 run.status = FlowRun.Status.DONE
                 run.save(update_fields=['status', 'context', 'updated_at'])
                 return
-    
+
             handle = _execute(node, run, message)
             message = None
             run.steps.append(
                 {'node': node['id'], 'type': node['type'], 'at': timezone.now().isoformat(), 'result': 'wait' if handle is None else (handle or 'ok')}
             )
-    
+
             if handle is None:
                 run.status = FlowRun.Status.WAITING
                 run.save(update_fields=['status', 'steps', 'context', 'updated_at'])
@@ -303,6 +307,43 @@ def dispatch_incoming(message: Message) -> bool:
         return True
     return False
 
+
+def _pipedrive_match(cfg: dict, action: str, deal: dict, previous: dict | None) -> bool:
+    stage_id, pipeline_id = cfg.get('stage_id'), cfg.get('pipeline_id')
+    if pipeline_id and deal.get('pipeline_id') != pipeline_id:
+        return False
+    if cfg.get('event') == 'deal_added':
+        return action == 'create' and (not stage_id or deal.get('stage_id') == stage_id)
+    if cfg.get('event') == 'stage_changed':
+        if action != 'change' or not previous or 'stage_id' not in previous:
+            return False
+        if not stage_id:
+            return True
+        return deal.get('stage_id') == stage_id and previous.get('stage_id') != stage_id
+    return False
+
+
+def dispatch_pipedrive_event(contact: Contact, action: str, deal: dict, previous: dict | None) -> None:
+    flows = Flow.objects.filter(
+        company=contact.account.company,
+        account=contact.account,
+        trigger=Flow.Trigger.PIPEDRIVE,
+        active=True,
+    )
+    for flow in flows:
+        if not _pipedrive_match(flow.trigger_config, action, deal, previous):
+            continue
+        if FlowRun.objects.filter(flow=flow, contact=contact).exists():
+            continue
+        ctx = {
+            'deal_id': deal.get('id'),
+            'deal_title': deal.get('title', ''),
+            'pipeline_id': deal.get('pipeline_id'),
+            'stage_id': deal.get('stage_id'),
+        }
+        start_flow(flow, contact, ctx)
+
+
 def _resume(run: FlowRun, next_id: str, message: Message | None = None) -> None:
     if not next_id:
         return
@@ -310,6 +351,7 @@ def _resume(run: FlowRun, next_id: str, message: Message | None = None) -> None:
     run.status = FlowRun.Status.RUNNING
     run.save(update_fields=['node_id', 'status', 'context', 'updated_at'])
     advance(run, message)
+
 
 def _match_trigger(contact: Contact, message: Message) -> Flow | None:
     account = contact.account
@@ -329,6 +371,7 @@ def receive_lead(token: str, payload: dict) -> tuple[Contact, bool]:
     if source is None:
         raise NotFound('fonte de lead não encontrada')
     return create_lead(source, payload)
+
 
 def resume(run_id: int) -> None:
     run = FlowRun.objects.filter(pk=run_id, status=FlowRun.Status.WAITING).select_related('flow').first()
@@ -352,6 +395,7 @@ def resume(run_id: int) -> None:
         run.status = FlowRun.Status.DONE
         run.save(update_fields=['status', 'updated_at'])
 
+
 def validate_graph(flow: Flow) -> None:
     graph = flow.graph or {}
     start = _start_id(graph)
@@ -360,7 +404,7 @@ def validate_graph(flow: Flow) -> None:
     first_id = _next_id(graph, start)
     if not first_id:
         raise ValidationError('ligue o início ao primeiro passo')
-    if flow.trigger == Flow.Trigger.LEAD:
+    if flow.trigger in (Flow.Trigger.LEAD, Flow.Trigger.PIPEDRIVE):
         first = _node(graph, first_id)
         if first is None or first['type'] != 'template':
             raise ValidationError('fluxo de lead precisa começar com um template (janela de 24h)')
