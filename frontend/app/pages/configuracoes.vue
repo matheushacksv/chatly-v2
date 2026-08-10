@@ -177,6 +177,34 @@ async function removeAccount(account: WhatsAppAccount) {
   }
 }
 
+const registeringId = ref<number | null>(null)
+
+async function registerAccount(account: WhatsAppAccount) {
+  const pin = await promptModal({
+    title: `Registrar ${account.phone_number_id} no Cloud API`,
+    description: 'PIN de verificação em duas etapas do número. Se nunca definiu um, este vira o PIN.',
+    placeholder: '6 dígitos',
+    confirmLabel: 'Registrar'
+  })
+  if (!pin) return
+  if (!/^\d{6}$/.test(pin)) {
+    toast.add({ title: 'O PIN precisa ter 6 dígitos', color: 'error' })
+    return
+  }
+  registeringId.value = account.id
+  try {
+    const res = await api<{ detail: string }>(
+      `/companies/${companyId.value}/whatsapp-accounts/${account.id}/register`,
+      { method: 'POST', body: { pin } }
+    )
+    toast.add({ title: res.detail, icon: 'i-lucide-badge-check', color: 'success' })
+  } catch (error) {
+    toast.add({ title: apiErrorDetail(error, 'Falha ao registrar número'), color: 'error' })
+  } finally {
+    registeringId.value = null
+  }
+}
+
 const accountFormValid = computed(() => {
   if (editingAccount.value) return accountState.agent_id !== null && accountState.waba_id.trim() !== '' && accountState.verify_token.trim() !== ''
   return accountState.agent_id !== null
@@ -510,6 +538,7 @@ async function disconnectPipedrive() {
                   <p class="font-mono text-sm truncate">{{ account.phone_number_id }}</p>
                   <p class="text-xs text-muted truncate">Agente: {{ agentName(account.agent) }}</p>
                 </div>
+                <UButton icon="i-lucide-badge-check" variant="ghost" color="neutral" size="xs" title="Registrar no Cloud API" :loading="registeringId === account.id" @click="registerAccount(account)" />
                 <UButton icon="i-lucide-pencil" variant="ghost" color="neutral" size="xs" @click="openAccountEdit(account)" />
                 <UButton icon="i-lucide-trash-2" variant="ghost" color="error" size="xs" @click="removeAccount(account)" />
               </div>

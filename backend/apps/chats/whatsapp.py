@@ -189,3 +189,13 @@ def send_interactive(account: WhatsAppAccount, wa_id: str, text: str, buttons: l
     )
     response.raise_for_status()
     return response.json()['messages'][0]['id']
+
+
+def register_number(account: WhatsAppAccount, pin: str) -> None:
+    response = httpx.post(
+        f'{GRAPH_URL}/{account.phone_number_id}/register',
+        headers={'Authorization': f'Bearer {account.access_token}'},
+        json={'messaging_product': 'whatsapp', 'pin': pin},
+        timeout=10,
+    )
+    _graph_error(response)

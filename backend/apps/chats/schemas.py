@@ -32,6 +32,10 @@ class WhatsAppAccountPatchDTO(Schema):
     app_id: str | None = None
 
 
+class WhatsAppRegisterDTO(Schema):
+    pin: str = Field(pattern=r'^\d{6}$')
+
+
 class ContactOutDTO(ModelSchema):
     last_message: str | None = None
     last_message_at: datetime | None = None

@@ -159,6 +159,11 @@ def delete_account(company: Company, account_id: int) -> None:
     get_account(company, account_id).delete()
 
 
+def register_account(company: Company, account_id: int, pin: str) -> None:
+    account = get_account(company, account_id)
+    whatsapp.register_number(account, pin)
+
+
 # * ------ Contacts ------
 
 

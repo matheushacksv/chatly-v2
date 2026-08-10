@@ -303,6 +303,69 @@ class WhatsAppAccountTests(BaseChatsTestCase):
         self.assertEqual(self.account.app_secret, 'meu-app-secret')
 
 
+class RegisterNumberTests(BaseChatsTestCase):
+    """Ativação do número na Cloud API (POST /{phone_number_id}/register)."""
+
+    def url(self, company_id: int, account_id: int) -> str:
+        return f'/api/companies/{company_id}/whatsapp-accounts/{account_id}/register'
+
+    def register(self, company_id: int, account_id: int, pin: str = '123456'):
+        return self.client.post(
+            self.url(company_id, account_id),
+            data={'pin': pin},
+            content_type='application/json',
+            headers=self.auth,
+        )
+
+    # boundary
+
+    @patch('apps.chats.whatsapp.httpx.post')
+    def test_register_number_calls_meta(self, mock_post):
+        mock_post.return_value = MagicMock(is_success=True)
+
+        whatsapp.register_number(self.account, '654321')
+
+        mock_post.assert_called_once()
+        args, kwargs = mock_post.call_args
+        self.assertEqual(args[0], f'{whatsapp.GRAPH_URL}/111111/register')
+        self.assertEqual(kwargs['headers']['Authorization'], 'Bearer EAAG-meu-token-secreto')
+        self.assertEqual(kwargs['json'], {'messaging_product': 'whatsapp', 'pin': '654321'})
+
+    @patch('apps.chats.whatsapp.httpx.post')
+    def test_register_number_raises_meta_message(self, mock_post):
+        # Meta recusa (número não verificado, PIN errado): sobe a msg real
+        mock_post.return_value = MagicMock(
+            is_success=False, json=MagicMock(return_value={'error': {'error_user_msg': 'PIN incorreto'}})
+        )
+
+        with self.assertRaises(ValidationError) as ctx:
+            whatsapp.register_number(self.account, '000000')
+        self.assertEqual(ctx.exception.message, 'PIN incorreto')
+
+    # endpoint
+
+    @patch('apps.chats.whatsapp.register_number')
+    def test_register_endpoint_ok(self, mock_register):
+        response = self.register(self.company.pk, self.account.pk)
+
+        self.assertEqual(response.status_code, 200, response.json())
+        mock_register.assert_called_once_with(self.account, '123456')
+
+    @patch('apps.chats.whatsapp.register_number')
+    def test_register_endpoint_foreign_account_returns_404(self, mock_register):
+        response = self.register(self.company.pk, self.other_account.pk)
+
+        self.assertEqual(response.status_code, 404)
+        mock_register.assert_not_called()
+
+    @patch('apps.chats.whatsapp.register_number')
+    def test_register_endpoint_rejects_non_6_digit_pin(self, mock_register):
+        for bad in ('12345', '1234567', 'abcdef', ''):
+            response = self.register(self.company.pk, self.account.pk, pin=bad)
+            self.assertEqual(response.status_code, 422, bad)
+        mock_register.assert_not_called()
+
+
 class ContactTests(BaseChatsTestCase):
     def url(self, company_id: int, account_id: int) -> str:
         return f'/api/companies/{company_id}/whatsapp-accounts/{account_id}/contacts'
