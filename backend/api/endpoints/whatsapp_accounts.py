@@ -1,7 +1,7 @@
 from ninja import Router, Status
 
 from apps.chats import services
-from apps.chats.schemas import WhatsAppAccountInDTO, WhatsAppAccountOutDTO, WhatsAppAccountPatchDTO
+from apps.chats.schemas import WhatsAppAccountInDTO, WhatsAppAccountOutDTO, WhatsAppAccountPatchDTO, WhatsAppRegisterDTO
 from apps.companies import services as companies_services
 
 router = Router(tags=['WhatsApp Accounts'])
@@ -48,3 +48,10 @@ def delete_account_endpoint(request, company_id: int, account_id: int):
     company = companies_services.get_owned_company(request.auth, company_id)
     services.delete_account(company, account_id)
     return Status(204, None)
+
+
+@router.post('/{company_id}/whatsapp-accounts/{account_id}/register', response={200: dict})
+def register_account_endpoint(request, company_id: int, account_id: int, payload: WhatsAppRegisterDTO):
+    company = companies_services.get_owned_company(request.auth, company_id)
+    services.register_account(company, account_id, payload.pin)
+    return Status(200, {'detail': 'Número registrado no Cloud API'})
