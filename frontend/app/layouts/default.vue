@@ -13,6 +13,12 @@ await useAsyncData('companies', async () => {
   return true
 })
 
+// sem empresa nenhuma, toda tela depende de company_id: manda pro onboarding (index cria a empresa)
+const route = useRoute()
+watch(() => [route.path, companies.value.length] as const, ([path, count]) => {
+  if (!count && path !== '/' && !path.startsWith('/convite')) navigateTo('/', { replace: true })
+}, { immediate: true })
+
 // ---- SSE app-wide: notifica handoff de qualquer página ----
 let eventSeq = 0
 let disconnectStream: (() => void) | null = null

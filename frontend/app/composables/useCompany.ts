@@ -13,8 +13,9 @@ export function useCompany() {
 
   const active = computed(() => companies.value.find(c => c.id === activeId.value) ?? null)
 
-  // role null/undefined = company recém-criada pelo próprio user = dono
-  const isOwner = computed(() => active.value?.role !== 'member')
+  // role null/undefined = company recém-criada pelo próprio user = dono; sem company ativa não é dono
+  // de nada (antes virava true e mostrava convites/membros pra quem ainda não criou a empresa)
+  const isOwner = computed(() => !!active.value && active.value.role !== 'member')
 
   async function load() {
     companies.value = await api<Company[]>('/companies/')

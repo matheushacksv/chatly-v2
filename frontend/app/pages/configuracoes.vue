@@ -230,8 +230,13 @@ async function loadMembers() {
 watch([companyId, isOwner], loadMembers, { immediate: true })
 
 async function copyInvite(token: string) {
-  await navigator.clipboard.writeText(`${location.origin}/convite/${token}`)
-  toast.add({ title: 'Link de convite copiado', icon: 'i-lucide-clipboard-check' })
+  try {
+    await navigator.clipboard.writeText(`${location.origin}/convite/${token}`)
+    toast.add({ title: 'Link de convite copiado', icon: 'i-lucide-clipboard-check' })
+  } catch {
+    // navegador sem permissão de área de transferência: o convite existe, só não foi copiado
+    toast.add({ title: 'Convite criado', description: 'Copie o link pela lista de convites.', icon: 'i-lucide-link' })
+  }
 }
 
 async function generateInvite() {
