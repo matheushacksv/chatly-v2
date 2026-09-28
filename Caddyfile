@@ -1,4 +1,5 @@
-app.chatly.ia.br {
+# domínio do chatly vem do ambiente do container (CHATLY_DOMAIN); sem ele, o de produção atual
+{$CHATLY_DOMAIN:app.chatly.ia.br} {
     handle /api/* {
         reverse_proxy api:8000
     }
@@ -8,10 +9,36 @@ app.chatly.ia.br {
     handle /static/* {
         reverse_proxy api:8000
     }
+    # mídia privada: MinIO (bucket `media`) só responde a URL assinada pelo backend. Sem
+    # handle_path: a assinatura cobre o caminho /media/... e o Host, que o reverse_proxy repassa.
+    handle /media/* {
+        reverse_proxy minio:9000
+    }
     handle {
         root * /srv
         encode gzip
         try_files {path} /index.html
         file_server
+    }
+}
+
+# pipe_chat roda no mesmo servidor e sai pelo mesmo Caddy (containers pipe-* na mesma rede)
+pipe.chatly.ia.br {
+    handle /api/webhook* {
+        respond 403
+    }
+    handle /api/* {
+        reverse_proxy pipe-api:8000 {
+            flush_interval -1
+        }
+    }
+    handle /admin/* {
+        reverse_proxy pipe-api:8000
+    }
+    handle /static/* {
+        reverse_proxy pipe-api:8000
+    }
+    handle {
+        reverse_proxy pipe-web:80
     }
 }

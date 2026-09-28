@@ -1,0 +1,107 @@
+name: CI
+
+# Testes em todo push e PR; deploy só na main e só depois dos testes passarem.
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: chatly
+          POSTGRES_PASSWORD: chatly
+          POSTGRES_DB: chatly
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U chatly" --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+    # só pro CI: nenhuma chave aqui vale fora dele (a Fernet é gerada pra teste, as de API são falsas)
+    env:
+      SECRET_KEY: ci-secret-key
+      DEBUG: 'False'
+      ALLOWED_HOSTS: '*'
+      POSTGRES_DB: chatly
+      POSTGRES_USER: chatly
+      POSTGRES_PASSWORD: chatly
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: '5432'
+      FIELD_ENCRYPTION_KEY: ufWF2syA6Hgj-r872yVXFvl3IglHCjUG3XjYY8O1uYM=
+      REDIS_URL: redis://localhost:6379/0
+      CELERY_BROKER_URL: redis://localhost:6379/0
+      MINIO_ENDPOINT_URL: http://localhost:9000
+      MINIO_ACCESS_KEY: ci-minio
+      MINIO_SECRET_KEY: ci-minio-secret
+      MINIO_BUCKET_NAME: media
+      GROQ_API_KEY: ci-fake
+      EMBEDDING_API_KEY: ci-fake
+      OPENWA_API_URL: http://localhost:2785
+      OPENWA_API_KEY: ci-fake
+      OPENWA_WEBHOOK_SECRET: ci-fake
+      OPENWA_WEBHOOK_URL: http://localhost:8000/api/personal/webhook
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      # service do Actions não aceita `command`, e o MinIO precisa de `server /data`
+      - name: MinIO
+        run: >-
+          docker run -d -p 9000:9000 -e MINIO_ROOT_USER=ci-minio -e MINIO_ROOT_PASSWORD=ci-minio-secret
+          chainguard/minio@sha256:6a1d0b45c8669726bba580ced0bfa4cb9fdeed1ed636dfabd81d1577beb6937b server /data
+      # o teste de nota de voz roda ffmpeg de verdade (pula se não tiver)
+      - name: ffmpeg
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends ffmpeg
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen
+      - run: uv run manage.py ensure_media_bucket
+      - run: uv run manage.py makemigrations --check --dry-run
+      - run: uv run manage.py test
+
+  frontend:
+    runs-on: ubuntu-latest
+    # mesma imagem do Dockerfile: o package-lock é gerado no node:24-alpine (binários nativos de musl)
+    container: node:24-alpine
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm ci
+      # mesmo build do Dockerfile (produção é `nuxt generate`, não `build`).
+      # ponytail: lint/typecheck fora por enquanto, já falham hoje (~1090 avisos antigos); entram quando zerar
+      - run: npx nuxt generate
+        env:
+          NUXT_PUBLIC_API_BASE: /api
+
+  deploy:
+    needs: [backend, frontend]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency: deploy
+    steps:
+      - name: Deploy via SSH
+        env:
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          install -m 700 -d ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts
+          # reset em vez de pull: o servidor espelha a main (Caddyfile inclusive); .env e backups/ não são versionados.
+          # IMAGE_TAG por commit deixa a imagem anterior disponível pra rollback.
+          ssh "$SSH_USER@$SSH_HOST" 'set -e
+            cd /opt/chatly
+            git fetch origin main
+            git reset --hard origin/main
+            export IMAGE_TAG=$(git rev-parse --short HEAD)
+            docker compose -f docker-compose.prod.yaml build
+            docker compose -f docker-compose.prod.yaml up -d
+            docker compose -f docker-compose.prod.yaml exec -T caddy caddy reload --config /etc/caddy/Caddyfile'

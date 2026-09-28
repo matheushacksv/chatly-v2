@@ -3820,3 +3820,100 @@ class PipedriveToolsTests(BaseChatsTestCase):
 
         self.assertEqual(result, 'Falha ao criar negócio: default pipeline and stage not set')
         mock_search.assert_not_called()
+
+
+class PrivateMediaStorageTests(TestCase):
+    """Mídia privada: URL assinada no endereço público (Caddy /media), nunca pública nem no host interno."""
+
+    @override_settings(MINIO_PUBLIC_URL='https://app.chatly.ia.br')
+    def test_url_is_signed_for_public_host_with_bucket_in_path(self):
+        from urllib.parse import parse_qs, urlparse
+
+        from core.storage import PrivateMediaStorage
+
+        storage = PrivateMediaStorage(
+            endpoint_url='http://minio:9000', access_key='k', secret_key='s', bucket_name='media',
+            region_name='us-east-1', querystring_expire=7200,
+        )
+        url = urlparse(storage.url('chat/abc/foto.jpg'))
+        query = parse_qs(url.query)
+        self.assertEqual((url.scheme, url.netloc, url.path), ('https', 'app.chatly.ia.br', '/media/chat/abc/foto.jpg'))
+        self.assertEqual(query['X-Amz-Expires'], ['7200'])
+        self.assertIn('X-Amz-Signature', query)
+
+    def test_default_storage_is_private(self):
+        from django.conf import settings
+
+        options = settings.STORAGES['default']['OPTIONS']
+        self.assertEqual(settings.STORAGES['default']['BACKEND'], 'core.storage.PrivateMediaStorage')
+        self.assertIsNone(options['default_acl'])
+        self.assertTrue(options['querystring_auth'])
+
+
+class EnsureMediaBucketTests(TestCase):
+    def _run(self, client, **kwargs):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        storage = MagicMock(bucket_name='media')
+        storage.connection.meta.client = client
+        out = StringIO()
+        with patch('apps.chats.management.commands.ensure_media_bucket.default_storage', storage):
+            call_command('ensure_media_bucket', stdout=out, **kwargs)
+        return out.getvalue()
+
+    def test_existing_bucket_is_left_alone(self):
+        client = MagicMock()
+        self.assertIn('ok', self._run(client))
+        client.create_bucket.assert_not_called()
+
+    def test_missing_bucket_is_created(self):
+        from botocore.exceptions import ClientError
+
+        client = MagicMock()
+        client.head_bucket.side_effect = ClientError({'Error': {'Code': '404'}}, 'HeadBucket')
+        self.assertIn('criado', self._run(client))
+        client.create_bucket.assert_called_once_with(Bucket='media')
+        client.put_bucket_policy.assert_not_called()  # nunca público
+
+    @patch('apps.chats.management.commands.ensure_media_bucket.time.sleep')
+    def test_waits_for_minio_to_come_up(self, mock_sleep):
+        from botocore.exceptions import EndpointConnectionError
+
+        client = MagicMock()
+        client.head_bucket.side_effect = [EndpointConnectionError(endpoint_url='http://minio:9000'), None]
+        self.assertIn('ok', self._run(client, wait=30))
+        mock_sleep.assert_called_once()
+
+
+class ImportMediaCommandTests(BaseChatsTestCase):
+    @patch.dict('os.environ', {
+        'OLD_MINIO_ENDPOINT_URL': 'https://s3.antigo', 'OLD_MINIO_ACCESS_KEY': 'k',
+        'OLD_MINIO_SECRET_KEY': 's', 'OLD_MINIO_BUCKET_NAME': 'hub',
+    })
+    def test_copies_only_referenced_files_keeping_content_type(self):
+        from io import StringIO
+
+        from botocore.exceptions import ClientError
+        from django.core.management import call_command
+
+        Message.objects.filter(wa_message_id='wamid.1').update(media_file='chat/a/foto.jpg')
+        Sticker.objects.bulk_create([Sticker(company=self.company, file='chat/b/s.webp'), Sticker(company=self.company, file='chat/c/sumiu.webp')])
+
+        def get_object(Bucket, Key):
+            if Key == 'chat/c/sumiu.webp':
+                raise ClientError({'Error': {'Code': 'NoSuchKey'}}, 'GetObject')
+            return {'Body': MagicMock(read=MagicMock(return_value=b'bytes-' + Key.encode())), 'ContentType': 'image/jpeg' if Key.endswith('.jpg') else ''}
+
+        old = MagicMock(get_object=MagicMock(side_effect=get_object))
+        storage = MagicMock(bucket_name='media')
+        storage.exists.side_effect = lambda name: name == 'chat/b/s.webp'  # já migrado antes
+        out = StringIO()
+        with patch('apps.chats.management.commands.import_media.boto3.client', return_value=old), \
+                patch('apps.chats.management.commands.import_media.default_storage', storage):
+            call_command('import_media', stdout=out, stderr=StringIO())
+
+        put = storage.connection.meta.client.put_object
+        put.assert_called_once_with(Bucket='media', Key='chat/a/foto.jpg', Body=b'bytes-chat/a/foto.jpg', ContentType='image/jpeg')
+        self.assertIn('3 referenciados: 1 copiados, 1 já existiam, 1 faltando na origem', out.getvalue())

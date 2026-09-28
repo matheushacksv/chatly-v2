@@ -3,6 +3,7 @@ services:
   caddy:
     build: ./frontend
     restart: unless-stopped
+    mem_limit: 256m
     ports:
       - "80:80"
       - "443:443"
@@ -16,22 +17,37 @@ services:
 
   api:
     build: ./backend
-    image: chatly-backend
+    # tag por commit (o deploy exporta IMAGE_TAG=<sha>): rollback é subir a tag anterior,
+    # IMAGE_TAG=<sha antigo> docker compose -f docker-compose.prod.yaml up -d api worker
+    image: chatly-backend:${IMAGE_TAG:-latest}
     restart: unless-stopped
+    mem_limit: 1g
     env_file: .env
+    healthcheck:
+      # Host 'api' porque o ALLOWED_HOSTS de prod não tem localhost
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen(u.Request('http://localhost:8000/api/docs', headers={'Host': 'api'}), timeout=5)"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+      minio:
+        condition: service_started
 
   worker:
-    image: chatly-backend
+    image: chatly-backend:${IMAGE_TAG:-latest}
     restart: unless-stopped
-    command: celery -A core worker --loglevel=info
+    mem_limit: 1g
+    command: celery -A core worker --loglevel=info --concurrency 2
     env_file: .env
+    # a api roda as migrations no start: worker só sobe com o schema no lugar
     depends_on:
-      - api
+      api:
+        condition: service_healthy
 
   openwa:
     # WhatsApp pessoal dos atendentes. SQLite no próprio volume: não toca no Postgres do Django.
@@ -50,9 +66,24 @@ services:
       # webhook só pode sair pra api (guard de SSRF do OpenWA)
       SSRF_ALLOWED_HOSTS: api
 
+  minio:
+    # Mídia privada (bucket `media`, sem política pública). Sem porta publicada: o navegador chega
+    # só por URL assinada via Caddy /media/*. MinIO parou de publicar imagem própria;
+    # chainguard/minio é o mesmo MinIO compilado do fonte, fixado por digest.
+    image: chainguard/minio@sha256:6a1d0b45c8669726bba580ced0bfa4cb9fdeed1ed636dfabd81d1577beb6937b
+    command: server /data
+    restart: unless-stopped
+    mem_limit: 512m
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    volumes:
+      - minio_data:/data
+
   db:
     image: pgvector/pgvector:pg17
     restart: unless-stopped
+    mem_limit: 1g
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -65,9 +96,31 @@ services:
       timeout: 5s
       retries: 5
 
+  backup:
+    # pg_dump diário em ./backups (host), guarda 7 dias. Mesma imagem do db: pg_dump da mesma versão.
+    # ponytail: cópia só local (protege de erro humano, não de perder o servidor); cópia fora do
+    # servidor e backup do volume do MinIO ficam pra quando houver destino externo.
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    mem_limit: 256m
+    environment:
+      PGHOST: db
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+      KEEP_DAYS: 7
+    volumes:
+      - ./backups:/backups
+      - ./deploy/backup.sh:/backup.sh:ro
+    entrypoint: ["sh", "/backup.sh"]
+    depends_on:
+      db:
+        condition: service_healthy
+
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    mem_limit: 256m
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -79,3 +132,4 @@ volumes:
   caddy_data:
   caddy_config:
   openwa_data:
+  minio_data:

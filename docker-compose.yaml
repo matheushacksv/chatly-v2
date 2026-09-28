@@ -33,6 +33,22 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  minio:
+    # MinIO parou de publicar imagem própria; chainguard/minio é o mesmo MinIO compilado do fonte.
+    # Fixado por digest (a Chainguard gratuita só publica `latest`).
+    image: chainguard/minio@sha256:6a1d0b45c8669726bba580ced0bfa4cb9fdeed1ed636dfabd81d1577beb6937b
+    command: server /data --console-address :9001
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    # dev: navegador acessa direto (MINIO_PUBLIC_URL=http://localhost:9000); console em :9001
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
   worker:
     build: ./backend
     restart: unless-stopped
@@ -42,6 +58,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       OPENWA_API_URL: http://openwa:2785
+      MINIO_ENDPOINT_URL: http://minio:9000
     command: celery -A core worker --loglevel=info
     volumes:
       - ./backend:/app
@@ -73,7 +90,8 @@ services:
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       OPENWA_API_URL: http://openwa:2785
-    command: sh -c "python manage.py migrate --noinput && python manage.py runserver 0.0.0.0:8000"
+      MINIO_ENDPOINT_URL: http://minio:9000
+    command: sh -c "python manage.py migrate --noinput && python manage.py ensure_media_bucket && python manage.py runserver 0.0.0.0:8000"
     ports:
       - "8000:8000"
     volumes:
@@ -86,7 +104,10 @@ services:
         condition: service_healthy
       openwa:
         condition: service_started
+      minio:
+        condition: service_started
 
 volumes:
   postgres_data:
   openwa_data:
+  minio_data:

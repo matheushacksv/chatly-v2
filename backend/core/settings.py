@@ -161,16 +161,26 @@ REDIS_URL = config('REDIS_URL', default='redis://localhost:6379/0')
 
 # Storages
 
+# MinIO próprio e privado: nada é público, o navegador recebe URL assinada que expira.
+# MINIO_ENDPOINT_URL é o endereço interno (http://minio:9000); MINIO_PUBLIC_URL é onde o navegador
+# chega no MinIO (em prod o Caddy encaminha /media/* -> bucket `media`, então o bucket tem que se
+# chamar `media`). Ver core/storage.py.
+MINIO_PUBLIC_URL = config('MINIO_PUBLIC_URL', default=config('MINIO_ENDPOINT_URL'))
+
 STORAGES = {
     'default': {
-        'BACKEND': 'storages.backends.s3boto3.S3Boto3Storage',
+        'BACKEND': 'core.storage.PrivateMediaStorage',
         'OPTIONS': {
             'endpoint_url': config('MINIO_ENDPOINT_URL'),
             'access_key': config('MINIO_ACCESS_KEY'),
             'secret_key': config('MINIO_SECRET_KEY'),
             'bucket_name': config('MINIO_BUCKET_NAME'),
-            'default_acl': 'public-read',
-            'querystring_auth': False,
+            'region_name': 'us-east-1',
+            'signature_version': 's3v4',
+            'addressing_style': 'path',
+            'default_acl': None,
+            'querystring_auth': True,
+            'querystring_expire': 2 * 60 * 60,
             'file_overwrite': False,
         },
     },
