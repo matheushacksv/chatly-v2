@@ -86,6 +86,9 @@ class Message(models.Model):
 class Sticker(models.Model):
     company = models.ForeignKey('companies.Company', on_delete=models.CASCADE, related_name='stickers')
     file = models.FileField(upload_to=chat_media_path)
+    # wa_message_id da mensagem de onde foi salva (qualquer canal: o id é global, não colide como PK);
+    # é o que marca a figurinha como "já salva" no chat e evita salvar duas vezes
+    source_wa_message_id = models.CharField(max_length=128, blank=True, default='', db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
 

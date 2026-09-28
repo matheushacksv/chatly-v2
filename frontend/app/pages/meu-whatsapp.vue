@@ -716,11 +716,12 @@ const time = (iso: string) => new Date(iso).toLocaleTimeString('pt-BR', { hour: 
               />
               <UButton
                 v-if="message.message_type === 'sticker' && message.direction === 'in'"
-                label="Salvar"
-                icon="i-lucide-bookmark-plus"
+                :label="message.sticker_saved ? 'Salva' : 'Salvar'"
+                :icon="message.sticker_saved ? 'i-lucide-bookmark-check' : 'i-lucide-bookmark-plus'"
                 variant="ghost"
                 color="neutral"
                 size="xs"
+                :disabled="message.sticker_saved"
                 @click="onSaveSticker(message.id)"
               />
               <p

@@ -280,6 +280,7 @@ async function loadStickers() {
 async function saveSticker(message: Message) {
   try {
     await api(`/companies/${companyId.value}/stickers`, { method: 'POST', body: { message_id: message.id } })
+    message.sticker_saved = true
     toast.add({ title: 'Figurinha salva', icon: 'i-lucide-sticker' })
   } catch (error) {
     toast.add({ title: apiErrorDetail(error, 'Falha ao salvar figurinha'), color: 'error' })
@@ -777,12 +778,13 @@ const accountItems = computed(() =>
               />
               <UButton
                 v-if="message.message_type === 'sticker' && message.direction === 'in'"
-                label="Salvar"
-                icon="i-lucide-bookmark-plus"
+                :label="message.sticker_saved ? 'Salva' : 'Salvar'"
+                :icon="message.sticker_saved ? 'i-lucide-bookmark-check' : 'i-lucide-bookmark-plus'"
+                :disabled="message.sticker_saved"
                 variant="ghost"
                 color="neutral"
                 size="xs"
-                class="opacity-0 group-hover:opacity-100 transition-opacity"
+                :class="message.sticker_saved ? '' : 'opacity-0 group-hover:opacity-100 transition-opacity'"
                 @click="saveSticker(message)"
               />
               <p

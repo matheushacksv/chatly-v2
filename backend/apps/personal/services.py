@@ -11,7 +11,7 @@ from django.db.models.functions import Coalesce
 
 from apps.chats import events
 from apps.chats.models import Contact, Sticker
-from apps.chats.services import MEDIA_SPECS, PLACEHOLDERS, normalize_number
+from apps.chats.services import MEDIA_SPECS, PLACEHOLDERS, normalize_number, saved_sticker, sticker_saved_annotation
 from apps.companies.models import Company
 from apps.personal import gateway
 from apps.personal.models import PersonalAccount, PersonalContact, PersonalMessage
@@ -402,7 +402,7 @@ def delete_conversation(company: Company, user: User, account_id: int, contact_i
 
 def list_messages(company: Company, user: User, account_id: int, contact_id: int) -> list[PersonalMessage]:
     contact = _get_own_contact(company, user, account_id, contact_id)
-    return list(PersonalMessage.objects.filter(contact=contact))
+    return list(PersonalMessage.objects.filter(contact=contact).annotate(sticker_saved=sticker_saved_annotation(company)))
 
 
 def _record_outgoing(contact: PersonalContact, wa_message_id: str, **fields) -> PersonalMessage:
@@ -456,7 +456,9 @@ def save_sticker(company: Company, user: User, account_id: int, message_id: int)
     message = PersonalMessage.objects.filter(contact__account=account, pk=message_id, message_type=PersonalMessage.Type.STICKER).first()
     if message is None or not message.media_file:
         raise NotFound('message not found')
-    return Sticker.objects.create(company=company, file=ContentFile(message.media_file.read(), name='sticker.webp'))
+    return saved_sticker(company, message.wa_message_id) or Sticker.objects.create(
+        company=company, file=ContentFile(message.media_file.read(), name='sticker.webp'), source_wa_message_id=message.wa_message_id or ''
+    )
 
 
 def send_saved_sticker(company: Company, user: User, account_id: int, contact_id: int, sticker_id: int) -> PersonalMessage:

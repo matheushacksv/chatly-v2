@@ -1258,6 +1258,23 @@ class StickerTests(BaseChatsTestCase):
         self.assertEqual(Sticker.objects.get(pk=response.json()['id']).file.read(), b'webp-local')
         mock_download.assert_not_called()
 
+    @patch('apps.chats.whatsapp.download_media', return_value=(b'webp', 'image/webp'))
+    def test_saving_twice_returns_same_sticker_and_marks_message(self, mock_download):
+        message = self.received_sticker()
+        first = self.save(self.company.pk, message.pk).json()['id']
+        second = self.save(self.company.pk, message.pk).json()['id']
+        self.assertEqual(first, second)
+        self.assertEqual(mock_download.call_count, 1)  # segunda vez nem baixa
+
+        url = f'/api/companies/{self.company.pk}/contacts/{self.contact.pk}/messages'
+        saved = {m['id']: m['sticker_saved'] for m in self.client.get(url, headers=self.auth).json()['items']}
+        self.assertTrue(saved[message.pk])
+        self.assertFalse(saved[Message.objects.get(wa_message_id='wamid.1').pk])
+
+        Sticker.objects.get(pk=first).delete()  # tirou da galeria: deixa de estar marcada
+        saved = {m['id']: m['sticker_saved'] for m in self.client.get(url, headers=self.auth).json()['items']}
+        self.assertFalse(saved[message.pk])
+
     def test_save_non_sticker_message_returns_404(self):
         message = Message.objects.get(wa_message_id='wamid.1')  # texto
         response = self.save(self.company.pk, message.pk)

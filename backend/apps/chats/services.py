@@ -8,7 +8,7 @@ import phonenumbers
 from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import UploadedFile
 from django.db import IntegrityError
-from django.db.models import Count, F, OuterRef, Q, QuerySet, Subquery
+from django.db.models import Count, Exists, F, OuterRef, Q, QuerySet, Subquery
 from django.utils import timezone
 
 from apps.agents.services import get_agent
@@ -286,7 +286,7 @@ def delete_contact(company: Company, contact_id: int) -> None:
 
 def list_messages(company: Company, contact_id: int) -> QuerySet[Message]:
     contact = get_contact(company, contact_id)
-    return Message.objects.filter(contact=contact).order_by('-id')
+    return Message.objects.filter(contact=contact).annotate(sticker_saved=sticker_saved_annotation(company)).order_by('-id')
 
 
 def send_manual_message(company: Company, contact_id: int, content: str, user=None) -> Message:
@@ -342,6 +342,9 @@ def save_sticker(company: Company, message_id: int) -> Sticker:
     )
     if message is None:
         raise NotFound('sticker not found')
+    existing = saved_sticker(company, message.wa_message_id)
+    if existing:
+        return existing
     if message.media_file:
         content = message.media_file.read()
     else:
@@ -349,7 +352,16 @@ def save_sticker(company: Company, message_id: int) -> Sticker:
             content, _ = whatsapp.download_media(message.contact.account, message.media_id)
         except httpx.HTTPStatusError:
             raise NotFound('media expired')
-    return Sticker.objects.create(company=company, file=ContentFile(content, name='sticker.webp'))
+    return Sticker.objects.create(company=company, file=ContentFile(content, name='sticker.webp'), source_wa_message_id=message.wa_message_id or '')
+
+
+def saved_sticker(company: Company, wa_message_id: str | None) -> Sticker | None:
+    return Sticker.objects.filter(company=company, source_wa_message_id=wa_message_id).first() if wa_message_id else None
+
+
+def sticker_saved_annotation(company: Company):
+    """Exists pra anotar mensagens (de qualquer canal) com 'essa figurinha já está na galeria'."""
+    return Exists(Sticker.objects.filter(company=company, source_wa_message_id=OuterRef('wa_message_id')).exclude(source_wa_message_id=''))
 
 
 def list_stickers(company: Company) -> QuerySet[Sticker]:

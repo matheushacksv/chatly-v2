@@ -59,6 +59,7 @@ export interface Message {
   content: string
   message_type: 'text' | 'image' | 'audio' | 'video' | 'document' | 'sticker'
   media_url: string | null
+  sticker_saved: boolean
   wa_message_id: string | null
   from_human: boolean
   status: string
@@ -268,6 +269,7 @@ export interface PersonalMessage {
   content: string
   message_type: 'text' | 'image' | 'audio' | 'video' | 'document' | 'sticker'
   media_url: string | null
+  sticker_saved: boolean
   status: string
   error_detail: string | null
   wa_message_id: string | null

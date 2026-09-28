@@ -63,6 +63,7 @@ class ManualMessageDTO(Schema):
 
 class MessageOutDTO(ModelSchema):
     media_url: str | None = None
+    sticker_saved: bool = False
 
     class Meta:
         model = Message

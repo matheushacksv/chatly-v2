@@ -19,6 +19,7 @@ from apps.chats.models import Contact, Sticker, WhatsAppAccount
 from apps.companies.models import Company, Membership
 from apps.personal import gateway, services, tasks
 from apps.personal.models import PersonalAccount, PersonalContact, PersonalMessage
+from apps.personal.schemas import PersonalMessageOutDTO
 from apps.testing import auth_header
 from core.exceptions import Conflict, Forbidden, GatewayError, NotFound, ValidationError
 
@@ -574,6 +575,18 @@ class SendServiceTests(BasePersonalTestCase):
         )
         sticker = services.save_sticker(self.company, self.owner, self.account.pk, message.pk)
         self.assertEqual((sticker.company, sticker.file.read()), (self.company, b'webp'))
+
+    def test_save_sticker_twice_is_idempotent_and_flags_message(self):
+        message = PersonalMessage.objects.create(
+            contact=self.contact, direction='in', content='[figurinha]', message_type='sticker',
+            media_file=ContentFile(b'webp', name='s.webp'), wa_message_id='STK1',
+        )
+        first = services.save_sticker(self.company, self.owner, self.account.pk, message.pk)
+        second = services.save_sticker(self.company, self.owner, self.account.pk, message.pk)
+        self.assertEqual(first.pk, second.pk)
+        listed = services.list_messages(self.company, self.owner, self.account.pk, self.contact.pk)
+        self.assertTrue(listed[0].sticker_saved)
+        self.assertTrue(PersonalMessageOutDTO.from_orm(listed[0]).sticker_saved)
 
     def test_save_sticker_non_sticker_not_found(self):
         message = PersonalMessage.objects.create(contact=self.contact, direction='in', content='oi')

@@ -85,6 +85,13 @@ export function usePersonalChat() {
     }
   }
 
+  // o eco do webhook pode recarregar a lista antes da resposta do envio voltar: substitui em vez de duplicar
+  function addMessage(msg: PersonalMessage) {
+    messages.value = messages.value.some(m => m.id === msg.id)
+      ? messages.value.map(m => (m.id === msg.id ? msg : m))
+      : [...messages.value, msg]
+  }
+
   async function send(content: string) {
     const text = content.trim()
     if (!text || !connection.value || !selectedId.value) return
@@ -92,7 +99,7 @@ export function usePersonalChat() {
       `${base.value}/${connection.value.id}/contacts/${selectedId.value}/messages`,
       { method: 'POST', body: { content: text } }
     )
-    messages.value = [...messages.value, msg]
+    addMessage(msg)
   }
 
   async function sendMedia(file: File, caption: string) {
@@ -104,7 +111,7 @@ export function usePersonalChat() {
       `${base.value}/${connection.value.id}/contacts/${selectedId.value}/messages/media`,
       { method: 'POST', body: form }
     )
-    messages.value = [...messages.value, msg]
+    addMessage(msg)
   }
 
   // ---- figurinhas ---- lista/exclusão reusam a galeria company-scoped;
@@ -117,6 +124,7 @@ export function usePersonalChat() {
   async function saveSticker(messageId: number) {
     if (!connection.value) return
     await api(`${base.value}/${connection.value.id}/stickers`, { method: 'POST', body: { message_id: messageId } })
+    messages.value = messages.value.map(m => (m.id === messageId ? { ...m, sticker_saved: true } : m))
   }
 
   async function sendSticker(stickerId: number) {
@@ -125,7 +133,7 @@ export function usePersonalChat() {
       `${base.value}/${connection.value.id}/contacts/${selectedId.value}/messages/sticker`,
       { method: 'POST', body: { sticker_id: stickerId } }
     )
-    messages.value = [...messages.value, msg]
+    addMessage(msg)
   }
 
   async function deleteSticker(id: number) {

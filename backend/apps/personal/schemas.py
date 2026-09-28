@@ -38,6 +38,8 @@ class PersonalContactOutDTO(ModelSchema):
 
 class PersonalMessageOutDTO(ModelSchema):
     media_url: str | None = None
+    # anotado no list_messages; nos endpoints de envio a mensagem vem sem o atributo e fica False
+    sticker_saved: bool = False
 
     class Meta:
         model = PersonalMessage
