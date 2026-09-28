@@ -16,29 +16,22 @@ services:
       timeout: 5s
       retries: 5
 
-  evolution-go:
-    image: evoapicloud/evolution-go:latest
+  openwa:
+    image: ghcr.io/rmyndharis/openwa:0.23.7
     restart: unless-stopped
+    # dashboard + Swagger em http://localhost:2785; SQLite no volume, nada no Postgres
     ports:
-      - "4000:4000"
+      - "2785:2785"
     volumes:
-      - evolution_data:/app/dbdata
-      - evolution_logs:/app/logs
+      - openwa_data:/app/data
     environment:
-      SERVER_PORT: 4000
-      CLIENT_NAME: chatly-dev
-      GLOBAL_API_KEY: ${EVOLUTION_API_KEY}
-      POSTGRES_AUTH_DB: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/evogo_auth?sslmode=disable
-      POSTGRES_USERS_DB: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/evogo_users?sslmode=disable
-      DATABASE_SAVE_MESSAGES: "true"
-      WADEBUG: INFO
-      LOGTYPE: console
-      LOG_DIRECTORY: /app/logs
-      CONNECT_ON_STARTUP: "false"
-      OS_NAME: Linux
-    depends_on:
-      db:
-        condition: service_healthy
+      PORT: 2785
+      ENGINE_TYPE: baileys
+      ENABLE_SWAGGER: "true"
+      # webhook só sai pra esses hosts (guard de SSRF do OpenWA)
+      SSRF_ALLOWED_HOSTS: api,host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   worker:
     build: ./backend
@@ -48,7 +41,7 @@ services:
       POSTGRES_HOST: db
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
-      EVOLUTION_API_URL: http://evolution-go:4000
+      OPENWA_API_URL: http://openwa:2785
     command: celery -A core worker --loglevel=info
     volumes:
       - ./backend:/app
@@ -79,7 +72,7 @@ services:
       POSTGRES_HOST: db
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
-      EVOLUTION_API_URL: http://evolution-go:4000
+      OPENWA_API_URL: http://openwa:2785
     command: sh -c "python manage.py migrate --noinput && python manage.py runserver 0.0.0.0:8000"
     ports:
       - "8000:8000"
@@ -91,10 +84,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      evolution-go:
+      openwa:
         condition: service_started
 
 volumes:
   postgres_data:
-  evolution_data:
-  evolution_logs:
+  openwa_data:

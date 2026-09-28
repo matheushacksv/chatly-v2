@@ -1,46 +1,46 @@
 from ninja import ModelSchema, Schema
 
-from apps.evolution.models import EvolutionAccount, EvolutionContact, EvolutionMessage
+from apps.personal.models import PersonalAccount, PersonalContact, PersonalMessage
 
 
-class EvolutionAccountOutDTO(ModelSchema):
+class PersonalAccountOutDTO(ModelSchema):
     user_email: str
 
     class Meta:
-        model = EvolutionAccount
-        fields = ['id', 'instance_name', 'status', 'phone_number', 'created_at']
+        model = PersonalAccount
+        fields = ['id', 'session_name', 'status', 'phone_number', 'created_at']
 
     @staticmethod
     def resolve_user_email(obj):
         return obj.user.email
 
 
-class EvolutionConnectDTO(Schema):
+class PersonalConnectDTO(Schema):
     phone: str = ''
 
 
-class EvolutionConnectOutDTO(Schema):
+class PersonalConnectOutDTO(Schema):
     qrcode: str = ''
     pair_code: str = ''
 
 
-class EvolutionQRCodeOutDTO(Schema):
+class PersonalQRCodeOutDTO(Schema):
     qrcode: str
 
 
-class EvolutionContactOutDTO(ModelSchema):
+class PersonalContactOutDTO(ModelSchema):
     avatar_url: str
 
     class Meta:
-        model = EvolutionContact
+        model = PersonalContact
         fields = ['id', 'wa_id', 'name', 'created_at']
 
 
-class EvolutionMessageOutDTO(ModelSchema):
+class PersonalMessageOutDTO(ModelSchema):
     media_url: str | None = None
 
     class Meta:
-        model = EvolutionMessage
+        model = PersonalMessage
         fields = ['id', 'direction', 'content', 'message_type', 'status', 'error_detail', 'wa_message_id', 'created_at']
 
     @staticmethod
@@ -48,16 +48,16 @@ class EvolutionMessageOutDTO(ModelSchema):
         return obj.media_file.url if obj.media_file else None
 
 
-class EvolutionSendMessageDTO(Schema):
+class PersonalSendMessageDTO(Schema):
     content: str
 
 
-class EvolutionDirectoryEntryDTO(Schema):
+class PersonalDirectoryEntryDTO(Schema):
     wa_id: str
     name: str = ''
     source: str
 
 
-class EvolutionStartConversationDTO(Schema):
+class PersonalStartConversationDTO(Schema):
     phone: str
     name: str = ''

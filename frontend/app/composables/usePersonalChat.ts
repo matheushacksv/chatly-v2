@@ -1,23 +1,23 @@
-import type { EvolutionAccount, EvolutionContact, EvolutionDirectoryEntry, EvolutionMessage, Sticker } from '~/types/api'
+import type { PersonalAccount, PersonalContact, PersonalDirectoryEntry, PersonalMessage, Sticker } from '~/types/api'
 
 // Estado compartilhado (useState) entre a página /meu-whatsapp e o widget flutuante,
 // pra seleção/mensagens/conexão não divergirem. O "driver" (carga inicial, SSE,
 // seleção -> mensagens) vive no layout default.vue, que roda uma vez só.
-export function useEvolutionChat() {
+export function usePersonalChat() {
   const api = useApi()
   const { activeId: companyId } = useCompany()
-  const base = computed(() => `/evolution/${companyId.value}/evolution-accounts`)
+  const base = computed(() => `/personal/${companyId.value}/accounts`)
 
-  const connection = useState<EvolutionAccount | null>('evo-connection', () => null)
-  const contacts = useState<EvolutionContact[]>('evo-contacts', () => [])
-  const selectedId = useState<number | null>('evo-selected', () => null)
-  const messages = useState<EvolutionMessage[]>('evo-messages', () => [])
+  const connection = useState<PersonalAccount | null>('personal-connection', () => null)
+  const contacts = useState<PersonalContact[]>('personal-contacts', () => [])
+  const selectedId = useState<number | null>('personal-selected', () => null)
+  const messages = useState<PersonalMessage[]>('personal-messages', () => [])
   // galeria de figurinhas é company-scoped (compartilhada com o canal oficial)
-  const stickers = useState<Sticker[]>('evo-stickers', () => [])
+  const stickers = useState<Sticker[]>('personal-stickers', () => [])
   // destinatários possíveis pra iniciar conversa: agenda do celular + contatos do canal oficial
-  const directory = useState<EvolutionDirectoryEntry[]>('evo-directory', () => [])
+  const directory = useState<PersonalDirectoryEntry[]>('personal-directory', () => [])
   // aberto/fechado da bolha flutuante: compartilhado pra outras páginas abrirem o widget
-  const widgetOpen = useState<boolean>('evo-widget-open', () => false)
+  const widgetOpen = useState<boolean>('personal-widget-open', () => false)
 
   const selected = computed(() => contacts.value.find(c => c.id === selectedId.value) ?? null)
   const connected = computed(() => connection.value?.status === 'connected')
@@ -27,7 +27,7 @@ export function useEvolutionChat() {
       connection.value = null
       return
     }
-    connection.value = await api<EvolutionAccount | null>(`${base.value}/me`)
+    connection.value = await api<PersonalAccount | null>(`${base.value}/me`)
   }
 
   async function loadContacts() {
@@ -35,7 +35,7 @@ export function useEvolutionChat() {
       contacts.value = []
       return
     }
-    contacts.value = await api<EvolutionContact[]>(`${base.value}/${connection.value.id}/contacts`)
+    contacts.value = await api<PersonalContact[]>(`${base.value}/${connection.value.id}/contacts`)
   }
 
   async function loadMessages() {
@@ -43,7 +43,7 @@ export function useEvolutionChat() {
       messages.value = []
       return
     }
-    messages.value = await api<EvolutionMessage[]>(`${base.value}/${connection.value.id}/contacts/${selectedId.value}/messages`)
+    messages.value = await api<PersonalMessage[]>(`${base.value}/${connection.value.id}/contacts/${selectedId.value}/messages`)
   }
 
   function resetInbox() {
@@ -55,13 +55,13 @@ export function useEvolutionChat() {
 
   async function loadDirectory() {
     if (!connection.value) return
-    directory.value = await api<EvolutionDirectoryEntry[]>(`${base.value}/${connection.value.id}/directory`)
+    directory.value = await api<PersonalDirectoryEntry[]>(`${base.value}/${connection.value.id}/directory`)
   }
 
   // cria (ou reaproveita) o contato e abre a conversa; o watcher do layout carrega a thread
   async function startConversation(phone: string, name = '') {
     if (!connection.value) return
-    const contact = await api<EvolutionContact>(
+    const contact = await api<PersonalContact>(
       `${base.value}/${connection.value.id}/contacts`,
       { method: 'POST', body: { phone, name } }
     )
@@ -88,7 +88,7 @@ export function useEvolutionChat() {
   async function send(content: string) {
     const text = content.trim()
     if (!text || !connection.value || !selectedId.value) return
-    const msg = await api<EvolutionMessage>(
+    const msg = await api<PersonalMessage>(
       `${base.value}/${connection.value.id}/contacts/${selectedId.value}/messages`,
       { method: 'POST', body: { content: text } }
     )
@@ -100,7 +100,7 @@ export function useEvolutionChat() {
     const form = new FormData()
     form.append('file', file)
     if (caption) form.append('caption', caption)
-    const msg = await api<EvolutionMessage>(
+    const msg = await api<PersonalMessage>(
       `${base.value}/${connection.value.id}/contacts/${selectedId.value}/messages/media`,
       { method: 'POST', body: form }
     )
@@ -108,7 +108,7 @@ export function useEvolutionChat() {
   }
 
   // ---- figurinhas ---- lista/exclusão reusam a galeria company-scoped;
-  // salvar (de uma recebida) e enviar passam pelo canal Evolution.
+  // salvar (de uma recebida) e enviar passam pelo canal pessoal.
   async function loadStickers() {
     if (!companyId.value) return
     stickers.value = await api<Sticker[]>(`/companies/${companyId.value}/stickers`)
@@ -121,7 +121,7 @@ export function useEvolutionChat() {
 
   async function sendSticker(stickerId: number) {
     if (!connection.value || !selectedId.value) return
-    const msg = await api<EvolutionMessage>(
+    const msg = await api<PersonalMessage>(
       `${base.value}/${connection.value.id}/contacts/${selectedId.value}/messages/sticker`,
       { method: 'POST', body: { sticker_id: stickerId } }
     )

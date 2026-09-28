@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import type { Message, EvolutionMessage } from '~/types/api'
+import type { Message, PersonalMessage } from '~/types/api'
 
-// canal oficial (Message) e pessoal (EvolutionMessage) compartilham o mesmo render.
+// canal oficial (Message) e pessoal (PersonalMessage) compartilham o mesmo render.
 // proxy=true (oficial): sem media_url busca os bytes na Meta via rota /messages/{id}/media.
-// proxy=false (Evolution): mídia é local; sem media_url = download falhou -> mostra indisponível
+// proxy=false (canal pessoal): mídia é local; sem media_url = download falhou -> mostra indisponível
 // (não tentar o proxy oficial, que serviria a mídia errada por colisão de PK entre canais).
-const props = withDefaults(defineProps<{ message: Message | EvolutionMessage, companyId: number, proxy?: boolean }>(), { proxy: true })
+const props = withDefaults(defineProps<{ message: Message | PersonalMessage, companyId: number, proxy?: boolean }>(), { proxy: true })
 
 const config = useRuntimeConfig()
 const api = useApi()

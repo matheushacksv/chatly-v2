@@ -4,34 +4,37 @@ from django.conf import settings
 from django.db import models
 
 
-def evolution_media_path(instance, filename):
-    return f'evolution/{uuid4().hex}/{filename}'
+def personal_media_path(instance, filename):
+    return f'personal/{uuid4().hex}/{filename}'
 
 
-class EvolutionAccount(models.Model):
+class PersonalAccount(models.Model):
+    """Número pessoal do atendente, conectado pelo gateway OpenWA (uma sessão por atendente)."""
+
     class Status(models.TextChoices):
         CONNECTING = 'connecting', 'Conectando'
         CONNECTED = 'connected', 'Conectado'
         DISCONNECTED = 'disconnected', 'Desconectado'
 
-    company = models.ForeignKey('companies.Company', on_delete=models.CASCADE, related_name='evolution_accounts')
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='evolution_accounts')
-    instance_name = models.CharField(max_length=50, unique=True)
-    status = models.CharField(max_length=50, choices=Status.choices, default=Status.CONNECTING)
+    company = models.ForeignKey('companies.Company', on_delete=models.CASCADE, related_name='personal_accounts')
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='personal_accounts')
+    # nome é nosso (c{company}u{user}); id é o UUID que o gateway devolve e vem em todo webhook
+    session_name = models.CharField(max_length=50, unique=True)
+    session_id = models.CharField(max_length=64, blank=True, default='', db_index=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.CONNECTING)
     phone_number = models.CharField(max_length=50, blank=True, default='')
-    instance_api_key = models.CharField(max_length=255, blank=True, default='', db_index=True)
-    last_logged_out_reason = models.CharField(max_length=255, blank=True, null=True)
+    last_logged_out_reason = models.CharField(max_length=255, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        constraints = [models.UniqueConstraint(fields=['company', 'user'], name='unique_evolution_account_per_user')]
+        constraints = [models.UniqueConstraint(fields=['company', 'user'], name='unique_personal_account_per_user')]
 
     def __str__(self):
-        return self.instance_name
+        return self.session_name
 
 
-class EvolutionContact(models.Model):
-    account = models.ForeignKey(EvolutionAccount, on_delete=models.CASCADE, related_name='contacts')
+class PersonalContact(models.Model):
+    account = models.ForeignKey(PersonalAccount, on_delete=models.CASCADE, related_name='contacts')
     wa_id = models.CharField(max_length=100)
     name = models.CharField(max_length=100, blank=True)
     avatar_url = models.TextField(blank=True, default='')
@@ -39,13 +42,13 @@ class EvolutionContact(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        constraints = [models.UniqueConstraint(fields=['account', 'wa_id'], name='unique_evolution_contact_per_account')]
+        constraints = [models.UniqueConstraint(fields=['account', 'wa_id'], name='unique_personal_contact_per_account')]
 
     def __str__(self):
         return f'{self.name} - {self.wa_id}'
 
 
-class EvolutionMessage(models.Model):
+class PersonalMessage(models.Model):
     class Direction(models.TextChoices):
         IN = 'in', 'Recebida'
         OUT = 'out', 'Enviada'
@@ -58,24 +61,22 @@ class EvolutionMessage(models.Model):
         FAILED = 'failed', 'Falha'
 
     class Type(models.TextChoices):
-        TEXT = (
-            'text',
-            'Texto',
-        )
+        TEXT = 'text', 'Texto'
         IMAGE = 'image', 'Imagem'
         AUDIO = 'audio', 'Áudio'
         VIDEO = 'video', 'Vídeo'
         DOCUMENT = 'document', 'Documento'
         STICKER = 'sticker', 'Figurinha'
 
-    contact = models.ForeignKey(EvolutionContact, on_delete=models.CASCADE, related_name='messages')
+    contact = models.ForeignKey(PersonalContact, on_delete=models.CASCADE, related_name='messages')
     direction = models.CharField(max_length=10, choices=Direction.choices)
     content = models.TextField()
     message_type = models.CharField(max_length=10, choices=Type.choices, default=Type.TEXT)
-    media_file = models.FileField(upload_to=evolution_media_path, blank=True, null=True)
+    media_file = models.FileField(upload_to=personal_media_path, blank=True, null=True)
     mime_type = models.CharField(max_length=100, blank=True, default='')
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.RECEIVED)
     error_detail = models.CharField(max_length=255, blank=True, null=True)
+    # id é do gateway (não nosso): unique é o que casa o eco do webhook com o envio pelo painel
     wa_message_id = models.CharField(max_length=128, unique=True, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

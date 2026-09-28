@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import type { Contact, Message, Paginated, Sticker, Template, WhatsAppAccount } from '~/types/api'
+import type { Contact, Member, Message, Paginated, Sticker, Template, WhatsAppAccount } from '~/types/api'
 
 const api = useApi()
 const toast = useToast()
 const confirmModal = useConfirm()
 const { activeId: companyId, isOwner } = useCompany()
+const { user } = useAuth()
 
 // ---- contas WhatsApp ----
 const { data: accounts } = await useAsyncData(
@@ -18,6 +19,27 @@ watch(accounts, list => { accountId.value = list?.[0]?.id ?? null }, { immediate
 // ---- contatos ----
 const contacts = ref<Contact[]>([])
 const search = ref('')
+// fila: todas, aguardando humano (IA pausada sem responsável) ou minhas
+const queue = ref<'all' | 'waiting' | 'mine'>('all')
+const queueItems = [
+  { label: 'Todas', value: 'all' },
+  { label: 'Aguardando', value: 'waiting' },
+  { label: 'Minhas', value: 'mine' }
+]
+
+const { data: members } = await useAsyncData(
+  () => `members:${companyId.value}`,
+  () => api<Member[]>(`/companies/${companyId.value}/members`),
+  { watch: [companyId], default: () => [] as Member[] }
+)
+const memberName = (id: number | null) => {
+  const member = members.value?.find(m => m.id === id)
+  return member ? (member.name || member.email) : 'Sem nome'
+}
+const assigneeItems = computed(() => [
+  { label: 'Sem responsável', value: 0 },
+  ...(members.value ?? []).map(m => ({ label: m.id === user.value?.id ? `${m.name || m.email} (eu)` : (m.name || m.email), value: m.id }))
+])
 const selectedId = ref<number | null>(null)
 const selected = computed(() => contacts.value.find(c => c.id === selectedId.value) ?? null)
 
@@ -36,7 +58,7 @@ async function loadContacts() {
     return
   }
   const page = await api<Paginated<Contact>>(
-    `/companies/${companyId.value}/whatsapp-accounts/${accountId.value}/contacts?limit=100`
+    `/companies/${companyId.value}/whatsapp-accounts/${accountId.value}/contacts?limit=100${queue.value === 'all' ? '' : `&queue=${queue.value}`}`
   )
   const items = [...page.items]
   // contato aberto sem mensagem pode estar fora da página (nulls_last) - preserva ele
@@ -45,6 +67,7 @@ async function loadContacts() {
   contacts.value = items
 }
 watch(accountId, () => { selectedId.value = null; loadContacts() }, { immediate: true })
+watch(queue, loadContacts)
 
 // ---- mensagens ----
 // API devolve desc (recente primeiro); exibimos asc → sempre inverter a página.
@@ -148,8 +171,8 @@ const { lastEvent, openContact, openContactData } = useChatEvents()
 watch(lastEvent, (entry) => {
   if (!entry) return
   const event = entry.event
-  // eventos de conexão pessoal (Evolution) têm tabela/endpoints próprios - ignora aqui
-  if (event.channel === 'evolution' || event.type === 'evolution_status') return
+  // eventos de conexão pessoal têm tabela/endpoints próprios - ignora aqui
+  if (event.channel === 'personal' || event.type === 'personal_status') return
   if (event.type === 'reconnect') {
     // ficou offline: catch-up do que perdeu
     loadMessages()
@@ -376,14 +399,36 @@ async function createContact() {
 }
 
 // ---- handoff / memória ----
+async function patchSelected(body: Record<string, unknown>) {
+  const updated = await api<Contact>(`/companies/${companyId.value}/contacts/${selected.value!.id}`, { method: 'PATCH', body })
+  // PATCH não traz os campos da lista (última mensagem): mescla em vez de substituir
+  contacts.value = contacts.value.map(c => (c.id === updated.id ? { ...c, ...updated, last_message: c.last_message, last_message_at: c.last_message_at, last_inbound_at: c.last_inbound_at } : c))
+}
+
+async function assign(userId: number) {
+  if (!selected.value) return
+  try {
+    await patchSelected({ assigned_to: userId || null })
+  } catch (error) {
+    toast.add({ title: apiErrorDetail(error), color: 'error' })
+  }
+}
+
+// "IA volta em 5h" / "IA volta em 20 min"; null quando a pausa não expira
+const resumeText = computed(() => {
+  const at = selected.value?.ai_paused ? selected.value.ai_resume_at : null
+  if (!at) return null
+  const minutes = Math.max(1, Math.round((new Date(at).getTime() - Date.now()) / 60000))
+  return minutes < 60 ? `IA volta em ${minutes} min` : `IA volta em ${Math.round(minutes / 60)}h`
+})
+
 async function setPaused(paused: boolean) {
   if (!selected.value) return
   try {
-    const updated = await api<Contact>(
-      `/companies/${companyId.value}/contacts/${selected.value.id}`,
-      { method: 'PATCH', body: { ai_paused: paused } }
-    )
-    contacts.value = contacts.value.map(c => (c.id === updated.id ? updated : c))
+    // assumir = pausar e ficar como responsável (se ninguém tiver pego)
+    await patchSelected(paused
+      ? { ai_paused: true, assigned_to: selected.value.assigned_to ?? user.value?.id ?? null }
+      : { ai_paused: false })
     toast.add({
       title: paused ? 'IA pausada - você assume a conversa' : 'IA reativada',
       color: paused ? 'warning' : 'success',
@@ -427,17 +472,17 @@ async function deleteConversation(contact: Contact) {
 // ---- painel de detalhes ----
 const detailOpen = ref(false)
 
-// ---- abrir no meu WhatsApp (canal pessoal / evolution) ----
-// reusa o estado global do useEvolutionChat: startConversation seta o selecionado,
+// ---- abrir no meu WhatsApp (canal pessoal) ----
+// reusa o estado global do usePersonalChat: startConversation seta o selecionado,
 // o watcher do layout carrega a thread, e navegar pra /meu-whatsapp já mostra a conversa.
-const { connected: evoConnected, startConversation: startEvoConversation, widgetOpen: evoWidgetOpen } = useEvolutionChat()
-const openingEvo = ref(false)
-async function openInEvolution() {
-  if (!selected.value || openingEvo.value) return
-  openingEvo.value = true
+const { connected: personalConnected, startConversation: startPersonalConversation, widgetOpen: personalWidgetOpen } = usePersonalChat()
+const openingPersonal = ref(false)
+async function openInPersonal() {
+  if (!selected.value || openingPersonal.value) return
+  openingPersonal.value = true
   try {
-    await startEvoConversation(selected.value.wa_id, selected.value.name)
-    evoWidgetOpen.value = true
+    await startPersonalConversation(selected.value.wa_id, selected.value.name)
+    personalWidgetOpen.value = true
   } catch (error) {
     const detail = apiErrorDetail(error, '')
     toast.add({
@@ -445,7 +490,7 @@ async function openInEvolution() {
       color: 'error'
     })
   } finally {
-    openingEvo.value = false
+    openingPersonal.value = false
   }
 }
 
@@ -519,8 +564,9 @@ const accountItems = computed(() =>
           />
         </template>
       </UDashboardNavbar>
-      <UDashboardToolbar>
+      <UDashboardToolbar class="flex-col items-stretch gap-2 py-2">
         <UInput v-model="search" icon="i-lucide-search" placeholder="Buscar contato..." class="w-full" size="sm" />
+        <UTabs v-model="queue" :items="queueItems" :content="false" size="xs" class="w-full" />
       </UDashboardToolbar>
     </template>
 
@@ -554,18 +600,28 @@ const accountItems = computed(() =>
                 class="text-xs text-muted truncate"
               >{{ contact.last_message }}</p>
               <p v-else class="text-[11px] text-muted font-mono truncate">{{ contact.wa_id }}</p>
-              <UIcon
-                v-if="contact.ai_paused"
-                name="i-lucide-headset"
-                class="size-4 text-warning shrink-0"
-                title="Atendimento humano"
+              <UBadge
+                v-if="contact.ai_paused && !contact.assigned_to"
+                label="Aguardando"
+                color="warning"
+                variant="subtle"
+                size="sm"
+                icon="i-lucide-headset"
+                class="shrink-0"
+              />
+              <UAvatar
+                v-else-if="contact.assigned_to"
+                :alt="memberName(contact.assigned_to)"
+                size="3xs"
+                class="shrink-0"
+                :title="`Com ${memberName(contact.assigned_to)}`"
               />
             </div>
           </div>
         </button>
 
         <p v-if="!filteredContacts.length" class="p-4 text-sm text-muted">
-          Nenhuma conversa ainda.
+          {{ queue === 'waiting' ? 'Ninguém aguardando atendimento.' : queue === 'mine' ? 'Nenhuma conversa com você.' : 'Nenhuma conversa ainda.' }}
         </p>
       </div>
 
@@ -618,23 +674,34 @@ const accountItems = computed(() =>
         <template #right>
           <template v-if="selected">
             <UButton
-              v-if="evoConnected"
+              v-if="personalConnected"
               icon="i-lucide-smartphone"
               color="neutral"
               variant="ghost"
               size="sm"
-              :loading="openingEvo"
+              :loading="openingPersonal"
               aria-label="Falar pelo meu WhatsApp"
               title="Falar pelo meu WhatsApp"
-              @click="openInEvolution"
+              @click="openInPersonal"
             />
             <UBadge
               :color="selected.ai_paused ? 'warning' : 'success'"
               variant="subtle"
               :icon="selected.ai_paused ? 'i-lucide-user' : 'i-lucide-bot'"
+              :title="resumeText ?? undefined"
             >
               {{ selected.ai_paused ? 'Atendimento humano' : 'IA respondendo' }}
             </UBadge>
+            <USelect
+              :model-value="selected.assigned_to ?? 0"
+              :items="assigneeItems"
+              icon="i-lucide-user-round"
+              size="sm"
+              variant="ghost"
+              class="w-44"
+              aria-label="Responsável"
+              @update:model-value="assign(Number($event))"
+            />
             <UButton
               :label="selected.ai_paused ? 'Reativar IA' : 'Assumir conversa'"
               :color="selected.ai_paused ? 'success' : 'warning'"
@@ -822,7 +889,7 @@ const accountItems = computed(() =>
             v-model="draft"
             :placeholder="attachment
               ? 'Legenda (opcional)...'
-              : (selected.ai_paused ? 'Responder como atendente...' : 'IA está ativa - enviar mesmo assim?')"
+              : (selected.ai_paused ? 'Responder como atendente...' : 'Responder assume a conversa e pausa a IA...')"
             variant="soft"
             size="lg"
             class="flex-1"
@@ -892,7 +959,9 @@ const accountItems = computed(() =>
           <USwitch
             :model-value="selected.ai_paused"
             label="IA pausada"
-            description="Pausada, a IA não responde - você assume."
+            :description="selected.ai_paused
+              ? (resumeText ? `A IA não responde. ${resumeText}.` : 'A IA não responde até ser reativada.')
+              : 'Responder pelo chat também pausa a IA.'"
             @update:model-value="setPaused($event)"
           />
         </div>

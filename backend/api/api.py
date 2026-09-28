@@ -11,7 +11,7 @@ from api.endpoints.credentials import router as credentials_router
 from api.endpoints.crm import router as crm_router
 from api.endpoints.documents import router as documents_router
 from api.endpoints.events import router as events_router
-from api.endpoints.evolution import router as evolution_router
+from api.endpoints.personal import router as personal_router
 from api.endpoints.messages import router as messages_router
 from api.endpoints.stickers import router as stickers_router
 from api.endpoints.templates import router as templates_router
@@ -41,5 +41,5 @@ api.add_router('/companies', stickers_router)
 api.add_router('/companies', campaigns_router)
 api.add_router('/companies', crm_router)
 api.add_router('/companies', templates_router)
-api.add_router('/evolution', evolution_router)
+api.add_router('/personal', personal_router)
 api.add_router('/automations', automations_router)

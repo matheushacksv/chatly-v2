@@ -8,7 +8,7 @@ Chatly: atendimento de WhatsApp com IA. Backend Django 6 (Python 3.13, gerenciad
 
 Dois canais de WhatsApp, deliberadamente separados:
 - **Oficial** (`apps/chats`): Cloud API da Meta, com IA, RAG, memória, campanhas e templates. UI em `pages/conversas.vue`.
-- **Pessoal** (`apps/evolution`): número pessoal do atendente via evolution-go (não-oficial), 1:1 manual, **sem IA e sem campanhas**. UI em `pages/meu-whatsapp.vue` + bolha flutuante `AppChatWidget.vue`.
+- **Pessoal** (`apps/personal`): número pessoal do atendente via gateway **OpenWA** (não-oficial, engine baileys, SQLite no próprio volume), 1:1 manual, **sem IA e sem campanhas**. UI em `pages/meu-whatsapp.vue` + bolha flutuante `AppChatWidget.vue`.
 
 ## Comandos
 
@@ -20,7 +20,7 @@ uv run manage.py runserver                # dev server (API em /api/, docs em /a
 uv run manage.py makemigrations           # gerar migrations
 uv run manage.py migrate                  # aplicar migrations
 uv run manage.py test                     # suíte inteira
-uv run manage.py test apps.evolution      # testes de um app
+uv run manage.py test apps.personal       # testes de um app
 uv run manage.py test apps.chats.tests.MinhaClasse.test_x   # um teste
 ```
 
@@ -33,7 +33,7 @@ npm run typecheck    # nuxt typecheck
 npm run build        # em produção o Dockerfile usa `nuxt generate`, não `build`
 ```
 
-Stack local via `docker compose up -d` na raiz: `db`, `redis`, `evolution-go`, `api` (bind mount `./backend:/app`, roda `migrate` + `runserver` com autoreload). **Não existe serviço `worker` no compose de dev** - pra consumir tasks Celery: `docker compose exec api celery -A core worker --loglevel=info` (sem autoreload: mexeu em `tasks.py`, reinicia).
+Stack local via `docker compose up -d` na raiz: `db`, `redis`, `openwa`, `api` (bind mount `./backend:/app`, roda `migrate` + `runserver` com autoreload) e `worker` (celery, sem autoreload: mexeu em `tasks.py`, `docker compose restart worker`). OpenWA de dev expõe dashboard + Swagger em http://localhost:2785 (`/api/docs`). Dependência nova no backend: `docker compose up -d --build -V api worker` (o volume anônimo `/app/.venv` guarda o venv velho).
 
 Não há linter/formatter no backend. Dev deps incluem `django-stubs`/`django-types`.
 
@@ -41,18 +41,18 @@ Não há linter/formatter no backend. Dev deps incluem `django-stubs`/`django-ty
 
 Settings lidos do `.env` via `python-decouple`. **`config(...)` sem default quebra no import do settings** - toda var nova precisa entrar no `.env` de cada ambiente (inclusive `/opt/chatly/.env` no servidor, que não é versionado) **antes** do deploy, senão `api` e `worker` entram em restart loop e o site inteiro cai.
 
-Obrigatórias: `SECRET_KEY`, `DEBUG`, `ALLOWED_HOSTS` (CSV), `POSTGRES_*`, `FIELD_ENCRYPTION_KEY`, `REDIS_URL`, `CELERY_BROKER_URL`, credenciais MinIO/S3 e `EVOLUTION_API_KEY` / `EVOLUTION_API_URL` / `EVOLUTION_WEBHOOK_URL`.
+Obrigatórias: `SECRET_KEY`, `DEBUG`, `ALLOWED_HOSTS` (CSV), `POSTGRES_*`, `FIELD_ENCRYPTION_KEY`, `REDIS_URL`, `CELERY_BROKER_URL`, credenciais MinIO/S3 e `OPENWA_API_URL` / `OPENWA_API_KEY` (em prod também semeia a chave do OpenWA via `API_MASTER_KEY`, mín. 32 caracteres) / `OPENWA_WEBHOOK_SECRET` (HMAC do webhook) / `OPENWA_WEBHOOK_URL` (URL interna, `http://api:8000/api/personal/webhook`).
 
 ## Arquitetura
 
 Separação em camadas que todo código novo deve seguir:
 
-- **`core/`** - configuração. `settings.py`, `urls.py`, `celery.py`, `exceptions.py` (`DomainError` e filhas: `NotFound` 404, `ValidationError` 400, `Forbidden` 403, `Conflict` 409, `EvolutionError`), `fields.py` (`EncryptedTextField`).
+- **`core/`** - configuração. `settings.py`, `urls.py`, `celery.py`, `exceptions.py` (`DomainError` e filhas: `NotFound` 404, `ValidationError` 400, `Forbidden` 403, `Conflict` 409, `GatewayError` 502), `fields.py` (`EncryptedTextField`).
 - **`api/`** - camada HTTP. `api.py` cria a instância única `NinjaExtraAPI` e registra os routers de `api/endpoints/`; todo router novo precisa de `api.add_router(...)` lá. Endpoint só parseia payload, resolve a company e delega pro service.
-- **`apps/<dominio>/`** - um app por domínio: `accounts`, `companies`, `agents`, `chats`, `crm`, `evolution` (+ `apps/ai.py`, wrapper do Agno).
-  - `models.py` ORM · `schemas.py` DTOs Ninja/pydantic · `services.py` regra de negócio como funções de módulo · `tasks.py` Celery (`@shared_task`) · `<boundary>.py` cliente HTTP da API externa (`whatsapp.py`, `evolution.py`, `pipedrive.py`)
+- **`apps/<dominio>/`** - um app por domínio: `accounts`, `companies`, `agents`, `chats`, `crm`, `personal`, `automations` (+ `apps/ai.py`, wrapper do Agno).
+  - `models.py` ORM · `schemas.py` DTOs Ninja/pydantic · `services.py` regra de negócio como funções de módulo · `tasks.py` Celery (`@shared_task`) · `<boundary>.py` cliente HTTP da API externa (`whatsapp.py`, `personal/gateway.py`, `pipedrive.py`)
   - **boundary é a única camada que fala HTTP com terceiro**; services chamam o boundary, nunca `httpx` direto.
-- **`frontend/app/`** - `pages/` (rotas), `components/`, `composables/` (`useApi`, `useCompany`, `useEvolutionChat`, `useChatEvents`...), `layouts/default.vue` (nav + SSE + bolha de chat), `types/api.ts` (espelha os DTOs do backend).
+- **`frontend/app/`** - `pages/` (rotas), `components/`, `composables/` (`useApi`, `useCompany`, `usePersonalChat`, `useChatEvents`...), `layouts/default.vue` (nav + SSE + bolha de chat), `types/api.ts` (espelha os DTOs do backend).
 
 ## Convenções importantes
 
@@ -60,11 +60,12 @@ Separação em camadas que todo código novo deve seguir:
 - **JWT**: access 30 min, refresh 7 dias. Auth global na API; público (webhooks) precisa de `auth=None` explícito.
 - **Multi-tenant**: quase todo endpoint recebe `company_id` e resolve com `companies_services.get_company(request.auth, company_id)` (membro) ou `get_owned_company(...)` (dono). Nunca filtrar recurso sem escopo de company.
 - **Erros de domínio**: levantar as exceções de `core.exceptions` nos services; o handler em `api/api.py` traduz pra `{"detail": ...}` com o status certo. Nada de `HttpResponse` de erro no endpoint.
+- **Canal pessoal (OpenWA)**: o gateway escolhe o id da mensagem e só devolve na resposta do envio; o eco `message.sent` pode chegar antes. Envio grava com `update_or_create(wa_message_id=...)` e webhook com `get_or_create`, nunca `create`. Webhook confere `X-OpenWA-Signature` (`sha256=` + HMAC hex do corpo cru) antes de parsear.
 - **Nunca fazer `filter()` por `EncryptedTextField`**: Fernet tem IV aleatório, a cifra não é determinística e a igualdade nunca casa (já causou um bug que matou o pipeline de webhook inteiro).
-- **SSE**: `apps/chats/events.publish(company_id, payload)` é o canal único; eventos do canal pessoal levam `channel: 'evolution'` + `account_id` pra não colidir com os IDs da tabela oficial.
+- **SSE**: `apps/chats/events.publish(company_id, payload)` é o canal único; eventos do canal pessoal levam `channel: 'personal'` + `account_id` pra não colidir com os IDs da tabela oficial.
 - Apps locais entram em `INSTALLED_APPS` como `'apps.<nome>'` e o `AppConfig.name` deve ser `'apps.<nome>'`.
 - **Sem travessão** (—) em código, UI ou docs: usar hífen, vírgula ou dois pontos. Placeholder de nome vazio é "Sem nome".
 
 ## Deploy
 
-Push na `main` → GitHub Actions → ssh no servidor → `git pull && docker compose -f docker-compose.prod.yaml build && up -d`. Serviços: `caddy` (SPA estática + proxy `/api`), `api` (gunicorn), `worker` (celery), `db`, `redis`, `evolution-go`. Antes do push, `docker compose -f docker-compose.prod.yaml build` local para pegar erro de build cedo.
+Push na `main` → GitHub Actions → ssh no servidor → `git pull && docker compose -f docker-compose.prod.yaml build && up -d`. Serviços: `caddy` (SPA estática + proxy `/api`), `api` (gunicorn), `worker` (celery), `db`, `redis`, `openwa`. Antes do push, `docker compose -f docker-compose.prod.yaml build` local para pegar erro de build cedo.

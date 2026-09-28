@@ -33,27 +33,22 @@ services:
     depends_on:
       - api
 
-  evolution-go:
-    image: evoapicloud/evolution-go:latest
+  openwa:
+    # WhatsApp pessoal dos atendentes. SQLite no próprio volume: não toca no Postgres do Django.
+    image: ghcr.io/rmyndharis/openwa:0.23.7
     restart: unless-stopped
+    mem_limit: 1g
     volumes:
-      - evolution_data:/app/dbdata
-      - evolution_logs:/app/logs
+      - openwa_data:/app/data
     environment:
-      SERVER_PORT: 4000
-      CLIENT_NAME: chatly
-      GLOBAL_API_KEY: ${EVOLUTION_API_KEY}
-      POSTGRES_AUTH_DB: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/evogo_auth?sslmode=disable
-      POSTGRES_USERS_DB: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/evogo_users?sslmode=disable
-      DATABASE_SAVE_MESSAGES: "true"
-      WADEBUG: INFO
-      LOGTYPE: console
-      LOG_DIRECTORY: /app/logs
-      CONNECT_ON_STARTUP: "false"
-      OS_NAME: Linux
-    depends_on:
-      db:
-        condition: service_healthy
+      PORT: 2785
+      ENGINE_TYPE: baileys
+      # semeia a chave admin no primeiro boot (mín. 32 caracteres); depois disso mudar aqui não rotaciona
+      API_MASTER_KEY: ${OPENWA_API_KEY}
+      # instância única: sessões pareadas voltam sozinhas depois de restart/deploy
+      AUTO_START_SESSIONS: "true"
+      # webhook só pode sair pra api (guard de SSRF do OpenWA)
+      SSRF_ALLOWED_HOSTS: api
 
   db:
     image: pgvector/pgvector:pg17
@@ -83,5 +78,4 @@ volumes:
   pgdata:
   caddy_data:
   caddy_config:
-  evolution_data:
-  evolution_logs:
+  openwa_data:

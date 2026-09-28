@@ -44,7 +44,7 @@ INSTALLED_APPS = [
     'apps.agents',
     'apps.chats',
     'apps.crm',
-    'apps.evolution',
+    'apps.personal',
     'apps.automations',
 ]
 
@@ -190,7 +190,11 @@ EMBEDDING_API_KEY = config('EMBEDDING_API_KEY')
 # Frontend
 FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:3000')
 
-# Evolution
-EVOLUTION_API_KEY = config('EVOLUTION_API_KEY')
-EVOLUTION_API_URL = config('EVOLUTION_API_URL')
-EVOLUTION_WEBHOOK_URL = config('EVOLUTION_WEBHOOK_URL')
+# OpenWA (WhatsApp pessoal)
+OPENWA_API_URL = config('OPENWA_API_URL')
+OPENWA_API_KEY = config('OPENWA_API_KEY')
+OPENWA_WEBHOOK_SECRET = config('OPENWA_WEBHOOK_SECRET')
+# URL que o OpenWA chama; na rede do compose é interna (http://api:8000/api/personal/webhook)
+OPENWA_WEBHOOK_URL = config('OPENWA_WEBHOOK_URL')
+# sufixo de JID do engine: baileys usa @s.whatsapp.net, whatsapp-web.js usa @c.us
+OPENWA_JID_SUFFIX = config('OPENWA_JID_SUFFIX', default='@s.whatsapp.net')

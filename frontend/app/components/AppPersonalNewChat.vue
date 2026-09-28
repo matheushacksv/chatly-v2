@@ -5,7 +5,7 @@
 const open = defineModel<boolean>('open', { required: true })
 
 const toast = useToast()
-const { directory, loadDirectory, startConversation } = useEvolutionChat()
+const { directory, loadDirectory, startConversation } = usePersonalChat()
 
 const search = ref('')
 const loading = ref(false)

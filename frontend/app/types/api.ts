@@ -44,6 +44,8 @@ export interface Contact {
   name: string
   memory: string
   ai_paused: boolean
+  ai_resume_at: string | null
+  assigned_to: number | null
   created_at: string
   last_message: string | null
   last_message_at: string | null
@@ -172,6 +174,7 @@ export interface Agent {
   prompt: string
   response_delay: number
   split_messages: boolean
+  handoff_resume_hours: number
   created_at: string
 }
 
@@ -233,19 +236,19 @@ export interface PipedriveActivity {
   done: boolean
 }
 
-// ---- WhatsApp não-oficial (Evolution) ----
+// ---- WhatsApp pessoal (OpenWA) ----
 // conexão pessoal do atendente: só texto 1:1, sem IA/campanha/template
 
-export interface EvolutionAccount {
+export interface PersonalAccount {
   id: number
-  instance_name: string
+  session_name: string
   status: 'connecting' | 'connected' | 'disconnected'
   phone_number: string
   created_at: string
   user_email: string
 }
 
-export interface EvolutionContact {
+export interface PersonalContact {
   id: number
   wa_id: string
   name: string
@@ -253,13 +256,13 @@ export interface EvolutionContact {
   created_at: string
 }
 
-export interface EvolutionDirectoryEntry {
+export interface PersonalDirectoryEntry {
   wa_id: string
   name: string
   source: 'agenda' | 'oficial'
 }
 
-export interface EvolutionMessage {
+export interface PersonalMessage {
   id: number
   direction: 'in' | 'out'
   content: string
@@ -271,7 +274,7 @@ export interface EvolutionMessage {
   created_at: string
 }
 
-export interface EvolutionConnect {
+export interface PersonalConnect {
   qrcode: string
   pair_code: string
 }

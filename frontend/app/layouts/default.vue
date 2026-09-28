@@ -6,7 +6,7 @@ const { companies, activeId, load, setActive, isOwner } = useCompany()
 const { connect } = useEventStream()
 const { lastEvent, openContact } = useChatEvents()
 const toast = useToast()
-const evo = useEvolutionChat()
+const personal = usePersonalChat()
 
 await useAsyncData('companies', async () => {
   await load()
@@ -58,25 +58,25 @@ watch(activeId, (id) => {
 }, { immediate: true })
 onUnmounted(() => disconnectStream?.())
 
-// ---- Evolution (WhatsApp pessoal): driver único do estado compartilhado (página + widget) ----
+// ---- WhatsApp pessoal (OpenWA): driver único do estado compartilhado (página + widget) ----
 watch(activeId, async () => {
-  evo.resetInbox()
-  await evo.loadConnection()
-  if (evo.connected.value) evo.loadContacts()
+  personal.resetInbox()
+  await personal.loadConnection()
+  if (personal.connected.value) personal.loadContacts()
 }, { immediate: true })
 
-watch(evo.selectedId, evo.loadMessages)
+watch(personal.selectedId, personal.loadMessages)
 
 watch(lastEvent, (entry) => {
   const e = entry?.event
-  if (!e || e.account_id !== evo.connection.value?.id) return
-  if (e.type === 'evolution_status') {
-    evo.loadConnection()
-  } else if (e.type === 'evolution_contacts') {
-    evo.loadContacts() // sync de fotos terminou no worker
-  } else if (e.channel === 'evolution' && e.type === 'message') {
-    evo.loadContacts()
-    if (e.contact_id === evo.selectedId.value) evo.loadMessages()
+  if (!e || e.account_id !== personal.connection.value?.id) return
+  if (e.type === 'personal_status') {
+    personal.loadConnection()
+  } else if (e.type === 'personal_contacts') {
+    personal.loadContacts() // sync de fotos terminou no worker
+  } else if (e.channel === 'personal' && e.type === 'message') {
+    personal.loadContacts()
+    if (e.contact_id === personal.selectedId.value) personal.loadMessages()
   }
 })
 

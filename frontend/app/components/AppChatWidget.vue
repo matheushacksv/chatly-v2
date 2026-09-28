@@ -1,10 +1,10 @@
 <script setup lang="ts">
 // Bolha de chat flutuante (estilo Messenger/LinkedIn), disponível em qualquer página.
-// Compartilha estado com a página /meu-whatsapp via useEvolutionChat.
+// Compartilha estado com a página /meu-whatsapp via usePersonalChat.
 const toast = useToast()
 const route = useRoute()
 const { activeId: companyId } = useCompany()
-const { connection, connected, contacts, selected, selectedId, messages, stickers, widgetOpen: open, send, sendMedia, loadStickers, saveSticker, sendSticker, deleteSticker } = useEvolutionChat()
+const { connection, connected, contacts, selected, selectedId, messages, stickers, widgetOpen: open, send, sendMedia, loadStickers, saveSticker, sendSticker, deleteSticker } = usePersonalChat()
 
 // /meu-whatsapp já é o chat inteiro, bolha lá é redundante
 const hidden = computed(() => route.path === '/meu-whatsapp')
@@ -475,6 +475,6 @@ const time = (iso: string) => new Date(iso).toLocaleTimeString('pt-BR', { hour: 
       />
     </UButton>
 
-    <AppEvolutionNewChat v-model:open="newChatOpen" />
+    <AppPersonalNewChat v-model:open="newChatOpen" />
   </div>
 </template>

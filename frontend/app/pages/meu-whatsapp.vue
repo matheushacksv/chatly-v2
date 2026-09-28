@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { EvolutionAccount, EvolutionConnect, EvolutionContact } from '~/types/api'
+import type { PersonalAccount, PersonalConnect, PersonalContact } from '~/types/api'
 
 const api = useApi()
 const toast = useToast()
@@ -25,7 +25,7 @@ const {
   saveSticker,
   sendSticker,
   deleteSticker
-} = useEvolutionChat()
+} = usePersonalChat()
 
 // ---- conexão: QR/pair/polling é local à página ----
 const qrcode = ref('')
@@ -57,7 +57,7 @@ async function startConnect() {
   connecting.value = true
   try {
     const body = mode.value === 'pair' ? { phone: phone.value.trim() } : {}
-    const res = await api<EvolutionConnect>(base.value, { method: 'POST', body })
+    const res = await api<PersonalConnect>(base.value, { method: 'POST', body })
     if (mode.value === 'pair') pairCode.value = res.pair_code
     else qrcode.value = res.qrcode
     await loadConnection()
@@ -94,7 +94,7 @@ async function reconnect() {
   if (!connection.value) return
   try {
     await api(`${base.value}/${connection.value.id}`, { method: 'DELETE' })
-  } catch { /* pode já estar deslogado no Evolution: segue */ }
+  } catch { /* pode já estar deslogado no gateway: segue */ }
   connection.value = null
   await startConnect()
 }
@@ -162,7 +162,7 @@ const isPlaceholder = (content: string) => /^\[.+\]$/.test(content)
 // nova conversa (modal compartilhado com o widget)
 const newChatOpen = ref(false)
 
-async function removeConversation(contact: EvolutionContact) {
+async function removeConversation(contact: PersonalContact) {
   const ok = await confirmModal({
     title: 'Apagar conversa',
     description: `A conversa com ${contact.name || contact.wa_id} some do Chatly. Não apaga nada no seu WhatsApp.`,
@@ -256,17 +256,17 @@ async function send() {
 }
 
 // ---- equipe (owner) ----
-const team = ref<EvolutionAccount[]>([])
+const team = ref<PersonalAccount[]>([])
 async function loadTeam() {
   if (!companyId.value || !isOwner.value) {
     team.value = []
     return
   }
   try {
-    team.value = await api<EvolutionAccount[]>(base.value)
+    team.value = await api<PersonalAccount[]>(base.value)
   } catch { team.value = [] }
 }
-async function disconnectTeam(acc: EvolutionAccount) {
+async function disconnectTeam(acc: PersonalAccount) {
   const ok = await confirmModal({
     title: `Desconectar ${acc.user_email}?`,
     description: 'A conexão pessoal desse atendente será encerrada.',
@@ -632,7 +632,7 @@ const time = (iso: string) => new Date(iso).toLocaleTimeString('pt-BR', { hour: 
         </template>
       </div>
 
-      <AppEvolutionNewChat v-model:open="newChatOpen" />
+      <AppPersonalNewChat v-model:open="newChatOpen" />
     </template>
   </UDashboardPanel>
 

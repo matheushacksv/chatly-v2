@@ -38,6 +38,8 @@ class PipedriveError(DomainError):
     status_code = 502
     default_message = 'Pipedrive request failed'
 
-class EvolutionError(DomainError):
+class GatewayError(DomainError):
+    """Falha ao falar com o gateway do WhatsApp pessoal (OpenWA)."""
+
     status_code = 502
-    default_message = 'Evolution API request failed'
+    default_message = 'WhatsApp gateway request failed'
