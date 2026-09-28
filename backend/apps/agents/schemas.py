@@ -28,12 +28,13 @@ class AgentInDTO(Schema):
     description: str = ''
     response_delay: int = Field(0, ge=0)
     split_messages: bool = False
+    handoff_resume_hours: int = Field(24, ge=0, le=720)
 
 
 class AgentOutDTO(ModelSchema):
     class Meta:
         model = Agent
-        fields = ['id', 'name', 'description', 'model', 'prompt', 'response_delay', 'split_messages', 'created_at']
+        fields = ['id', 'name', 'description', 'model', 'prompt', 'response_delay', 'split_messages', 'handoff_resume_hours', 'created_at']
 
 
 class AgentPatchDTO(Schema):
@@ -44,6 +45,7 @@ class AgentPatchDTO(Schema):
     prompt: str | None = None
     response_delay: int | None = Field(None, ge=0)
     split_messages: bool | None = None
+    handoff_resume_hours: int | None = Field(None, ge=0, le=720)
 
 
 class DocumentOutDTO(ModelSchema):

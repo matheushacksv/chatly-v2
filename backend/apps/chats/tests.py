@@ -593,6 +593,87 @@ class ImportContactsTests(BaseChatsTestCase):
         response = self.post(self.company.pk, self.other_account.pk, [{'number': '5511977777777'}])
         self.assertEqual(response.status_code, 404)
 
+    def test_import_number_without_ninth_digit_matches_existing(self):
+        # self.contact é 5511999999999; a variante sem o 9 é o mesmo celular
+        response = self.post(self.company.pk, self.account.pk, [{'number': '551199999999', 'name': 'Sem o 9'}])
+        self.assertEqual(response.status_code, 200, response.json())
+        self.assertEqual(response.json(), {'created': 0, 'existing': 1})
+        self.assertFalse(Contact.objects.filter(account=self.account, wa_id='551199999999').exists())
+
+    def test_import_adds_country_code(self):
+        response = self.post(self.company.pk, self.account.pk, [{'number': '(21) 97777-6666'}])
+        self.assertEqual(response.status_code, 200, response.json())
+        self.assertTrue(Contact.objects.filter(account=self.account, wa_id='5521977776666').exists())
+
+
+class PhoneNumberTests(BaseChatsTestCase):
+    """Telefone BR: DDI 55 padrão e 9º dígito (a Meta manda 12 dígitos pra muitos celulares antigos)."""
+
+    def test_normalize_adds_country_code_to_national_number(self):
+        self.assertEqual(services.normalize_number('11999998888'), '5511999998888')
+        self.assertEqual(services.normalize_number('(11) 99999-8888'), '5511999998888')
+        self.assertEqual(services.normalize_number('1133334444'), '551133334444')  # fixo
+
+    def test_normalize_strips_trunk_prefix(self):
+        self.assertEqual(services.normalize_number('0 11 99999-8888'), '5511999998888')
+
+    def test_normalize_keeps_number_with_country_code(self):
+        self.assertEqual(services.normalize_number('5511999998888'), '5511999998888')
+        self.assertEqual(services.normalize_number('+55 11 99999-8888'), '5511999998888')
+        self.assertEqual(services.normalize_number('551199998888'), '551199998888')  # formato antigo, a Meta usa
+
+    def test_normalize_ddd_55_is_not_mistaken_for_country_code(self):
+        # DDD 55 (RS): 11 dígitos começando com 55 é número nacional
+        self.assertEqual(services.normalize_number('55999998888'), '5555999998888')
+
+    def test_normalize_keeps_foreign_number_with_plus(self):
+        self.assertEqual(services.normalize_number('+1 415 555 1234'), '14155551234')
+        self.assertEqual(services.normalize_number('+44 7911 123456'), '447911123456')
+
+    def test_normalize_rejects_impossible_number(self):
+        for number in ['123', '119999', '', 'abc']:
+            with self.subTest(number=number), self.assertRaises(ValidationError):
+                services.normalize_number(number)
+
+    def test_variants_of_mobile_with_ninth_digit(self):
+        self.assertCountEqual(services.number_variants('5511999998888'), ['5511999998888', '551199998888'])
+
+    def test_variants_of_mobile_without_ninth_digit(self):
+        self.assertCountEqual(services.number_variants('551199998888'), ['551199998888', '5511999998888'])
+
+    def test_variants_of_landline_is_only_itself(self):
+        # fixo começa com 2-5: não existe 9º dígito
+        self.assertEqual(services.number_variants('551133334444'), ['551133334444'])
+
+    def test_variants_of_foreign_number_is_only_itself(self):
+        self.assertEqual(services.number_variants('14155551234'), ['14155551234'])
+
+    def test_get_or_create_contact_finds_existing_by_variant(self):
+        before = Contact.objects.count()
+        contact = services.get_or_create_contact(self.account, '551199999999', 'Outro Nome')
+        self.assertEqual(contact.pk, self.contact.pk)
+        self.assertEqual(contact.name, 'Cliente A')
+        self.assertEqual(Contact.objects.count(), before)
+
+    def test_get_or_create_contact_does_not_cross_accounts(self):
+        # variante de um contato de outra account não conta
+        contact = services.get_or_create_contact(self.other_account, '551199999999')
+        self.assertNotEqual(contact.pk, self.contact.pk)
+        self.assertEqual(contact.account, self.other_account)
+
+    def test_get_or_create_contact_creates_when_no_variant_exists(self):
+        contact = services.get_or_create_contact(self.account, '551188887777', 'Novo')
+        self.assertEqual(contact.wa_id, '551188887777')
+        self.assertEqual(contact.name, 'Novo')
+
+    def test_create_contact_endpoint_with_variant_returns_existing(self):
+        response = self.client.post(
+            f'/api/companies/{self.company.pk}/whatsapp-accounts/{self.account.pk}/contacts',
+            data=json.dumps({'number': '+55 11 9999-9999'}), content_type='application/json', headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 201, response.json())
+        self.assertEqual(response.json()['id'], self.contact.pk)
+
 
 class MessageTests(BaseChatsTestCase):
     def url(self, company_id: int, contact_id: int) -> str:
@@ -761,6 +842,197 @@ class ManualMessageTests(BaseChatsTestCase):
         mock_send.assert_not_called()
 
 
+class HandoffTests(BaseChatsTestCase):
+    """Pausa com prazo, atendente assume ao escrever, atribuição e fila."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = patch('apps.chats.tasks.update_contact_memory.delay')
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def patch_contact(self, payload: dict, contact_id=None):
+        return self.client.patch(
+            f'/api/companies/{self.company.pk}/contacts/{contact_id or self.contact.pk}',
+            data=json.dumps(payload), content_type='application/json', headers=self.auth,
+        )
+
+    def list_queue(self, queue: str, auth=None):
+        return self.client.get(
+            f'/api/companies/{self.company.pk}/whatsapp-accounts/{self.account.pk}/contacts',
+            {'queue': queue}, headers=auth or self.auth,
+        )
+
+    # prazo da pausa
+
+    def test_pause_ai_sets_deadline_from_agent(self):
+        services.pause_ai(self.contact)
+        self.contact.refresh_from_db()
+        self.assertTrue(self.contact.ai_paused)
+        expected = timezone.now() + timedelta(hours=24)
+        self.assertAlmostEqual(self.contact.ai_resume_at.timestamp(), expected.timestamp(), delta=5)
+
+    def test_pause_ai_without_deadline_when_agent_says_zero(self):
+        Agent.objects.filter(pk=self.agent.pk).update(handoff_resume_hours=0)
+        self.contact.refresh_from_db()
+        services.pause_ai(self.contact)
+        self.contact.refresh_from_db()
+        self.assertTrue(self.contact.ai_paused)
+        self.assertIsNone(self.contact.ai_resume_at)
+
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_expired_pause_resumes_and_replies(self, mock_generate, mock_send):
+        mock_generate.return_value = 'Voltei'
+        mock_send.return_value = 'wamid.volta'
+        Contact.objects.filter(pk=self.contact.pk).update(ai_paused=True, ai_resume_at=timezone.now() - timedelta(minutes=1))
+        incoming = Message.objects.create(contact=self.contact, direction='in', content='Alguém?', wa_message_id='wamid.novo')
+
+        tasks.process_incoming_message(incoming.pk)
+
+        mock_send.assert_called_once()
+        self.contact.refresh_from_db()
+        self.assertFalse(self.contact.ai_paused)
+        self.assertIsNone(self.contact.ai_resume_at)
+
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_pause_within_deadline_stays_silent(self, mock_generate, mock_send):
+        Contact.objects.filter(pk=self.contact.pk).update(ai_paused=True, ai_resume_at=timezone.now() + timedelta(hours=1))
+        incoming = Message.objects.create(contact=self.contact, direction='in', content='Alguém?', wa_message_id='wamid.novo')
+
+        tasks.process_incoming_message(incoming.pk)
+
+        mock_generate.assert_not_called()
+        self.contact.refresh_from_db()
+        self.assertTrue(self.contact.ai_paused)
+
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_pause_without_deadline_never_resumes(self, mock_generate, mock_send):
+        Contact.objects.filter(pk=self.contact.pk).update(ai_paused=True, ai_resume_at=None)
+        incoming = Message.objects.create(contact=self.contact, direction='in', content='Alguém?', wa_message_id='wamid.novo')
+
+        tasks.process_incoming_message(incoming.pk)
+
+        mock_generate.assert_not_called()
+
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_handoff_tool_sets_deadline_and_notifies(self, mock_generate, mock_send):
+        def call_handoff(*args, tools, **kwargs):
+            next(t for t in tools if t.__name__ == 'transferir_para_atendente')()
+            return 'Vou chamar um atendente.'
+
+        mock_generate.side_effect = call_handoff
+        mock_send.return_value = 'wamid.tchau'
+        tasks.process_incoming_message(Message.objects.get(wa_message_id='wamid.1').pk)
+
+        self.contact.refresh_from_db()
+        self.assertTrue(self.contact.ai_paused)
+        self.assertIsNotNone(self.contact.ai_resume_at)
+        types = [c.args[1]['type'] for c in self.mock_events.call_args_list]
+        self.assertIn('handoff', types)
+
+    # atendente escreveu
+
+    @patch('apps.chats.whatsapp.send_text')
+    def test_manual_message_pauses_ai_and_assigns_sender(self, mock_send):
+        mock_send.return_value = 'wamid.manual'
+        response = self.client.post(
+            f'/api/companies/{self.company.pk}/contacts/{self.contact.pk}/messages',
+            data=json.dumps({'content': 'Oi, aqui é o atendente'}), content_type='application/json', headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 201, response.json())
+        self.contact.refresh_from_db()
+        self.assertTrue(self.contact.ai_paused)
+        self.assertIsNotNone(self.contact.ai_resume_at)
+        self.assertEqual(self.contact.assigned_to, self.user)
+        self.assertIn({'type': 'contact', 'contact_id': self.contact.pk}, [c.args[1] for c in self.mock_events.call_args_list])
+
+    @patch('apps.chats.whatsapp.send_text')
+    def test_manual_message_keeps_existing_assignee(self, mock_send):
+        mock_send.return_value = 'wamid.manual'
+        colleague = User.objects.create_user(email='colega@a.com', password='strongpass123')
+        Membership.objects.create(company=self.company, user=colleague)
+        Contact.objects.filter(pk=self.contact.pk).update(assigned_to=colleague)
+
+        services.send_manual_message(self.company, self.contact.pk, 'Oi', self.user)
+
+        self.contact.refresh_from_db()
+        self.assertEqual(self.contact.assigned_to, colleague)
+
+    @patch('apps.chats.whatsapp.send_text')
+    def test_manual_message_failure_does_not_pause(self, mock_send):
+        mock_send.side_effect = httpx.HTTPStatusError('Bad Request', request=MagicMock(), response=MagicMock())
+        with self.assertRaises(ValidationError):
+            services.send_manual_message(self.company, self.contact.pk, 'Oi', self.user)
+        self.contact.refresh_from_db()
+        self.assertFalse(self.contact.ai_paused)
+        self.assertIsNone(self.contact.assigned_to)
+
+    # PATCH: pausa manual e atribuição
+
+    def test_patch_pause_sets_deadline_and_unpause_clears(self):
+        self.assertEqual(self.patch_contact({'ai_paused': True}).status_code, 200)
+        self.contact.refresh_from_db()
+        self.assertIsNotNone(self.contact.ai_resume_at)
+
+        response = self.patch_contact({'ai_paused': False})
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.json()['ai_resume_at'])
+
+    def test_assign_to_member(self):
+        colleague = User.objects.create_user(email='colega@a.com', password='strongpass123')
+        Membership.objects.create(company=self.company, user=colleague)
+        response = self.patch_contact({'assigned_to': colleague.pk})
+        self.assertEqual(response.status_code, 200, response.json())
+        self.assertEqual(response.json()['assigned_to'], colleague.pk)
+
+    def test_assign_to_owner(self):
+        response = self.patch_contact({'assigned_to': self.user.pk})
+        self.assertEqual(response.status_code, 200, response.json())
+        self.assertEqual(response.json()['assigned_to'], self.user.pk)
+
+    def test_assign_to_outsider_returns_400(self):
+        response = self.patch_contact({'assigned_to': self.other_user.pk})
+        self.assertEqual(response.status_code, 400)
+        self.contact.refresh_from_db()
+        self.assertIsNone(self.contact.assigned_to)
+
+    def test_unassign_with_null(self):
+        Contact.objects.filter(pk=self.contact.pk).update(assigned_to=self.user)
+        response = self.patch_contact({'assigned_to': None})
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.json()['assigned_to'])
+
+    def test_patch_without_assigned_to_keeps_it(self):
+        Contact.objects.filter(pk=self.contact.pk).update(assigned_to=self.user)
+        self.patch_contact({'name': 'Novo nome'})
+        self.contact.refresh_from_db()
+        self.assertEqual(self.contact.assigned_to, self.user)
+
+    # fila
+
+    def test_queue_waiting_lists_paused_without_assignee(self):
+        waiting = Contact.objects.create(account=self.account, wa_id='5511911112222', ai_paused=True)
+        Contact.objects.create(account=self.account, wa_id='5511933334444', ai_paused=True, assigned_to=self.user)
+        response = self.list_queue('waiting')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([c['id'] for c in response.json()['items']], [waiting.pk])
+
+    def test_queue_mine_lists_only_my_contacts(self):
+        colleague = User.objects.create_user(email='colega@a.com', password='strongpass123')
+        Membership.objects.create(company=self.company, user=colleague)
+        mine = Contact.objects.create(account=self.account, wa_id='5511911112222', assigned_to=self.user)
+        Contact.objects.create(account=self.account, wa_id='5511933334444', assigned_to=colleague)
+        response = self.list_queue('mine')
+        self.assertEqual([c['id'] for c in response.json()['items']], [mine.pk])
+
+    def test_queue_invalid_value_returns_422(self):
+        self.assertEqual(self.list_queue('tudo').status_code, 422)
+
+
 @override_settings(**LOCAL_STORAGE_SETTINGS)
 class MediaMessageTests(BaseChatsTestCase):
     """POST multipart do atendente + proxy autenticado de mídia recebida."""
@@ -793,6 +1065,8 @@ class MediaMessageTests(BaseChatsTestCase):
         # regressão do seek(0): read() do upload deixa o ponteiro no fim - sem
         # seek o FileField salvaria arquivo vazio
         self.assertEqual(message.media_file.read(), b'jpeg-bytes')
+        self.contact.refresh_from_db()
+        self.assertTrue(self.contact.ai_paused)  # atendente mandou mídia: IA pausa
         body = response.json()
         self.assertEqual(body['message_type'], 'image')
         self.assertIsNotNone(body['media_url'])
@@ -1053,6 +1327,8 @@ class StickerTests(BaseChatsTestCase):
         self.assertEqual(message.content, '[figurinha]')
         self.assertTrue(message.from_human)
         self.assertEqual(message.media_file.read(), b'webp-salvo')
+        self.contact.refresh_from_db()
+        self.assertTrue(self.contact.ai_paused)
 
     @patch('apps.chats.whatsapp.upload_media')
     def test_send_saved_sticker_outside_window_returns_400(self, mock_upload):
@@ -1154,6 +1430,14 @@ class WebhookTests(BaseChatsTestCase):
         self.assertEqual(msg.content, 'Sim')       # título vira o content
         self.assertEqual(msg.message_type, 'text')  # guardado como text (cabe no max_length)
         self.mock_enqueue.assert_called_once()
+
+    def test_message_from_number_without_ninth_digit_uses_existing_contact(self):
+        # cadastro gerou 13 dígitos, a Meta responde com 12: mesma conversa, sem duplicata
+        before = Contact.objects.count()
+        response = self.post_webhook(self.message_payload(wa_id='551199999999', wamid='wamid.sem9'))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Contact.objects.count(), before)
+        self.assertEqual(Message.objects.get(wa_message_id='wamid.sem9').contact_id, self.contact.pk)
 
     # GET verificação
 
@@ -1305,11 +1589,142 @@ class WebhookTests(BaseChatsTestCase):
         self.assertEqual(message.media_id, 'media-stk')
         self.assertEqual(message.content, '[figurinha]')
 
+    def outgoing(self, wamid='wamid.out', status='sent', error_detail=''):
+        return Message.objects.create(
+            contact=self.contact, direction='out', content='oi', wa_message_id=wamid, status=status, error_detail=error_detail
+        )
+
     def test_status_update_changes_message_status(self):
-        response = self.post_webhook(self.status_payload(wamid='wamid.1', status='delivered'))
+        self.outgoing()
+        response = self.post_webhook(self.status_payload(wamid='wamid.out', status='delivered'))
         self.assertEqual(response.status_code, 200)
-        message = Message.objects.get(wa_message_id='wamid.1')
+        message = Message.objects.get(wa_message_id='wamid.out')
         self.assertEqual(message.status, 'delivered')
+
+    def test_late_delivered_does_not_downgrade_read(self):
+        message = self.outgoing(status='read')
+        self.post_webhook(self.status_payload(wamid='wamid.out', status='delivered'))
+        message.refresh_from_db()
+        self.assertEqual(message.status, 'read')
+
+    def test_status_advances_in_order(self):
+        message = self.outgoing(status='sent')
+        self.post_webhook(self.status_payload(wamid='wamid.out', status='read'))
+        message.refresh_from_db()
+        self.assertEqual(message.status, 'read')
+
+    def test_failed_always_overrides_with_error(self):
+        message = self.outgoing(status='delivered')
+        payload = self.status_payload(wamid='wamid.out', status='failed')
+        payload['entry'][0]['changes'][0]['value']['statuses'][0]['errors'] = [{'code': 131049, 'title': 'Não entregue'}]
+        self.post_webhook(payload)
+        message.refresh_from_db()
+        self.assertEqual(message.status, 'failed')
+        self.assertEqual(message.error_detail, 'Não entregue')
+
+    def test_failed_without_errors_keeps_previous_detail(self):
+        message = self.outgoing(status='sent', error_detail='erro anterior')
+        self.post_webhook(self.status_payload(wamid='wamid.out', status='failed'))
+        message.refresh_from_db()
+        self.assertEqual(message.status, 'failed')
+        self.assertEqual(message.error_detail, 'erro anterior')
+
+    def test_status_after_failed_does_not_hide_failure(self):
+        message = self.outgoing(status='failed', error_detail='x')
+        self.post_webhook(self.status_payload(wamid='wamid.out', status='delivered'))
+        message.refresh_from_db()
+        self.assertEqual(message.status, 'failed')
+
+    def test_unknown_status_is_ignored(self):
+        message = self.outgoing(status='sent')
+        self.post_webhook(self.status_payload(wamid='wamid.out', status='deleted'))
+        message.refresh_from_db()
+        self.assertEqual(message.status, 'sent')
+
+    # vários entry/changes numa entrega só
+
+    def test_processes_every_entry(self):
+        payload = self.message_payload(wa_id='5511777777777', wamid='wamid.e1')
+        second = self.message_payload(wa_id='5511666666666', wamid='wamid.e2')
+        payload['entry'].append(second['entry'][0])
+        response = self.post_webhook(payload)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(Message.objects.filter(wa_message_id='wamid.e1').exists())
+        self.assertTrue(Message.objects.filter(wa_message_id='wamid.e2').exists())
+        self.assertEqual(self.mock_enqueue.call_count, 2)
+
+    def test_processes_every_change(self):
+        self.outgoing()
+        payload = self.message_payload(wamid='wamid.c1')
+        payload['entry'][0]['changes'].append(self.status_payload(wamid='wamid.out', status='read')['entry'][0]['changes'][0])
+        self.post_webhook(payload)
+        self.assertTrue(Message.objects.filter(wa_message_id='wamid.c1').exists())
+        self.assertEqual(Message.objects.get(wa_message_id='wamid.out').status, 'read')
+
+    def test_signature_checked_against_every_account_in_payload(self):
+        # entry de outra account assinado com o secret da nossa: nada é processado
+        payload = self.message_payload(wamid='wamid.nosso')
+        payload['entry'].append(self.message_payload(phone_number_id='222222', wamid='wamid.alheio')['entry'][0])
+        response = self.post_webhook(payload)
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(Message.objects.filter(wa_message_id__in=['wamid.nosso', 'wamid.alheio']).exists())
+
+    def test_invalid_json_returns_400(self):
+        response = self.client.post(self.URL, data=b'{nao e json', content_type='application/json')
+        self.assertEqual(response.status_code, 400)
+
+    def test_non_object_json_returns_200(self):
+        response = self.client.post(self.URL, data=b'[1, 2]', content_type='application/json')
+        self.assertEqual(response.status_code, 200)
+
+    # tipos de mensagem
+
+    def with_message(self, message: dict, wamid='wamid.tipo'):
+        payload = self.message_payload(wamid=wamid)
+        payload['entry'][0]['changes'][0]['value']['messages'][0] = {
+            'from': '5511777777777', 'id': wamid, 'timestamp': '1720000000', **message,
+        }
+        return payload
+
+    def test_template_button_reply_reaches_ai(self):
+        payload = self.with_message({'type': 'button', 'button': {'text': 'Quero saber mais', 'payload': 'MAIS_INFO'}})
+        self.post_webhook(payload)
+        msg = Message.objects.get(wa_message_id='wamid.tipo')
+        self.assertEqual(msg.content, 'Quero saber mais')
+        self.assertEqual(msg.button_id, '')  # payload do template não conversa com os botões dos fluxos
+        self.mock_enqueue.assert_called_once()
+
+    def test_list_reply_stores_title_and_id(self):
+        payload = self.with_message({
+            'type': 'interactive',
+            'interactive': {'type': 'list_reply', 'list_reply': {'id': 'opt-2', 'title': 'Plano anual'}},
+        })
+        self.post_webhook(payload)
+        msg = Message.objects.get(wa_message_id='wamid.tipo')
+        self.assertEqual(msg.content, 'Plano anual')
+        self.assertEqual(msg.button_id, 'opt-2')
+
+    def test_location_is_stored_as_placeholder(self):
+        payload = self.with_message({'type': 'location', 'location': {'latitude': -23.5, 'longitude': -46.6, 'name': 'Escritório'}})
+        self.post_webhook(payload)
+        self.assertEqual(Message.objects.get(wa_message_id='wamid.tipo').content, '[localização: Escritório]')
+
+    def test_location_without_name_uses_coordinates(self):
+        payload = self.with_message({'type': 'location', 'location': {'latitude': -23.5, 'longitude': -46.6}})
+        self.post_webhook(payload)
+        self.assertEqual(Message.objects.get(wa_message_id='wamid.tipo').content, '[localização: -23.5, -46.6]')
+
+    def test_shared_contact_is_stored_as_placeholder(self):
+        payload = self.with_message({'type': 'contacts', 'contacts': [{'name': {'formatted_name': 'Maria Souza'}}]})
+        self.post_webhook(payload)
+        self.assertEqual(Message.objects.get(wa_message_id='wamid.tipo').content, '[contato: Maria Souza]')
+
+    def test_unsupported_type_is_ignored(self):
+        payload = self.with_message({'type': 'reaction', 'reaction': {'emoji': '👍', 'message_id': 'wamid.1'}})
+        response = self.post_webhook(payload)
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Message.objects.filter(wa_message_id='wamid.tipo').exists())
+        self.mock_enqueue.assert_not_called()
 
     # disparo da task de resposta
 
@@ -1620,6 +2035,20 @@ class GenerateReplyTests(BaseChatsTestCase):
         ai.generate_reply(self.agent, [], 'Oi', tools=[fake_tool])
         self.assertEqual(mock_agent_cls.call_args.kwargs['tools'], [fake_tool])
 
+    @patch('apps.ai.Claude')
+    @patch('apps.ai.AgnoAgent')
+    def test_generate_reply_adds_handoff_policy_only_with_handoff_tool(self, mock_agent_cls, mock_claude):
+        mock_agent_cls.return_value.run.return_value.content = 'ok'
+
+        def transferir_para_atendente():
+            return 'Transferido'
+
+        ai.generate_reply(self.agent, [], 'Oi', tools=[transferir_para_atendente])
+        self.assertIn(ai.HANDOFF_PROMPT, mock_agent_cls.call_args.kwargs['system_message'])
+
+        ai.generate_reply(self.agent, [], 'Oi')
+        self.assertNotIn(ai.HANDOFF_PROMPT, mock_agent_cls.call_args.kwargs['system_message'])
+
     @patch('apps.ai.embed_text')
     @patch('apps.ai.Claude')
     @patch('apps.ai.AgnoAgent')
@@ -1772,6 +2201,95 @@ class ProcessIncomingMessageTests(BaseChatsTestCase):
             tasks.process_incoming_message(incoming.pk)
 
         self.assertEqual(Message.objects.filter(direction='out').count(), out_count)
+
+    # envio parcial e pausa durante a geração
+
+    @patch('apps.chats.tasks.time.sleep')
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_second_part_failure_keeps_first_recorded(self, mock_generate, mock_send, mock_sleep):
+        self.agent.split_messages = True
+        self.agent.save(update_fields=['split_messages'])
+        mock_generate.return_value = 'Parte um\n\nParte dois'
+        mock_send.side_effect = ['wamid.p1', httpx.ConnectError('caiu')]
+        incoming = Message.objects.get(wa_message_id='wamid.1')
+
+        with self.assertRaises(httpx.ConnectError):
+            tasks.process_incoming_message(incoming.pk)
+
+        self.assertEqual(Message.objects.get(wa_message_id='wamid.p1').content, 'Parte um')
+
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_retry_after_partial_send_does_not_resend(self, mock_generate, mock_send):
+        incoming = Message.objects.create(contact=self.contact, direction='in', content='Oi de novo', wa_message_id='wamid.novo')
+        services.record_outgoing_message(self.contact, 'wamid.p1', 'Parte um')  # saiu antes da falha
+
+        tasks.process_incoming_message.apply(args=(incoming.pk,), retries=1)
+
+        mock_generate.assert_not_called()
+        mock_send.assert_not_called()
+
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_retry_without_previous_send_still_replies(self, mock_generate, mock_send):
+        # falhou antes de enviar qualquer coisa (ex.: provider fora): o retry responde normalmente
+        mock_generate.return_value = 'Resposta'
+        mock_send.return_value = 'wamid.r'
+        incoming = Message.objects.create(contact=self.contact, direction='in', content='Oi de novo', wa_message_id='wamid.novo')
+
+        tasks.process_incoming_message.apply(args=(incoming.pk,), retries=1)
+
+        mock_send.assert_called_once()
+
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_pause_during_generation_blocks_send(self, mock_generate, mock_send):
+        def pause_meanwhile(*args, **kwargs):
+            Contact.objects.filter(pk=self.contact.pk).update(ai_paused=True)  # atendente assumiu
+            return 'Resposta atrasada'
+
+        mock_generate.side_effect = pause_meanwhile
+        incoming = Message.objects.get(wa_message_id='wamid.1')
+        out_count = Message.objects.filter(direction='out').count()
+
+        tasks.process_incoming_message(incoming.pk)
+
+        mock_send.assert_not_called()
+        self.assertEqual(Message.objects.filter(direction='out').count(), out_count)
+
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_handoff_tool_still_sends_farewell(self, mock_generate, mock_send):
+        # a pausa da própria ferramenta não bloqueia a mensagem que avisa da transferência
+        def call_handoff(*args, tools, **kwargs):
+            next(t for t in tools if t.__name__ == 'transferir_para_atendente')()
+            return 'Vou te passar para um atendente.'
+
+        mock_generate.side_effect = call_handoff
+        mock_send.return_value = 'wamid.tchau'
+        incoming = Message.objects.get(wa_message_id='wamid.1')
+
+        tasks.process_incoming_message(incoming.pk)
+
+        mock_send.assert_called_once_with(self.account, '5511999999999', 'Vou te passar para um atendente.')
+        self.contact.refresh_from_db()
+        self.assertTrue(self.contact.ai_paused)
+
+    @patch('apps.chats.tasks.time.sleep')
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_pause_between_parts_stops_remaining(self, mock_generate, mock_send, mock_sleep):
+        self.agent.split_messages = True
+        self.agent.save(update_fields=['split_messages'])
+        mock_generate.return_value = 'Parte um\n\nParte dois'
+        mock_send.return_value = 'wamid.p1'
+        mock_sleep.side_effect = lambda _: Contact.objects.filter(pk=self.contact.pk).update(ai_paused=True)
+        incoming = Message.objects.get(wa_message_id='wamid.1')
+
+        tasks.process_incoming_message(incoming.pk)
+
+        mock_send.assert_called_once_with(self.account, '5511999999999', 'Parte um')
 
     # split de mensagens
 

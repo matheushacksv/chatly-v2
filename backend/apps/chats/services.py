@@ -4,6 +4,7 @@ import re
 from datetime import timedelta
 
 import httpx
+import phonenumbers
 from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import UploadedFile
 from django.db import IntegrityError
@@ -13,7 +14,7 @@ from django.utils import timezone
 from apps.agents.services import get_agent
 from apps.chats import events, whatsapp
 from apps.chats.models import Campaign, Contact, Message, Sticker, TemplateHeaderMedia, WhatsAppAccount
-from apps.companies.models import Company
+from apps.companies.models import Company, Membership
 from core.exceptions import Conflict, NotFound, ValidationError
 
 MEDIA_SPECS = {
@@ -33,10 +34,24 @@ SERVICE_WINDOW = timedelta(hours=24)
 
 
 def normalize_number(number: str) -> str:
-    wa_id = re.sub(r'\D', '', number)
-    if not 10 <= len(wa_id) <= 15:
+    # sem '+' assume BR (11999998888 -> 5511999998888); com '+' respeita o DDI.
+    # is_possible e não is_valid: o formato antigo sem o 9 (12 dígitos) é "inválido", mas é o que a Meta usa
+    try:
+        parsed = phonenumbers.parse(number, 'BR')
+    except phonenumbers.NumberParseException:
         raise ValidationError(f'invalid number: {number}')
-    return wa_id
+    if not phonenumbers.is_possible_number(parsed):
+        raise ValidationError(f'invalid number: {number}')
+    return f'{parsed.country_code}{parsed.national_number}'
+
+
+def number_variants(wa_id: str) -> list[str]:
+    # celular BR com e sem o 9º dígito: a Meta manda 12 dígitos pra muitos números antigos
+    if wa_id.startswith('55') and len(wa_id) == 12 and wa_id[4] in '6789':
+        return [wa_id, f'{wa_id[:4]}9{wa_id[4:]}']
+    if wa_id.startswith('55') and len(wa_id) == 13 and wa_id[4] == '9' and wa_id[5] in '6789':
+        return [wa_id, wa_id[:4] + wa_id[5:]]
+    return [wa_id]
 
 
 def check_service_window(contact: Contact) -> None:
@@ -186,18 +201,23 @@ def import_contacts(company: Company, account_id: int, numbers: list[dict]) -> d
     entries = [(normalize_number(e['number']), e.get('name', '')) for e in numbers]
     created = 0
     for wa_id, name in entries:
-        _, was_created = Contact.objects.get_or_create(account=account, wa_id=wa_id, defaults={'name': name})
-        created += was_created
+        if find_contact(account, wa_id) is None:
+            get_or_create_contact(account, wa_id, name)
+            created += 1
     return {'created': created, 'existing': len(entries) - created}
 
 
-def list_contacts(company: Company, account_id: int, search: str = '') -> QuerySet[Contact]:
+def list_contacts(company: Company, account_id: int, search: str = '', queue: str = '', user=None) -> QuerySet[Contact]:
     account = get_account(company, account_id)
     last = Message.objects.filter(contact=OuterRef('pk')).order_by('-id')
     last_in = Message.objects.filter(contact=OuterRef('pk'), direction='in').order_by('-id')
     qs = Contact.objects.filter(account=account)
     if search:
         qs = qs.filter(Q(name__icontains=search) | Q(wa_id__contains=search))
+    if queue == 'waiting':
+        qs = qs.filter(ai_paused=True, assigned_to__isnull=True)
+    elif queue == 'mine':
+        qs = qs.filter(assigned_to=user)
     return qs.annotate(
         last_message=Subquery(last.values('content')[:1]),
         last_message_at=Subquery(last.values('created_at')[:1]),
@@ -209,11 +229,52 @@ def list_contacts(company: Company, account_id: int, search: str = '') -> QueryS
 
 def update_contact(company: Company, contact_id: int, data: dict) -> Contact:
     contact = get_contact(company, contact_id)
+    if 'assigned_to' in data:
+        user_id = data.pop('assigned_to')
+        if user_id is not None and not is_member(company, user_id):
+            raise ValidationError('user is not a member of this company')
+        contact.assigned_to_id = user_id
+    if 'ai_paused' in data:
+        paused = data.pop('ai_paused')
+        contact.ai_paused = paused
+        contact.ai_resume_at = resume_deadline(contact) if paused else None
     for field, value in data.items():
         setattr(contact, field, value)
     contact.save()
     events.publish(contact.account.company_id, {'type': 'contact', 'contact_id': contact.pk})
     return contact
+
+
+def is_member(company: Company, user_id: int) -> bool:
+    return company.owner_id == user_id or Membership.objects.filter(company=company, user_id=user_id).exists()
+
+
+def resume_deadline(contact: Contact):
+    hours = contact.account.agent.handoff_resume_hours
+    return timezone.now() + timedelta(hours=hours) if hours else None
+
+
+def pause_ai(contact: Contact) -> None:
+    """Pausa a IA até o prazo do agente (renova a cada chamada: conta da última ação humana)."""
+    contact.ai_paused = True
+    contact.ai_resume_at = resume_deadline(contact)
+    contact.save(update_fields=['ai_paused', 'ai_resume_at'])
+    events.publish(contact.account.company_id, {'type': 'contact', 'contact_id': contact.pk})
+
+
+def resume_ai(contact: Contact) -> None:
+    contact.ai_paused = False
+    contact.ai_resume_at = None
+    contact.save(update_fields=['ai_paused', 'ai_resume_at'])
+    events.publish(contact.account.company_id, {'type': 'contact', 'contact_id': contact.pk})
+
+
+def take_over(contact: Contact, user) -> None:
+    """Atendente escreveu: IA pausa e, se ninguém tinha pegado, a conversa fica com ele."""
+    if contact.assigned_to_id is None and user is not None:
+        contact.assigned_to = user
+        contact.save(update_fields=['assigned_to'])
+    pause_ai(contact)
 
 
 def delete_contact(company: Company, contact_id: int) -> None:
@@ -228,17 +289,18 @@ def list_messages(company: Company, contact_id: int) -> QuerySet[Message]:
     return Message.objects.filter(contact=contact).order_by('-id')
 
 
-def send_manual_message(company: Company, contact_id: int, content: str) -> Message:
+def send_manual_message(company: Company, contact_id: int, content: str, user=None) -> Message:
     contact = get_contact(company, contact_id)
     check_service_window(contact)
     try:
         wamid = whatsapp.send_text(contact.account, contact.wa_id, content)
     except httpx.HTTPStatusError:
         raise ValidationError('whatsapp invalid send')
+    take_over(contact, user)
     return record_outgoing_message(contact, wamid, content, from_human=True)
 
 
-def send_manual_media(company: Company, contact_id: int, file, caption: str = '') -> Message:
+def send_manual_media(company: Company, contact_id: int, file, caption: str = '', user=None) -> Message:
     contact = get_contact(company, contact_id)
     check_service_window(contact)
     kind = file.content_type.split('/')[0]
@@ -259,6 +321,7 @@ def send_manual_media(company: Company, contact_id: int, file, caption: str = ''
     except httpx.HTTPStatusError:
         raise ValidationError('whatsapp invalid send')
     file.seek(0)
+    take_over(contact, user)
     content = caption or PLACEHOLDERS.get(kind) or f'[documento: {file.name}]'
     return record_outgoing_message(contact, waimd, content, from_human=True, message_type=kind, media_file=file)
 
@@ -300,7 +363,7 @@ def delete_sticker(company: Company, sticker_id: int) -> None:
     sticker.delete()
 
 
-def send_saved_sticker(company: Company, contact_id: int, sticker_id: int) -> Message:
+def send_saved_sticker(company: Company, contact_id: int, sticker_id: int, user=None) -> Message:
     contact = get_contact(company, contact_id)
     check_service_window(contact)
     sticker = Sticker.objects.filter(company=company, pk=sticker_id).first()
@@ -312,6 +375,7 @@ def send_saved_sticker(company: Company, contact_id: int, sticker_id: int) -> Me
         wamid = whatsapp.send_media(contact.account, contact.wa_id, 'sticker', media_id)
     except httpx.HTTPStatusError:
         raise ValidationError('whatsapp invalid send')
+    take_over(contact, user)
     return record_outgoing_message(
         contact, wamid, '[figurinha]', from_human=True, message_type='sticker', media_file=ContentFile(content, name='sticker.webp')
     )
@@ -569,9 +633,19 @@ def get_account_by_phone_number_id(phone_number_id: str) -> WhatsAppAccount | No
     return WhatsAppAccount.objects.filter(phone_number_id=phone_number_id).first()
 
 
+def find_contact(account: WhatsAppAccount, wa_id: str) -> Contact | None:
+    return Contact.objects.filter(account=account, wa_id__in=number_variants(wa_id)).first()
+
+
 def get_or_create_contact(account: WhatsAppAccount, wa_id: str, name: str = '') -> Contact:
-    contact, _ = Contact.objects.get_or_create(account=account, wa_id=wa_id, defaults={'name': name})
-    return contact
+    contact = find_contact(account, wa_id)
+    if contact:
+        return contact
+    try:
+        return Contact.objects.create(account=account, wa_id=wa_id, name=name)
+    except IntegrityError:
+        # corrida entre dois webhooks do mesmo número: o outro criou primeiro
+        return Contact.objects.get(account=account, wa_id=wa_id)
 
 
 def record_incoming_message(
@@ -592,11 +666,16 @@ def record_incoming_message(
     return message, created
 
 
+STATUS_ORDER = ['sent', 'delivered', 'read']
+
+
 def update_message_status(wa_message_id: str, status: str, error_detail: str = '') -> None:
-    data = {'status': status}
-    if error_detail:
-        data['error_detail'] = error_detail
-    Message.objects.filter(wa_message_id=wa_message_id).update(**data)
+    # webhooks chegam fora de ordem: só avança (um "delivered" atrasado não rebaixa "read"); failed grava sempre
+    qs = Message.objects.filter(wa_message_id=wa_message_id)
+    if status == Message.Status.FAILED:
+        qs.update(status=status, **({'error_detail': error_detail[:255]} if error_detail else {}))
+    elif status in STATUS_ORDER:
+        qs.filter(status__in=STATUS_ORDER[: STATUS_ORDER.index(status)]).update(status=status)
 
 
 def record_outgoing_message(

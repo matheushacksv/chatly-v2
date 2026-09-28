@@ -1,5 +1,6 @@
 from uuid import uuid4
 
+from django.conf import settings
 from django.db import models
 
 from core.fields import EncryptedTextField
@@ -30,6 +31,10 @@ class Contact(models.Model):
     name = models.CharField(max_length=255, blank=True)
     memory = models.TextField(blank=True, default='')
     ai_paused = models.BooleanField(default=False)
+    ai_resume_at = models.DateTimeField(null=True, blank=True)
+    assigned_to = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='assigned_contacts'
+    )
     pipedrive_person_id = models.IntegerField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

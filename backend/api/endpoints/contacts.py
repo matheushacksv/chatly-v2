@@ -1,3 +1,5 @@
+from typing import Literal
+
 from ninja import Router, Status
 from ninja.pagination import paginate
 
@@ -10,9 +12,9 @@ router = Router(tags=['Contacts'])
 
 @router.get('/{company_id}/whatsapp-accounts/{account_id}/contacts', response=list[ContactOutDTO])
 @paginate
-def list_contacts_endpoint(request, company_id: int, account_id: int, search: str = ''):
+def list_contacts_endpoint(request, company_id: int, account_id: int, search: str = '', queue: Literal['', 'waiting', 'mine'] = ''):
     company = companies_services.get_company(request.auth, company_id)
-    return services.list_contacts(company, account_id, search)
+    return services.list_contacts(company, account_id, search, queue, request.auth)
 
 
 @router.post('/{company_id}/whatsapp-accounts/{account_id}/contacts', response={201: ContactOutDTO})

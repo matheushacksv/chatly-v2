@@ -92,6 +92,7 @@ def create_agent(
     description: str = '',
     response_delay: int = 0,
     split_messages: bool = False,
+    handoff_resume_hours: int = 24,
 ) -> Agent:
     credential = get_credential(company, credential_id)
     return Agent.objects.create(
@@ -103,6 +104,7 @@ def create_agent(
         prompt=prompt,
         response_delay=response_delay,
         split_messages=split_messages,
+        handoff_resume_hours=handoff_resume_hours,
     )
 
 

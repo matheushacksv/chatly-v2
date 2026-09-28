@@ -30,6 +30,8 @@ class Agent(models.Model):
     credential = models.ForeignKey(Credential, on_delete=models.PROTECT, related_name='agents')
     prompt = models.TextField()
     split_messages = models.BooleanField(default=False)
+    # IA pausada (handoff ou atendente) volta sozinha depois disso; 0 = só volta manualmente
+    handoff_resume_hours = models.PositiveSmallIntegerField(default=24)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

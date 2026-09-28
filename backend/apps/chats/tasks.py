@@ -3,6 +3,7 @@ import time
 import httpx
 from celery import shared_task
 from django.db.models import F
+from django.utils import timezone
 
 from apps import ai
 from apps.chats import events, services, whatsapp
@@ -31,20 +32,29 @@ def process_incoming_message(self, message_id: int):
         if flow_services.dispatch_incoming(message):
             return
 
+        if contact.ai_paused and contact.ai_resume_at and contact.ai_resume_at <= timezone.now():
+            services.resume_ai(contact)
         if contact.ai_paused:
             return
         if Message.objects.filter(contact=contact, direction='in', pk__gt=message.pk).exists():
+            return
+        # retry depois de envio parcial: o que saiu já está gravado, não gera nem reenvia de novo.
+        # ponytail: as partes que faltavam se perdem; guardar a resposta gerada se isso incomodar
+        if self.request.retries and Message.objects.filter(contact=contact, direction='out', from_human=False, pk__gt=message.pk).exists():
             return
         history = services.build_history(contact, exclude_pk=message.pk)
         image, mime_type = None, ''
         if message.message_type == 'image':
             image, mime_type = whatsapp.download_media(account, message.media_id)
 
+        handed_off = False
+
         def transferir_para_atendente() -> str:
             """Transfere a conversa para um humano. Use quando o cliente pedir para falar com uma pessoa
             ou quando você não conseguir resolver"""
-            contact.ai_paused = True
-            contact.save(update_fields=['ai_paused'])
+            nonlocal handed_off
+            handed_off = True
+            services.pause_ai(contact)
             events.publish(contact.account.company_id, {'type': 'handoff', 'contact_id': contact.pk, 'name': contact.name or contact.wa_id})
             return 'Transferido'
 
@@ -75,15 +85,18 @@ def process_incoming_message(self, message_id: int):
 
         reply = ai.generate_reply(account.agent, history, message.content, image=image, mime_type=mime_type, memory=contact.memory, tools=tools)
         parts = [p.strip() for p in reply.split('\n\n') if p.strip()] if account.agent.split_messages else [reply]
-        wamids = []
         for i, part in enumerate(parts):
             if i:
                 time.sleep(min(1 + len(part) / 25, 5))
-            wamids.append(whatsapp.send_text(account, contact.wa_id, part))
+            # atendente (ou handoff de fluxo) pode ter pausado durante a geração; a pausa da própria
+            # ferramenta de transferência não conta, a despedida dela precisa sair
+            contact.refresh_from_db(fields=['ai_paused'])
+            if contact.ai_paused and not handed_off:
+                break
+            # grava logo após enviar: se a próxima parte falhar, o retry vê a resposta e não reenvia
+            services.record_outgoing_message(contact, whatsapp.send_text(account, contact.wa_id, part), part)
     except Exception as exc:
         raise self.retry(exc=exc, countdown=2**self.request.retries)
-    for wamid, part in zip(wamids, parts):
-        services.record_outgoing_message(contact, wamid, part)
     update_contact_memory.delay(contact.pk)
 
 

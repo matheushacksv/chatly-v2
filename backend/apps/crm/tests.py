@@ -526,6 +526,17 @@ class PipedriveWebhookIngestTests(BaseCrmTestCase):
         self.assertEqual(self.contact.pipedrive_person_id, 501)
 
     @patch('apps.crm.pipedrive.get_person')
+    def test_phone_without_ninth_digit_links_existing(self, mock_get_person):
+        # Pipedrive com o celular antigo (sem o 9) casa com o contato de 13 dígitos
+        mock_get_person.return_value = {'id': 504, 'name': 'Cliente A', 'phones': [{'value': '(11) 9999-9999', 'primary': True}]}
+        before = Contact.objects.count()
+        response = self._post(data={'id': 94, 'person_id': 504})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Contact.objects.count(), before)
+        self.contact.refresh_from_db()
+        self.assertEqual(self.contact.pipedrive_person_id, 504)
+
+    @patch('apps.crm.pipedrive.get_person')
     def test_already_linked_person_is_noop(self, mock_get_person):
         self.contact.pipedrive_person_id = 502  # eco do próprio create do Chatly
         self.contact.save(update_fields=['pipedrive_person_id'])

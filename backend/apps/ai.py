@@ -25,6 +25,14 @@ SPLIT_PROMPT = (
     'Cada bloco vira uma mensagem separada no chat. Use de 1 a 4 mensagens, como uma pessoa digitando.'
 )
 
+HANDOFF_PROMPT = (
+    '\n\nTransferência para atendente humano (ferramenta transferir_para_atendente):\n'
+    '- Transfira quando o cliente pedir para falar com uma pessoa, quando estiver irritado ou reclamando, '
+    'ou quando você não tiver a informação para responder com segurança. Nunca invente preço, prazo ou política.\n'
+    '- Se não estiver claro que o cliente quer um humano, pergunte antes se ele prefere falar com um atendente.\n'
+    '- Ao transferir, avise o cliente na mesma resposta que um atendente vai continuar a conversa, sem prometer horário.'
+)
+
 
 def _run(agno_agent: AgnoAgent, *args, **kwargs) -> str:
     result = agno_agent.run(*args, **kwargs)
@@ -68,6 +76,8 @@ def generate_reply(agent: Agent, history: list[dict], text: str, image: bytes | 
         system_message += f'\n\nUse as informações abaixo quando forem relevantes:\n<knowledge>\n{context}\n</knowledge>'
     if agent.split_messages:
         system_message += SPLIT_PROMPT
+    if any(getattr(t, '__name__', '') == 'transferir_para_atendente' for t in tools or []):
+        system_message += HANDOFF_PROMPT
     agno_agent = AgnoAgent(
         model=_build_model(agent),
         system_message=system_message,

@@ -97,8 +97,7 @@ def _execute(node: dict, run: FlowRun, message: Message | None) -> str | None:
         chat_services.record_outgoing_message(contact, wamid, text)
         return ''
     if t == 'handoff':
-        contact.ai_paused = True
-        contact.save(update_fields=['ai_paused'])
+        chat_services.pause_ai(contact)
         events.publish(run.flow.company_id, {'type': 'handoff', 'contact_id': contact.id, 'name': contact.name or contact.wa_id})
         return ''
     if t == 'buttons':
@@ -125,12 +124,10 @@ def _execute(node: dict, run: FlowRun, message: Message | None) -> str | None:
         _run_crm(node, run)
         return ''
     if t == 'ai':
-        contact.ai_paused = False
-        contact.save(update_fields=['ai_paused'])
+        chat_services.resume_ai(contact)
         return ''
     if t == 'pause':
-        contact.ai_paused = True
-        contact.save(update_fields=['ai_paused'])
+        chat_services.pause_ai(contact)
         return ''
     if t in ('start', 'handoff', 'end'):
         return ''

@@ -303,6 +303,24 @@ class AgentTests(BaseAgentsTestCase):
         self.assertTrue(response.json()['split_messages'])
         self.assertTrue(Agent.objects.get(company=self.company, name='Suporte').split_messages)
 
+    def test_create_agent_handoff_resume_hours(self):
+        response = self.client.post(self.url(self.company.pk), data=self.agent_payload(), content_type='application/json', headers=self.auth)
+        self.assertEqual(response.json()['handoff_resume_hours'], 24)  # padrão
+
+        response = self.client.post(
+            self.url(self.company.pk), data=self.agent_payload(name='Sem volta', handoff_resume_hours=0),
+            content_type='application/json', headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 201, response.json())
+        self.assertEqual(Agent.objects.get(company=self.company, name='Sem volta').handoff_resume_hours, 0)
+
+    def test_create_agent_negative_handoff_resume_hours_returns_422(self):
+        response = self.client.post(
+            self.url(self.company.pk), data=self.agent_payload(handoff_resume_hours=-1),
+            content_type='application/json', headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 422)
+
     # list / detail
 
     def test_list_agents_only_mine(self):

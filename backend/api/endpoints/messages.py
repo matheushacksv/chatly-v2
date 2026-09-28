@@ -19,13 +19,13 @@ def list_messages_endpoint(request, company_id: int, contact_id: int):
 @router.post('/{company_id}/contacts/{contact_id}/messages', response={201: MessageOutDTO})
 def send_manual_message_endpoint(request, company_id: int, contact_id: int, payload: ManualMessageDTO):
     company = companies_services.get_company(request.auth, company_id)
-    return Status(201, services.send_manual_message(company, contact_id, payload.content))
+    return Status(201, services.send_manual_message(company, contact_id, payload.content, request.auth))
 
 
 @router.post('/{company_id}/contacts/{contact_id}/messages/media', response={201: MessageOutDTO})
 def send_manual_media_endpoint(request, company_id: int, contact_id: int, file: File[UploadedFile], caption: Form[str] = ''):
     company = companies_services.get_company(request.auth, company_id)
-    return Status(201, services.send_manual_media(company, contact_id, file, caption))
+    return Status(201, services.send_manual_media(company, contact_id, file, caption, request.auth))
 
 
 @router.get('/{company_id}/messages/{message_id}/media')
@@ -40,7 +40,7 @@ def message_media_endpoint(request, company_id: int, message_id: int):
 @router.post('/{company_id}/contacts/{contact_id}/messages/sticker', response={201: MessageOutDTO})
 def send_sticker_endpoint(request, company_id: int, contact_id: int, payload: SendStickerDTO):
     company = companies_services.get_company(request.auth, company_id)
-    return Status(201, services.send_saved_sticker(company, contact_id, payload.sticker_id))
+    return Status(201, services.send_saved_sticker(company, contact_id, payload.sticker_id, request.auth))
 
 
 @router.post('/{company_id}/contacts/{contact_id}/messages/template', response={201: MessageOutDTO})

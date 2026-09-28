@@ -65,6 +65,7 @@ const schema = z.object({
   description: z.string(),
   response_delay: z.coerce.number().min(0, 'Não pode ser negativo'),
   split_messages: z.boolean(),
+  handoff_resume_hours: z.coerce.number().int().min(0, 'Não pode ser negativo').max(720, 'Máximo de 720 horas'),
   credential_id: z.number().nullable()
 }).refine(data => editing.value !== null || data.credential_id !== null, {
   message: 'Escolha uma credencial',
@@ -81,6 +82,7 @@ const state = reactive({
   prompt: '',
   response_delay: 0,
   split_messages: false,
+  handoff_resume_hours: 24,
   credential_id: null as number | null
 })
 
@@ -101,7 +103,7 @@ watch(() => state.credential_id, (id) => {
 
 function openCreate() {
   editing.value = null
-  Object.assign(state, { name: '', description: '', model: '', prompt: '', response_delay: 0, split_messages: false, credential_id: null })
+  Object.assign(state, { name: '', description: '', model: '', prompt: '', response_delay: 0, split_messages: false, handoff_resume_hours: 24, credential_id: null })
   documents.value = []
   open.value = true
 }
@@ -115,6 +117,7 @@ function openEdit(agent: Agent) {
     prompt: agent.prompt,
     response_delay: agent.response_delay,
     split_messages: agent.split_messages,
+    handoff_resume_hours: agent.handoff_resume_hours,
     credential_id: null // API não expõe a credencial atual; null = manter
   })
   loadDocuments(agent.id)
@@ -131,7 +134,8 @@ async function save() {
         model: state.model,
         prompt: state.prompt,
         response_delay: Number(state.response_delay),
-        split_messages: state.split_messages
+        split_messages: state.split_messages,
+        handoff_resume_hours: Number(state.handoff_resume_hours)
       }
       if (state.credential_id !== null) body.credential_id = state.credential_id
       const updated = await api<Agent>(
@@ -143,7 +147,7 @@ async function save() {
     } else {
       const created = await api<Agent>(`/companies/${companyId.value}/agents`, {
         method: 'POST',
-        body: { ...state, response_delay: Number(state.response_delay) }
+        body: { ...state, response_delay: Number(state.response_delay), handoff_resume_hours: Number(state.handoff_resume_hours) }
       })
       agents.value.push(created)
       toast.add({ title: 'Agente criado', color: 'success' })
@@ -326,6 +330,14 @@ const statusBadge: Record<AgentDocument['status'], { label: string, color: 'warn
 
         <UFormField name="response_delay" label="Delay de resposta (segundos)" help="Espera antes de responder - agrupa mensagens seguidas do cliente">
           <UInput v-model.number="state.response_delay" type="number" min="0" class="w-full" />
+        </UFormField>
+
+        <UFormField
+          name="handoff_resume_hours"
+          label="IA volta sozinha depois de (horas)"
+          help="Depois de um handoff ou de o atendente responder, a IA fica pausada por esse tempo. 0 = só volta manualmente"
+        >
+          <UInput v-model.number="state.handoff_resume_hours" type="number" min="0" max="720" class="w-full" />
         </UFormField>
 
         <UFormField name="split_messages">

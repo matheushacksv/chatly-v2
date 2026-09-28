@@ -43,11 +43,12 @@ class ContactOutDTO(ModelSchema):
 
     class Meta:
         model = Contact
-        fields = ['id', 'wa_id', 'name', 'memory', 'ai_paused', 'created_at']
+        fields = ['id', 'wa_id', 'name', 'memory', 'ai_paused', 'ai_resume_at', 'assigned_to', 'created_at']
 
 
 class ContactPatchDTO(Schema):
     ai_paused: bool | None = None
+    assigned_to: int | None = None  # null explícito desatribui
     name: str | None = None
 
 

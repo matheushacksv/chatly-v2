@@ -2,7 +2,7 @@ from django.conf import settings
 
 from apps.chats import events
 from apps.chats.models import Contact, WhatsAppAccount
-from apps.chats.services import normalize_number
+from apps.chats.services import find_contact, normalize_number
 from apps.crm import pipedrive
 from apps.crm.models import PipedriveAccount
 from core.exceptions import NotFound, PipedriveError, ValidationError
@@ -61,7 +61,7 @@ def ingest_deal_event(pd: PipedriveAccount, action: str, data: dict, previous: d
             wa_id = normalize_number(_first_phone(person))
         except ValidationError:
             return None
-        contact = Contact.objects.filter(account=pd.lead_account, wa_id=wa_id).first()
+        contact = find_contact(pd.lead_account, wa_id)
         if contact:
             link_person(contact, person_id)
         else:
@@ -80,7 +80,7 @@ def ingest_deal_event(pd: PipedriveAccount, action: str, data: dict, previous: d
     except ValidationError:
         return None
 
-    contact = Contact.objects.filter(account=pd.lead_account, wa_id=wa_id).first()
+    contact = find_contact(pd.lead_account, wa_id)
     if contact:
         link_person(contact, person_id)
     else:

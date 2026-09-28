@@ -347,8 +347,9 @@ class RuntimeAdvanceTests(BaseAutomationsTestCase):
         contact.refresh_from_db()
         self.assertEqual(run.status, FlowRun.Status.DONE)
         self.assertTrue(contact.ai_paused)
-        mock_publish.assert_called_once()
-        self.assertEqual(mock_publish.call_args.args[1]['type'], 'handoff')
+        self.assertIsNotNone(contact.ai_resume_at)  # prazo do agente (24h padrão)
+        types = [c.args[1]['type'] for c in mock_publish.call_args_list]
+        self.assertEqual(types.count('handoff'), 1)
 
     def test_pause_pauses_ai_and_continues(self, mock_template, mock_send_text, mock_publish):
         # "Pausar IA" é ação: pausa e o fluxo segue pro próximo bloco, sem avisar a equipe
