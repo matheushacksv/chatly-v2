@@ -233,6 +233,7 @@ def handle_message_webhook(payload: dict) -> None:
     raw_type = data.get('type') or ''
     # descarta antes de tocar no contato: contato sem mensagem vira fantasma na lista
     if raw_type not in STORABLE_TYPES:
+        logger.info('mensagem do tipo %r ignorada (sessão %s)', raw_type, account.session_name)
         return
     wa_id = _direct_wa_id(data)
     if wa_id is None:

@@ -43,6 +43,8 @@ services:
     environment:
       PORT: 2785
       ENGINE_TYPE: baileys
+      # vem desligado: sem isso áudio do navegador não vira nota de voz (converte pra OGG/Opus)
+      MEDIA_CONVERSION_ENABLED: "true"
       # semeia a chave admin no primeiro boot (mín. 32 caracteres); depois disso mudar aqui não rotaciona
       API_MASTER_KEY: ${OPENWA_API_KEY}
       # instância única: sessões pareadas voltam sozinhas depois de restart/deploy

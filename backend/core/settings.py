@@ -17,6 +17,10 @@ SECRET_KEY = config('SECRET_KEY')
 DEBUG = config('DEBUG', cast=bool)
 
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', cast=Csv())
+# nome do serviço na rede do compose: o OpenWA chama o webhook em http://api:8000.
+# De fora não chega Host 'api': o Caddy só roteia o domínio público.
+if 'api' not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append('api')
 
 CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', cast=Csv(), default='http://localhost:3000')
 

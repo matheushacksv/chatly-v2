@@ -7,6 +7,7 @@ from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 import httpx
+from django.conf import settings
 from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
@@ -646,6 +647,12 @@ class WebhookHandlerTests(BasePersonalTestCase):
         self.assertEqual((message.message_type, message.content), ('image', '[imagem]'))
         self.mock_media_delay.assert_called_once_with(message.pk, '')
 
+    def test_incoming_sticker_stores_placeholder_and_queues_download(self):
+        services.handle_webhook(message_payload(type='sticker', body=''))
+        message = PersonalMessage.objects.get()
+        self.assertEqual((message.message_type, message.content), ('sticker', '[figurinha]'))
+        self.mock_media_delay.assert_called_once_with(message.pk, '')
+
     def test_voice_note_becomes_audio(self):
         services.handle_webhook(message_payload(type='ptt', body=''))
         self.assertEqual(PersonalMessage.objects.get().message_type, 'audio')
@@ -731,6 +738,17 @@ class WebhookEndpointTests(BasePersonalTestCase):
 
     def test_invalid_json_returns_400(self):
         self.assertEqual(self.post(b'{nao e json').status_code, 400)
+
+    def test_internal_host_used_by_openwa_is_accepted(self):
+        # o OpenWA chama http://api:8000: Host fora do ALLOWED_HOSTS virava 400 do Django e todo evento se perdia
+        body = json.dumps(message_payload()).encode()
+        response = self.client.post(
+            self.URL, data=body, content_type='application/json', HTTP_HOST='api:8000', headers={'X-OpenWA-Signature': sign(body)}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(PersonalMessage.objects.count(), 1)
+        # explícito: dev roda com ALLOWED_HOSTS=* e esconderia a falha; prod lista só o domínio
+        self.assertIn('api', settings.ALLOWED_HOSTS)
 
     def test_non_object_json_returns_200(self):
         self.assertEqual(self.post(b'[1, 2]').status_code, 200)
