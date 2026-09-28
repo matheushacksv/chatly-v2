@@ -222,7 +222,12 @@ async function stopAndSend() {
   if (sending.value) return
   sending.value = true
   try {
-    await sendMedia(await stopRec(), '')
+    const file = await stopRec()
+    if (!file) {
+      toast.add({ title: 'Áudio muito curto', description: 'Grave pelo menos 1 segundo.', color: 'warning' })
+      return
+    }
+    await sendMedia(file, '')
   } catch (error) {
     toast.add({ title: apiErrorDetail(error, 'Falha ao enviar áudio'), color: 'error' })
   } finally {

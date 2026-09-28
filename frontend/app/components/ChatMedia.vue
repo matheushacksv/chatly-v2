@@ -3,19 +3,23 @@ import type { Message, PersonalMessage } from '~/types/api'
 
 // canal oficial (Message) e pessoal (PersonalMessage) compartilham o mesmo render.
 // proxy=true (oficial): sem media_url busca os bytes na Meta via rota /messages/{id}/media.
-// proxy=false (canal pessoal): mídia é local; sem media_url = download falhou -> mostra indisponível
-// (não tentar o proxy oficial, que serviria a mídia errada por colisão de PK entre canais).
+// proxy=false (canal pessoal): mídia é baixada do gateway numa task depois do webhook, então a
+// mensagem chega primeiro sem media_url e ganha a URL num refresh (SSE). Sem URL = baixando; só
+// vira indisponível depois de PENDING_MS (não tentar o proxy oficial: colisão de PK entre canais).
 const props = withDefaults(defineProps<{ message: Message | PersonalMessage, companyId: number, proxy?: boolean }>(), { proxy: true })
 
 const config = useRuntimeConfig()
 const api = useApi()
+// ponytail: prazo fixo pro download do canal pessoal; se virar problema, backend marca falha na mensagem
+const PENDING_MS = 2 * 60 * 1000
 
 // enviada (media_url): arquivo local do backend, servido direto (URL com uuid);
 // recebida (sem media_url): proxy autenticado baixa da Meta → blob em memória
 const src = ref<string | null>(null)
 const failed = ref(false)
 
-onMounted(async () => {
+async function load() {
+  failed.value = false
   if (props.message.media_url) {
     // storage S3/MinIO devolve URL absoluta; relativa só se storage local
     const url = props.message.media_url
@@ -25,7 +29,7 @@ onMounted(async () => {
     return
   }
   if (!props.proxy) {
-    failed.value = true // canal pessoal sem media_url = download da mídia falhou
+    failed.value = Date.now() - new Date(props.message.created_at).getTime() > PENDING_MS
     return
   }
   try {
@@ -38,7 +42,11 @@ onMounted(async () => {
   } catch {
     failed.value = true // media_id expirado na Meta (~30 dias) ou download falhou
   }
-})
+}
+
+// o componente é reaproveitado quando a lista recarrega: reavalia quando a URL aparece
+watch(() => props.message.media_url, load)
+onMounted(load)
 
 onUnmounted(() => {
   if (src.value?.startsWith('blob:')) URL.revokeObjectURL(src.value)

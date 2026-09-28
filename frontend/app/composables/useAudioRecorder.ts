@@ -1,6 +1,6 @@
 // Gravação de áudio do microfone via MediaRecorder. Usado pelo widget e pela
 // página /meu-whatsapp. start() pede permissão e grava; stop() resolve um File
-// pronto pro sendMedia; cancel() descarta. Formato: prefere opus, cai no que o
+// pronto pro sendMedia (ou null se curto demais); cancel() descarta. Formato: prefere opus, cai no que o
 // browser suportar (Chrome=webm, Firefox=ogg, Safari=mp4).
 export function useAudioRecorder() {
   const recording = ref(false)
@@ -11,6 +11,11 @@ export function useAudioRecorder() {
   let chunks: Blob[] = []
   let stream: MediaStream | null = null
   let timer: ReturnType<typeof setInterval> | null = null
+  let startedAt = 0
+
+  // nota de voz abaixo de 1s chega no WhatsApp com duração 0:00 e não toca (o app
+  // nativo também descarta); o contador em segundos é grosso demais pra decidir isso
+  const MIN_MS = 1000
 
   onMounted(() => {
     canRecord.value = !!(navigator.mediaDevices?.getUserMedia && window.MediaRecorder)
@@ -43,16 +48,22 @@ export function useAudioRecorder() {
       if (e.data.size) chunks.push(e.data)
     }
     mediaRecorder.start()
+    startedAt = Date.now()
     recording.value = true
     seconds.value = 0
     timer = setInterval(() => seconds.value++, 1000)
   }
 
-  function stop(): Promise<File> {
+  function stop(): Promise<File | null> {
     return new Promise((resolve, reject) => {
       const rec = mediaRecorder
       if (!rec) {
         reject(new Error('not recording'))
+        return
+      }
+      if (Date.now() - startedAt < MIN_MS) {
+        cancel()
+        resolve(null)
         return
       }
       rec.onstop = () => {
