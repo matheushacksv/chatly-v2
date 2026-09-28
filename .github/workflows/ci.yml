@@ -83,13 +83,26 @@ jobs:
     needs: [backend, frontend]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    concurrency: deploy
+    # um servidor por linha; falha em um não cancela o outro
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - server: chatly
+            key: SSH_KEY
+            host: SSH_HOST
+            user: SSH_USER
+          - server: seabra
+            key: SEABRA_SSH_KEY
+            host: SEABRA_SSH_HOST
+            user: SEABRA_SSH_USER
+    concurrency: deploy-${{ matrix.server }}
     steps:
-      - name: Deploy via SSH
+      - name: Deploy via SSH (${{ matrix.server }})
         env:
-          SSH_KEY: ${{ secrets.SSH_KEY }}
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_KEY: ${{ secrets[matrix.key] }}
+          SSH_HOST: ${{ secrets[matrix.host] }}
+          SSH_USER: ${{ secrets[matrix.user] }}
         run: |
           install -m 700 -d ~/.ssh
           echo "$SSH_KEY" > ~/.ssh/id_ed25519

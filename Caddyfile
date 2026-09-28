@@ -22,23 +22,5 @@
     }
 }
 
-# pipe_chat roda no mesmo servidor e sai pelo mesmo Caddy (containers pipe-* na mesma rede)
-pipe.chatly.ia.br {
-    handle /api/webhook* {
-        respond 403
-    }
-    handle /api/* {
-        reverse_proxy pipe-api:8000 {
-            flush_interval -1
-        }
-    }
-    handle /admin/* {
-        reverse_proxy pipe-api:8000
-    }
-    handle /static/* {
-        reverse_proxy pipe-api:8000
-    }
-    handle {
-        reverse_proxy pipe-web:80
-    }
-}
+# sites extras por servidor: o compose monta deploy/caddy/${CADDY_EXTRA} aqui (vazio por padrão)
+import /etc/caddy/extra/*.caddy

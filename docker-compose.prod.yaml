@@ -8,8 +8,13 @@ services:
       - "80:80"
       - "443:443"
       - "443:443/udp"
+    environment:
+      # domínio do chatly nesse servidor (Caddyfile usa {$CHATLY_DOMAIN})
+      CHATLY_DOMAIN: ${CHATLY_DOMAIN:-app.chatly.ia.br}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # sites extras só desse servidor (ex.: CADDY_EXTRA=chatly traz o pipe.chatly.ia.br)
+      - ./deploy/caddy/${CADDY_EXTRA:-none}:/etc/caddy/extra:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
