@@ -55,8 +55,9 @@ def refresh_token(refresh: str):
 
 
 def change_password(user, current_password, new_password):
+    # 400 e não 401: é erro no formulário, não sessão expirada (401 faz o front tentar refresh do token)
     if not user.check_password(current_password):
-        raise Unauthorized('invalid credentials')
+        raise ValidationError('senha atual incorreta')
 
     try:
         validate_password(new_password, user=user)

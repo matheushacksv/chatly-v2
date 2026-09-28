@@ -112,8 +112,14 @@ function toggleTheme() {
   colorMode.preference = isDark.value ? 'light' : 'dark'
 }
 
+const changePasswordOpen = ref(false)
+
 const userMenuItems = computed(() => [
   [{
+    label: 'Trocar senha',
+    icon: 'i-lucide-key-round',
+    onSelect: () => { changePasswordOpen.value = true }
+  }, {
     label: isDark.value ? 'Tema claro' : 'Tema escuro',
     icon: isDark.value ? 'i-lucide-sun' : 'i-lucide-moon',
     onSelect: toggleTheme
@@ -189,5 +195,6 @@ const userMenuItems = computed(() => [
     <slot />
 
     <AppChatWidget />
+    <AppChangePassword v-model:open="changePasswordOpen" />
   </UDashboardGroup>
 </template>

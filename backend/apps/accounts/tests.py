@@ -143,6 +143,37 @@ class ChangePasswordTests(TestCase):
         self.user.refresh_from_db()
         self.assertTrue(self.user.check_password('newpass12345'))
 
+    def post(self, current='oldpass123', new='newpass12345', repeat=None, auth=True):
+        return self.client.post(
+            self.url,
+            data={'current_password': current, 'new_password': new, 'repeat_password': repeat if repeat is not None else new},
+            content_type='application/json',
+            headers=self.auth if auth else {},
+        )
+
+    def test_wrong_current_password_is_400_not_401(self):
+        # 401 faria o front tentar renovar o token; é erro de formulário
+        response = self.post(current='errada')
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json(), {'detail': 'senha atual incorreta'})
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('oldpass123'))
+
+    def test_weak_new_password_is_rejected(self):
+        response = self.post(new='123')
+        self.assertEqual(response.status_code, 400)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('oldpass123'))
+
+    def test_repeat_mismatch_is_rejected(self):
+        response = self.post(repeat='outra-coisa-123')
+        self.assertEqual(response.status_code, 422)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('oldpass123'))
+
+    def test_requires_login(self):
+        self.assertEqual(self.post(auth=False).status_code, 401)
+
 
 class ForgotPasswordTests(TestCase):
     url = '/api/auth/forgot-password'
