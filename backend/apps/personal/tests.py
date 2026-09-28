@@ -2,6 +2,9 @@ import base64
 import hashlib
 import hmac
 import json
+import pathlib
+import shutil
+import subprocess
 import tempfile
 from datetime import timedelta
 from unittest.mock import MagicMock, patch
@@ -10,6 +13,8 @@ import httpx
 from django.conf import settings
 from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import SimpleUploadedFile
+from unittest import skipUnless
+
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
@@ -137,27 +142,18 @@ class GatewayTests(TestCase):
         self.assertTrue(mock_request.call_args.args[1].endswith('/messages/send-sticker'))
         self.assertNotIn('url', mock_request.call_args.kwargs['json'])
 
-    def test_webm_audio_is_converted_by_gateway_into_voice_note(self, mock_request):
-        converted = base64.b64encode(b'opus').decode()
-        mock_request.side_effect = [_resp({'base64': converted, 'mimetype': 'audio/ogg; codecs=opus'}), _resp({'messageId': 'MID4'})]
-        gateway.send_media(SESSION, CLIENT, b'webm', 'audio', 'audio/webm')
-        convert_call, send_call = mock_request.call_args_list
-        self.assertTrue(convert_call.args[1].endswith('/media/convert/voice'))
-        body = send_call.kwargs['json']
-        self.assertEqual((body['base64'], body['mimetype'], body['ptt']), (converted, 'audio/ogg; codecs=opus', True))
-
-    def test_ogg_audio_skips_conversion(self, mock_request):
-        mock_request.return_value = _resp({'messageId': 'MID5'})
-        gateway.send_media(SESSION, CLIENT, b'ogg', 'audio', 'audio/ogg')
-        self.assertEqual(mock_request.call_count, 1)
-        self.assertTrue(mock_request.call_args.kwargs['json']['ptt'])
-
-    def test_failed_conversion_sends_plain_audio(self, mock_request):
-        mock_request.side_effect = [_resp(status=503), _resp({'messageId': 'MID6'})]
-        gateway.send_media(SESSION, CLIENT, b'mp3', 'audio', 'audio/mpeg')
+    def test_ptt_marks_voice_note(self, mock_request):
+        mock_request.return_value = _resp({'messageId': 'MID4'})
+        gateway.send_media(SESSION, CLIENT, b'opus', 'audio', 'audio/ogg; codecs=opus', ptt=True)
+        self.assertTrue(mock_request.call_args.args[1].endswith('/messages/send-audio'))
         body = mock_request.call_args.kwargs['json']
-        self.assertNotIn('ptt', body)
-        self.assertEqual(body['mimetype'], 'audio/mpeg')
+        self.assertEqual((body['mimetype'], body['ptt']), ('audio/ogg; codecs=opus', True))
+        self.assertEqual(mock_request.call_count, 1)  # conversão não passa mais pelo gateway
+
+    def test_audio_without_ptt_goes_as_file(self, mock_request):
+        mock_request.return_value = _resp({'messageId': 'MID5'})
+        gateway.send_media(SESSION, CLIENT, b'mp3', 'audio', 'audio/mpeg')
+        self.assertNotIn('ptt', mock_request.call_args.kwargs['json'])
 
     def test_download_media_returns_raw_bytes_and_mime(self, mock_request):
         mock_request.return_value = _resp(content=b'bytes', headers={'content-type': 'image/jpeg; charset=binary'})
@@ -533,7 +529,7 @@ class SendServiceTests(BasePersonalTestCase):
     def test_send_image_persists_file(self, mock_send):
         file = SimpleUploadedFile('foto.jpg', b'jpeg-bytes', content_type='image/jpeg')
         message = services.send_media_message(self.company, self.owner, self.account.pk, self.contact.pk, file, 'legenda')
-        mock_send.assert_called_once_with(SESSION, CLIENT, b'jpeg-bytes', 'image', 'image/jpeg', 'foto.jpg', 'legenda')
+        mock_send.assert_called_once_with(SESSION, CLIENT, b'jpeg-bytes', 'image', 'image/jpeg', 'foto.jpg', 'legenda', False)
         self.assertEqual((message.content, message.message_type, message.media_file.read()), ('legenda', 'image', b'jpeg-bytes'))
 
     @patch('apps.personal.gateway.send_media', return_value='MIDDOC')
@@ -548,11 +544,29 @@ class SendServiceTests(BasePersonalTestCase):
         services.send_media_message(self.company, self.owner, self.account.pk, self.contact.pk, file)
         self.assertEqual(mock_send.call_args.args[3], 'sticker')
 
+    @patch('apps.personal.services.to_voice_note', return_value=b'opus-convertido')
     @patch('apps.personal.gateway.send_media', return_value='MIDAUD')
-    def test_browser_webm_audio_is_accepted(self, mock_send):
-        file = SimpleUploadedFile('voz.webm', b'webm', content_type='audio/webm')
+    def test_recorded_audio_is_converted_and_sent_as_voice_note(self, mock_send, mock_convert):
+        file = SimpleUploadedFile('voz.m4a', b'mp4-do-chrome', content_type='audio/mp4')
         message = services.send_media_message(self.company, self.owner, self.account.pk, self.contact.pk, file)
+        mock_convert.assert_called_once_with(b'mp4-do-chrome')
+        mock_send.assert_called_once_with(SESSION, CLIENT, b'opus-convertido', 'audio', 'audio/ogg; codecs=opus', 'voz.m4a', '', True)
+        self.assertEqual(message.media_file.read(), b'mp4-do-chrome')  # o painel guarda o original
+
+    @patch('apps.personal.services.to_voice_note', return_value=None)
+    @patch('apps.personal.gateway.send_media', return_value='MIDAUD')
+    def test_failed_conversion_sends_original_as_file(self, mock_send, mock_convert):
+        file = SimpleUploadedFile('voz.webm', b'webm', content_type='audio/webm')  # webm do navegador é aceito
+        message = services.send_media_message(self.company, self.owner, self.account.pk, self.contact.pk, file)
+        self.assertEqual(mock_send.call_args.args[2:], (b'webm', 'audio', 'audio/webm', 'voz.webm', '', False))
         self.assertEqual(message.message_type, 'audio')
+
+    @patch('apps.personal.services.to_voice_note')
+    @patch('apps.personal.gateway.send_media', return_value='MIDIMG')
+    def test_non_audio_is_not_converted(self, mock_send, mock_convert):
+        file = SimpleUploadedFile('foto.jpg', b'jpeg', content_type='image/jpeg')
+        services.send_media_message(self.company, self.owner, self.account.pk, self.contact.pk, file)
+        mock_convert.assert_not_called()
 
     @patch('apps.personal.gateway.send_media')
     def test_rejects_unsupported_mime(self, mock_send):
@@ -603,6 +617,38 @@ class SendServiceTests(BasePersonalTestCase):
     def test_send_saved_sticker_missing_not_found(self):
         with self.assertRaises(NotFound):
             services.send_saved_sticker(self.company, self.owner, self.account.pk, self.contact.pk, 99999)
+
+
+@skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'ffmpeg não instalado')
+class VoiceNoteConversionTests(TestCase):
+    """ffmpeg de verdade: o bug de produção era o OGG começando fora do zero."""
+
+    def _ffmpeg(self, *args, data=b''):
+        return subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', *args], input=data, capture_output=True, check=True).stdout
+
+    def _probe(self, raw: bytes) -> dict:
+        path = pathlib.Path(tempfile.mkdtemp()) / 'out.ogg'
+        path.write_bytes(raw)  # arquivo, não pipe: por pipe o ffprobe não chega no fim e não sabe a duração
+        out = subprocess.run(
+            ['ffprobe', '-v', 'error', '-show_entries', 'format=start_time,duration,format_name:stream=codec_name,channels,sample_rate',
+             '-of', 'json', str(path)], capture_output=True, check=True,
+        ).stdout
+        data = json.loads(out)
+        return {**data['format'], **data['streams'][0]}
+
+    def test_audio_recorded_with_offset_starts_at_zero(self):
+        # opus em mp4 começando em 0.15s, como o que o Chrome gravou
+        recorded = self._ffmpeg(
+            '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2', '-af', 'adelay=150:all=1,asetpts=PTS+0.15/TB',
+            '-c:a', 'libopus', '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov', 'pipe:1',
+        )
+        info = self._probe(services.to_voice_note(recorded))
+        self.assertEqual((info['format_name'], info['codec_name'], info['channels'], info['sample_rate']), ('ogg', 'opus', 1, '48000'))
+        self.assertEqual(float(info['start_time']), 0.0)
+        self.assertGreater(float(info['duration']), 1.5)
+
+    def test_garbage_input_returns_none(self):
+        self.assertIsNone(services.to_voice_note(b'isso nao e audio'))
 
 
 class WebhookHandlerTests(BasePersonalTestCase):

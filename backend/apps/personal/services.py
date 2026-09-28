@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import logging
+import subprocess
 import time
 
 from django.conf import settings
@@ -21,8 +22,17 @@ logger = logging.getLogger(__name__)
 User = get_user_model()
 
 SUBSCRIBE = ['message.received', 'message.sent', 'session.status', 'session.authenticated', 'session.disconnected']
-# navegador grava áudio em webm; o gateway converte pra nota de voz
+# navegador grava áudio em webm; a conversão pra nota de voz aceita
 EXTRA_AUDIO = {'audio/webm'}
+VOICE_MIME = 'audio/ogg; codecs=opus'
+# OGG/Opus mono 48 kHz de fala, com a linha do tempo recomeçando em zero e sem tags herdadas.
+# O mp4 que o Chrome grava tem timestamps irregulares: convertido sem o aresample o OGG começa em
+# ~0.15s e o WhatsApp mostra a duração mas diz que o arquivo está com problema (conferido em prod).
+VOICE_FFMPEG = [
+    'ffmpeg', '-hide_banner', '-loglevel', 'error', '-i', 'pipe:0', '-vn', '-map_metadata', '-1',
+    '-ac', '1', '-ar', '48000', '-af', 'aresample=async=1:first_pts=0',
+    '-c:a', 'libopus', '-b:a', '32k', '-application', 'voip', '-f', 'ogg', 'pipe:1',
+]
 # a mídia vai em base64 no JSON (~1.37x) e fica inteira em memória dos dois lados
 MAX_MEDIA_BYTES = 16 * 2**20
 
@@ -400,6 +410,15 @@ def delete_conversation(company: Company, user: User, account_id: int, contact_i
 # * ----- Mensagens ------
 
 
+def to_voice_note(raw: bytes) -> bytes | None:
+    """Áudio qualquer -> OGG/Opus pronto pra nota de voz; None se o ffmpeg falhar ou não existir."""
+    try:
+        done = subprocess.run(VOICE_FFMPEG, input=raw, capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout if done.returncode == 0 and done.stdout else None
+
+
 def list_messages(company: Company, user: User, account_id: int, contact_id: int) -> list[PersonalMessage]:
     contact = _get_own_contact(company, user, account_id, contact_id)
     return list(PersonalMessage.objects.filter(contact=contact).annotate(sticker_saved=sticker_saved_annotation(company)))
@@ -437,7 +456,15 @@ def send_media_message(company: Company, user: User, account_id: int, contact_id
 
     raw = file.read()
     file.seek(0)
-    wa_message_id = gateway.send_media(contact.account.session_id, contact.wa_id, raw, kind, file.content_type, file.name, caption)
+    send_raw, send_mime, ptt = raw, file.content_type, False
+    if kind == 'audio':
+        voice = to_voice_note(raw)
+        if voice is None:
+            logger.warning('áudio %s não converteu pra opus: vai como arquivo, não como nota de voz', file.content_type)
+        else:
+            send_raw, send_mime, ptt = voice, VOICE_MIME, True
+    # o painel guarda o original (toca no navegador); o WhatsApp recebe a versão convertida
+    wa_message_id = gateway.send_media(contact.account.session_id, contact.wa_id, send_raw, kind, send_mime, file.name, caption, ptt)
     return _record_outgoing(
         contact,
         wa_message_id,

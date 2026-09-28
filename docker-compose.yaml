@@ -27,8 +27,6 @@ services:
     environment:
       PORT: 2785
       ENGINE_TYPE: baileys
-      # vem desligado: sem isso áudio do navegador não vira nota de voz (converte pra OGG/Opus)
-      MEDIA_CONVERSION_ENABLED: "true"
       ENABLE_SWAGGER: "true"
       # webhook só sai pra esses hosts (guard de SSRF do OpenWA)
       SSRF_ALLOWED_HOSTS: api,host.docker.internal

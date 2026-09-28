@@ -118,31 +118,17 @@ def send_text(session_id: str, number: str, text: str) -> str:
     return _req('POST', f'/sessions/{session_id}/messages/send-text', json={'chatId': chat_id(number), 'text': text}).get('messageId', '')
 
 
-def _voice_note(session_id: str, raw: bytes) -> tuple[str, str] | None:
-    """Converte pra OGG/Opus no próprio OpenWA (ele já tem ffmpeg); None se não der."""
-    try:
-        data = _req(
-            'POST', f'/sessions/{session_id}/media/convert/voice', json={'base64': base64.b64encode(raw).decode()}, timeout=MEDIA_TIMEOUT
-        )
-    except GatewayError:
-        return None
-    return (data['base64'], data.get('mimetype') or 'audio/ogg; codecs=opus') if data.get('base64') else None
-
-
-def send_media(session_id: str, number: str, raw: bytes, media_type: str, mime: str, filename: str = '', caption: str = '') -> str:
+def send_media(
+    session_id: str, number: str, raw: bytes, media_type: str, mime: str, filename: str = '', caption: str = '', ptt: bool = False
+) -> str:
     payload = {'chatId': chat_id(number), 'base64': base64.b64encode(raw).decode(), 'mimetype': mime}
     if filename:
         payload['filename'] = filename
     if caption and media_type not in ('audio', 'sticker'):
         payload['caption'] = caption
-    if media_type == 'audio':
-        # só OGG/Opus vira nota de voz tocável; o resto chega como arquivo que não toca
-        voice = (payload['base64'], 'audio/ogg; codecs=opus') if mime.startswith('audio/ogg') else _voice_note(session_id, raw)
-        if voice is None:
-            logger.warning('áudio %s sem conversão pra opus: vai como arquivo, não como nota de voz', mime)
-        else:
-            payload['base64'], payload['mimetype'] = voice
-            payload['ptt'] = True
+    if ptt:
+        # nota de voz (bolha de microfone): bytes têm que ser OGG/Opus, o baileys não transcodifica
+        payload['ptt'] = True
     route = MEDIA_ROUTES.get(media_type, 'send-document')
     return _req('POST', f'/sessions/{session_id}/messages/{route}', json=payload, timeout=MEDIA_TIMEOUT).get('messageId', '')
 
