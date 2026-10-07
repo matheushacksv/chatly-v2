@@ -113,7 +113,8 @@ export const FLOW_TRIGGER_LABELS: Record<string, string> = {
 const CONDITION_OPS: Record<string, string> = {
   contains: 'contém',
   equals: 'é igual a',
-  regex: 'casa com'
+  regex: 'casa com',
+  window_open: 'janela de 24h aberta'
 }
 
 const CRM_ACTIONS: Record<string, string> = {
@@ -150,6 +151,7 @@ export function flowNodeSummary(type: FlowNodeType, data: FlowNodeData): string 
     case 'wait':
       return `Guarda em {{${data.var || 'resposta'}}}`
     case 'condition':
+      if (data.op === 'window_open') return 'Janela de 24h aberta? (Sim = IA responde direto)'
       return `${data.source === 'last_message' ? 'resposta' : `{{${data.source}}}`} ${CONDITION_OPS[data.op ?? 'contains']} "${data.value || '...'}"`
     case 'delay':
       return formatMinutes(data.minutes ?? 0)

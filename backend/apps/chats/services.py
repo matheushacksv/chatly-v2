@@ -54,9 +54,13 @@ def number_variants(wa_id: str) -> list[str]:
     return [wa_id]
 
 
-def check_service_window(contact: Contact) -> None:
+def service_window_open(contact: Contact) -> bool:
     last_in = Message.objects.filter(contact=contact, direction='in').order_by('-created_at').first()
-    if last_in is None or timezone.now() - last_in.created_at > SERVICE_WINDOW:
+    return last_in is not None and timezone.now() - last_in.created_at <= SERVICE_WINDOW
+
+
+def check_service_window(contact: Contact) -> None:
+    if not service_window_open(contact):
         raise ValidationError('service window closed. Only templates allowed')
 
 

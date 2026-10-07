@@ -1,6 +1,8 @@
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.test import TestCase
+from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.agents.models import Agent, Credential
@@ -658,6 +660,24 @@ class ConditionRuntimeTests(BaseAutomationsTestCase):
         run, contact = self._route('contains', 'comprar', 'quero comprar agora')
         self.assertEqual(run.steps[-1]['type'], 'ai')  # sim -> ai
         self.assertFalse(contact.ai_paused)
+
+    def test_window_open_routes_by_last_inbound(self, mock_pub):
+        flow = self.make_flow(graph=_cond_graph('window_open', ''), active=True, trigger=Flow.Trigger.LEAD)
+        contact = Contact.objects.create(account=self.account, wa_id='5511999998888')
+        cases = [
+            (None, 'handoff'),  # nunca escreveu: fechada
+            (timedelta(hours=25), 'handoff'),
+            (timedelta(hours=1), 'ai'),
+        ]
+        for age, expected in cases:
+            Message.objects.filter(contact=contact).delete()
+            FlowRun.objects.filter(contact=contact).delete()
+            if age:
+                msg = Message.objects.create(contact=contact, direction='in', content='oi')
+                Message.objects.filter(pk=msg.pk).update(created_at=timezone.now() - age)
+            run = services.start_flow(flow, contact)
+            run.refresh_from_db()
+            self.assertEqual(run.steps[-1]['type'], expected, age)
 
     def test_contains_false_routes_nao(self, mock_pub):
         run, contact = self._route('contains', 'comprar', 'só olhando')

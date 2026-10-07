@@ -315,7 +315,7 @@ export interface FlowNodeData {
   var?: string
   timeout_minutes?: number
   source?: string
-  op?: 'contains' | 'equals' | 'regex'
+  op?: 'contains' | 'equals' | 'regex' | 'window_open'
   value?: string
   minutes?: number
   action?: 'person' | 'deal' | 'note' | 'stage'

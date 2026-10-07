@@ -106,6 +106,9 @@ def _execute(node: dict, run: FlowRun, message: Message | None) -> str | None:
         chat_services.record_outgoing_message(contact, wamid, text)
         return
     if t == 'condition':
+        # janela de 24h aberta: dá pra IA responder direto, sem template
+        if data.get('op') == 'window_open':
+            return 'sim' if chat_services.service_window_open(contact) else 'nao'
         src = data.get('source', 'last_message')
         subject = run.context.get('last_message', '') if src == 'last_message' else str(run.context.get(src, ''))
         return 'sim' if _match_condition(subject, data.get('op', 'contains'), data.get('value', '')) else 'nao'

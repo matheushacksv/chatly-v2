@@ -166,6 +166,7 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
 
     <template v-if="type === 'condition'">
       <UFormField
+        v-if="data.op !== 'window_open'"
         label="Comparar"
         help="last_message = a última resposta do contato"
       >
@@ -175,7 +176,10 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
           placeholder="last_message"
         />
       </UFormField>
-      <UFormField label="Operador">
+      <UFormField
+        label="Operador"
+        :help="data.op === 'window_open' ? 'Sim se o contato escreveu nas últimas 24h: a IA pode responder sem template' : undefined"
+      >
         <USelect
           v-model="data.op"
           :items="FLOW_CONDITION_OP_ITEMS"
@@ -183,6 +187,7 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
         />
       </UFormField>
       <UFormField
+        v-if="data.op !== 'window_open'"
         label="Valor"
         required
       >
