@@ -2196,7 +2196,7 @@ class ProcessIncomingMessageTests(BaseChatsTestCase):
             tasks.process_incoming_message(incoming.pk)
 
         mock_generate.assert_not_called()
-        mock_enqueue.assert_called_once_with(args=(incoming.pk, True), eta=datetime(2026, 10, 6, 9, tzinfo=SP))
+        mock_enqueue.assert_called_once_with(args=(incoming.pk,), kwargs={'deferred': True}, eta=datetime(2026, 10, 6, 9, tzinfo=SP))
 
     @patch('apps.automations.services.dispatch_incoming')
     @patch('apps.chats.whatsapp.send_text')
@@ -2276,6 +2276,39 @@ class ProcessIncomingMessageTests(BaseChatsTestCase):
             tasks.process_incoming_message(incoming.pk)
 
         self.assertEqual(Message.objects.get(wa_message_id='wamid.p1').content, 'Parte um')
+
+    @patch('apps.chats.tasks.time.sleep')
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_second_part_failure_retries_with_only_the_rest(self, mock_generate, mock_send, mock_sleep):
+        self.agent.split_messages = True
+        self.agent.save(update_fields=['split_messages'])
+        mock_generate.return_value = 'Parte um\n\nParte dois\n\nParte três'
+        mock_send.side_effect = ['wamid.p1', httpx.ConnectError('caiu')]
+        incoming = Message.objects.get(wa_message_id='wamid.1')
+
+        with patch.object(tasks.process_incoming_message, 'retry', side_effect=RuntimeError('retry')) as mock_retry:
+            with self.assertRaises(RuntimeError):
+                tasks.process_incoming_message(incoming.pk)
+
+        self.assertEqual(mock_retry.call_args.kwargs['args'], (incoming.pk,))
+        self.assertEqual(
+            mock_retry.call_args.kwargs['kwargs'], {'deferred': False, 'pending': ['Parte dois', 'Parte três'], 'handed_off': False},
+        )
+
+    @patch('apps.chats.tasks.time.sleep')
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_retry_with_pending_sends_the_rest_without_generating(self, mock_generate, mock_send, mock_sleep):
+        mock_send.side_effect = ['wamid.p2', 'wamid.p3']
+        incoming = Message.objects.get(wa_message_id='wamid.1')
+
+        tasks.process_incoming_message(incoming.pk, pending=['Parte dois', 'Parte três'])
+
+        mock_generate.assert_not_called()
+        self.assertEqual([c.args[2] for c in mock_send.call_args_list], ['Parte dois', 'Parte três'])
+        self.assertTrue(Message.objects.filter(wa_message_id='wamid.p3', content='Parte três').exists())
+        self.mock_memory_enqueue.assert_called_once_with(self.contact.pk)
 
     @patch('apps.chats.whatsapp.send_text')
     @patch('apps.ai.generate_reply')

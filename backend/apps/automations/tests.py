@@ -431,6 +431,22 @@ class CreateLeadTests(BaseAutomationsTestCase):
         self.assertTrue(FlowRun.objects.filter(contact=contact).exists())
         mock_template.assert_called_once()
 
+    def test_lead_data_goes_to_ai_memory(self, mock_template):
+        source = self.make_source(name='Site')
+        payload = {'telefone': '5511999998888', 'origem': 'google', 'email': 'ana@x.com', 'extras': {'produto': 'piscina', 'vazio': ''}}
+        contact, _ = services.create_lead(source, payload)
+        contact.refresh_from_db()
+        self.assertIn('Chegou como lead pela fonte "Site"', contact.memory)
+        self.assertIn('origem: google, email: ana@x.com, produto: piscina', contact.memory)
+        self.assertNotIn('vazio', contact.memory)
+
+        # lead repetido acrescenta, não apaga o que a IA já anotou
+        Contact.objects.filter(pk=contact.pk).update(memory='Cliente prefere à tarde')
+        services.create_lead(source, {'telefone': '5511999998888', 'extras': {'texto': 'x' * 2000}})
+        contact.refresh_from_db()
+        self.assertTrue(contact.memory.startswith('Cliente prefere à tarde\n'))
+        self.assertLess(len(contact.memory), 600)
+
     def test_no_active_lead_flow_creates_contact_only(self, mock_template):
         source = self.make_source()
         contact, started = services.create_lead(source, {'telefone': '5511999998888'})
@@ -460,6 +476,14 @@ class DispatchIncomingTests(BaseAutomationsTestCase):
         self.assertTrue(services.dispatch_incoming(self._msg(contact, content='olá')))
         run = FlowRun.objects.get(contact=contact)
         self.assertEqual(run.status, FlowRun.Status.DONE)  # start -> ai encerra
+
+    def test_reply_to_our_template_is_not_first_message(self):
+        # lead recebeu o template do fluxo de lead: a resposta dele vai pra IA, não pro fluxo de primeira mensagem
+        self.make_flow(graph=_AI_ONLY, active=True, trigger=Flow.Trigger.FIRST_MESSAGE)
+        contact = Contact.objects.create(account=self.account, wa_id='5511999998888')
+        Message.objects.create(contact=contact, direction='out', content='Oi, recebemos seu contato', wa_message_id='w-out-1')
+        self.assertFalse(services.dispatch_incoming(self._msg(contact, content='oi')))
+        self.assertFalse(FlowRun.objects.filter(contact=contact).exists())
 
     def test_keyword_trigger_starts_flow(self):
         self.make_flow(graph=_AI_ONLY, active=True, trigger=Flow.Trigger.KEYWORD, trigger_config={'keyword': 'orçamento'})

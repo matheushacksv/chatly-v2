@@ -13,6 +13,7 @@ from apps.companies.models import Company
 from core.exceptions import NotFound, ValidationError
 
 MAX_STEPS = 50
+LEAD_NOTE_MAX_CHARS = 500  # dado de formulário vai pro prompt da IA: limita o tamanho
 TERMINAL = ('ai', 'handoff', 'end')
 
 # * ------ graph helpers -----
@@ -275,13 +276,22 @@ def delete_source(company: Company, source_id: int) -> None:
         raise NotFound('lead source not found')
 
 
+def _note_lead(contact: Contact, source: LeadSource, ctx: dict) -> None:
+    # a IA lê contact.memory: assim ela sabe de onde o lead veio e o que ele preencheu
+    info = ', '.join(f'{k}: {v}' for k, v in ctx.items() if v not in ('', None))
+    note = f'Chegou como lead pela fonte "{source.name}" em {timezone.localdate():%d/%m/%Y}' + (f' ({info})' if info else '')
+    contact.memory = '\n'.join(filter(None, [contact.memory, note[:LEAD_NOTE_MAX_CHARS]]))
+    contact.save(update_fields=['memory'])
+
+
 def create_lead(source: LeadSource, payload: dict) -> tuple[Contact, bool]:
     wa_id = chat_services.normalize_number(payload.get('telefone', ''))
     contact = chat_services.get_or_create_contact(source.account, wa_id, payload.get('nome', ''))
+    ctx = {'origem': payload.get('origem', ''), 'email': payload.get('email', ''), **(payload.get('extras') or {})}
+    _note_lead(contact, source, ctx)
     flow = Flow.objects.filter(account=source.account, trigger=Flow.Trigger.LEAD, active=True).order_by('-id').first()
     if not flow:
         return contact, False
-    ctx = {'origem': payload.get('origem', ''), 'email': payload.get('email', ''), **(payload.get('extras') or {})}
     start_flow(flow, contact, ctx)
     return contact, True
 
@@ -360,8 +370,9 @@ def _match_trigger(contact: Contact, message: Message) -> Flow | None:
         kw = (f.trigger_config.get('keyword') or '').lower()
         if kw and kw in text:
             return f
-    first_in = not Message.objects.filter(contact=contact, direction='in').exclude(pk=message.pk).exists()
-    if first_in:
+    # nós escrevemos antes (template de lead, campanha): a resposta já não é primeiro contato
+    first_contact = not Message.objects.filter(contact=contact).exclude(pk=message.pk).exists()
+    if first_contact:
         return Flow.objects.filter(account=account, trigger=Flow.Trigger.FIRST_MESSAGE, active=True).order_by('-id').first()
     return None
 

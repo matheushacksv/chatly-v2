@@ -16,12 +16,17 @@ from core.exceptions import ValidationError
 
 
 @shared_task(bind=True, max_retries=3)
-def process_incoming_message(self, message_id: int, deferred: bool = False):
+def process_incoming_message(self, message_id: int, deferred: bool = False, pending: list[str] | None = None, handed_off: bool = False):
     message = Message.objects.select_related('contact__account__agent__credential').filter(pk=message_id).first()
     if message is None:
         return
     contact = message.contact
     account = contact.account
+    if pending:
+        # retry de envio parcial: termina a resposta que já começou a sair, sem gerar outra
+        _send_parts(self, message_id, contact, pending, deferred, handed_off)
+        update_contact_memory.delay(contact.pk)
+        return
     try:
         if message.message_type == 'audio' and not message.content:
             audio_bytes, audio_mime = whatsapp.download_media(account, message.media_id)
@@ -40,8 +45,7 @@ def process_incoming_message(self, message_id: int, deferred: bool = False):
             return
         if Message.objects.filter(contact=contact, direction='in', pk__gt=message.pk).exists():
             return
-        # retry depois de envio parcial: o que saiu já está gravado, não gera nem reenvia de novo.
-        # ponytail: as partes que faltavam se perdem; guardar a resposta gerada se isso incomodar
+        # task entregue de novo depois de responder (o retry de envio parcial vem com `pending`)
         if self.request.retries and Message.objects.filter(contact=contact, direction='out', from_human=False, pk__gt=message.pk).exists():
             return
         # esperou o horário da IA e alguém já respondeu nesse meio-tempo
@@ -49,7 +53,7 @@ def process_incoming_message(self, message_id: int, deferred: bool = False):
             return
         opens_at = agents_services.next_ai_opening(account.agent, timezone.now())
         if opens_at:
-            process_incoming_message.apply_async(args=(message.pk, True), eta=opens_at)
+            process_incoming_message.apply_async(args=(message.pk,), kwargs={'deferred': True}, eta=opens_at)
             return
         history = services.build_history(contact, exclude_pk=message.pk)
         image, mime_type = None, ''
@@ -94,19 +98,28 @@ def process_incoming_message(self, message_id: int, deferred: bool = False):
 
         reply = ai.generate_reply(account.agent, history, message.content, image=image, mime_type=mime_type, memory=contact.memory, tools=tools)
         parts = [p.strip() for p in reply.split('\n\n') if p.strip()] if account.agent.split_messages else [reply]
-        for i, part in enumerate(parts):
-            if i:
-                time.sleep(min(1 + len(part) / 25, 5))
-            # atendente (ou handoff de fluxo) pode ter pausado durante a geração; a pausa da própria
-            # ferramenta de transferência não conta, a despedida dela precisa sair
-            contact.refresh_from_db(fields=['ai_paused'])
-            if contact.ai_paused and not handed_off:
-                break
-            # grava logo após enviar: se a próxima parte falhar, o retry vê a resposta e não reenvia
-            services.record_outgoing_message(contact, whatsapp.send_text(account, contact.wa_id, part), part)
     except Exception as exc:
         raise self.retry(exc=exc, countdown=2**self.request.retries)
+    _send_parts(self, message_id, contact, parts, deferred, handed_off)
     update_contact_memory.delay(contact.pk)
+
+
+def _send_parts(task, message_id: int, contact: Contact, parts: list[str], deferred: bool, handed_off: bool) -> None:
+    for i, part in enumerate(parts):
+        if i:
+            time.sleep(min(1 + len(part) / 25, 5))
+        # atendente (ou handoff de fluxo) pode ter pausado durante a geração; a pausa da própria
+        # ferramenta de transferência não conta, a despedida dela precisa sair
+        contact.refresh_from_db(fields=['ai_paused'])
+        if contact.ai_paused and not handed_off:
+            return
+        try:
+            wamid = whatsapp.send_text(contact.account, contact.wa_id, part)
+        except Exception as exc:
+            # o retry leva só o que falta: o que já saiu não repete e o resto não se perde
+            pending = {'deferred': deferred, 'pending': parts[i:], 'handed_off': handed_off}
+            raise task.retry(exc=exc, countdown=2**task.request.retries, args=(message_id,), kwargs=pending)
+        services.record_outgoing_message(contact, wamid, part)
 
 
 @shared_task(bind=True, max_retries=3)
