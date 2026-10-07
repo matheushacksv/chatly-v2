@@ -66,11 +66,41 @@ const schema = z.object({
   response_delay: z.coerce.number().min(0, 'Não pode ser negativo'),
   split_messages: z.boolean(),
   handoff_resume_hours: z.coerce.number().int().min(0, 'Não pode ser negativo').max(720, 'Máximo de 720 horas'),
-  credential_id: z.number().nullable()
+  credential_id: z.number().nullable(),
+  ai_hours_on: z.boolean(),
+  ai_hours_start: z.string(),
+  ai_hours_end: z.string(),
+  ai_days: z.array(z.number())
 }).refine(data => editing.value !== null || data.credential_id !== null, {
   message: 'Escolha uma credencial',
   path: ['credential_id']
+}).refine(data => !data.ai_hours_on || (data.ai_hours_start && data.ai_hours_end), {
+  message: 'Informe início e fim',
+  path: ['ai_hours_end']
+}).refine(data => !data.ai_hours_on || data.ai_days.length > 0, {
+  message: 'Escolha ao menos um dia',
+  path: ['ai_days']
 })
+
+const WEEKDAYS = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom']
+const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6]
+
+function toggleDay(day: number) {
+  state.ai_days = state.ai_days.includes(day) ? state.ai_days.filter(d => d !== day) : [...state.ai_days, day].sort((a, b) => a - b)
+}
+
+// desligado = null nos dois: IA sempre atende
+function aiHoursBody() {
+  return {
+    ai_hours_start: state.ai_hours_on ? state.ai_hours_start : null,
+    ai_hours_end: state.ai_hours_on ? state.ai_hours_end : null,
+    ai_days: state.ai_hours_on ? state.ai_days : ALL_DAYS
+  }
+}
+
+function hoursLabel(agent: Agent) {
+  return `${agent.ai_hours_start?.slice(0, 5)}-${agent.ai_hours_end?.slice(0, 5)}`
+}
 
 const open = ref(false)
 const editing = ref<Agent | null>(null)
@@ -83,7 +113,11 @@ const state = reactive({
   response_delay: 0,
   split_messages: false,
   handoff_resume_hours: 24,
-  credential_id: null as number | null
+  credential_id: null as number | null,
+  ai_hours_on: false,
+  ai_hours_start: '09:00',
+  ai_hours_end: '18:00',
+  ai_days: [...ALL_DAYS]
 })
 
 const modelItems = computed(() => {
@@ -103,7 +137,7 @@ watch(() => state.credential_id, (id) => {
 
 function openCreate() {
   editing.value = null
-  Object.assign(state, { name: '', description: '', model: '', prompt: '', response_delay: 0, split_messages: false, handoff_resume_hours: 24, credential_id: null })
+  Object.assign(state, { name: '', description: '', model: '', prompt: '', response_delay: 0, split_messages: false, handoff_resume_hours: 24, credential_id: null, ai_hours_on: false, ai_hours_start: '09:00', ai_hours_end: '18:00', ai_days: [...ALL_DAYS] })
   documents.value = []
   open.value = true
 }
@@ -118,7 +152,11 @@ function openEdit(agent: Agent) {
     response_delay: agent.response_delay,
     split_messages: agent.split_messages,
     handoff_resume_hours: agent.handoff_resume_hours,
-    credential_id: null // API não expõe a credencial atual; null = manter
+    credential_id: null, // API não expõe a credencial atual; null = manter
+    ai_hours_on: agent.ai_hours_start !== null,
+    ai_hours_start: agent.ai_hours_start?.slice(0, 5) ?? '09:00',
+    ai_hours_end: agent.ai_hours_end?.slice(0, 5) ?? '18:00',
+    ai_days: [...agent.ai_days]
   })
   loadDocuments(agent.id)
   open.value = true
@@ -135,7 +173,8 @@ async function save() {
         prompt: state.prompt,
         response_delay: Number(state.response_delay),
         split_messages: state.split_messages,
-        handoff_resume_hours: Number(state.handoff_resume_hours)
+        handoff_resume_hours: Number(state.handoff_resume_hours),
+        ...aiHoursBody()
       }
       if (state.credential_id !== null) body.credential_id = state.credential_id
       const updated = await api<Agent>(
@@ -147,7 +186,7 @@ async function save() {
     } else {
       const created = await api<Agent>(`/companies/${companyId.value}/agents`, {
         method: 'POST',
-        body: { ...state, response_delay: Number(state.response_delay), handoff_resume_hours: Number(state.handoff_resume_hours) }
+        body: { ...state, response_delay: Number(state.response_delay), handoff_resume_hours: Number(state.handoff_resume_hours), ...aiHoursBody() }
       })
       agents.value.push(created)
       toast.add({ title: 'Agente criado', color: 'success' })
@@ -277,6 +316,9 @@ const statusBadge: Record<AgentDocument['status'], { label: string, color: 'warn
             <UBadge v-if="agent.response_delay" variant="subtle" color="neutral" size="sm" icon="i-lucide-timer">
               {{ agent.response_delay }}s
             </UBadge>
+            <UBadge v-if="agent.ai_hours_start" variant="subtle" color="neutral" size="sm" icon="i-lucide-clock">
+              {{ hoursLabel(agent) }}
+            </UBadge>
           </div>
         </div>
       </div>
@@ -339,6 +381,39 @@ const statusBadge: Record<AgentDocument['status'], { label: string, color: 'warn
         >
           <UInput v-model.number="state.handoff_resume_hours" type="number" min="0" max="720" class="w-full" />
         </UFormField>
+
+        <UFormField name="ai_hours_on">
+          <USwitch
+            v-model="state.ai_hours_on"
+            label="Horário de atendimento da IA"
+            description="Fora do horário a IA fica calada e responde quando abrir, se ninguém tiver respondido antes"
+          />
+        </UFormField>
+
+        <template v-if="state.ai_hours_on">
+          <div class="grid grid-cols-2 gap-4">
+            <UFormField name="ai_hours_start" label="Início">
+              <UInput v-model="state.ai_hours_start" type="time" class="w-full" />
+            </UFormField>
+            <UFormField name="ai_hours_end" label="Fim" help="Antes do início vira a meia-noite (18:00-09:00)">
+              <UInput v-model="state.ai_hours_end" type="time" class="w-full" />
+            </UFormField>
+          </div>
+
+          <UFormField name="ai_days" label="Dias" help="Dia em que o horário começa">
+            <div class="flex gap-1 flex-wrap">
+              <UButton
+                v-for="(label, day) in WEEKDAYS"
+                :key="day"
+                :label="label"
+                size="sm"
+                :variant="state.ai_days.includes(day) ? 'solid' : 'outline'"
+                :color="state.ai_days.includes(day) ? 'primary' : 'neutral'"
+                @click="toggleDay(day)"
+              />
+            </div>
+          </UFormField>
+        </template>
 
         <UFormField name="split_messages">
           <USwitch

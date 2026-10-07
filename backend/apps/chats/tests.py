@@ -2,7 +2,8 @@ import hashlib
 import hmac
 import json
 import tempfile
-from datetime import timedelta
+from datetime import datetime, time, timedelta
+from zoneinfo import ZoneInfo
 from unittest.mock import ANY, MagicMock, call, patch
 
 from django.utils import timezone
@@ -26,6 +27,8 @@ from apps.companies.models import Company, Membership
 from apps.crm.models import PipedriveAccount
 from core.exceptions import NotFound, PipedriveError, ValidationError
 from apps.testing import auth_header
+
+SP = ZoneInfo('America/Sao_Paulo')
 
 # storage default é MinIO - em teste troca por filesystem local num tempdir,
 # senão cada rodada sobe arquivo real pro bucket
@@ -2181,6 +2184,44 @@ class ProcessIncomingMessageTests(BaseChatsTestCase):
         self.assertEqual(reply.content, 'Resposta gerada')
         self.assertEqual(reply.contact, self.contact)
         self.assertFalse(reply.from_human)  # resposta da IA, não do atendente
+
+    @patch('apps.chats.tasks.process_incoming_message.apply_async')
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_outside_ai_hours_defers_to_opening(self, mock_generate, mock_send, mock_enqueue):
+        Agent.objects.filter(pk=self.agent.pk).update(ai_hours_start=time(9), ai_hours_end=time(18))
+        incoming = Message.objects.create(contact=self.contact, direction='in', content='Oi?', wa_message_id='wamid.noite')
+
+        with patch('apps.chats.tasks.timezone.now', return_value=datetime(2026, 10, 5, 23, tzinfo=SP)):
+            tasks.process_incoming_message(incoming.pk)
+
+        mock_generate.assert_not_called()
+        mock_enqueue.assert_called_once_with(args=(incoming.pk, True), eta=datetime(2026, 10, 6, 9, tzinfo=SP))
+
+    @patch('apps.automations.services.dispatch_incoming')
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_deferred_run_replies_without_running_flows_again(self, mock_generate, mock_send, mock_dispatch):
+        mock_generate.return_value = 'Bom dia'
+        mock_send.return_value = 'wamid.manha'
+        incoming = Message.objects.create(contact=self.contact, direction='in', content='Oi?', wa_message_id='wamid.noite')
+
+        tasks.process_incoming_message(incoming.pk, deferred=True)
+
+        mock_dispatch.assert_not_called()
+        mock_send.assert_called_once()
+
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_deferred_run_skips_when_someone_already_replied(self, mock_generate, mock_send):
+        incoming = Message.objects.create(contact=self.contact, direction='in', content='Oi?', wa_message_id='wamid.noite')
+        # atendente respondeu antes de a IA abrir (e a pausa dele já expirou)
+        Message.objects.create(contact=self.contact, direction='out', content='Já te ajudo', from_human=True, wa_message_id='wamid.humano')
+
+        tasks.process_incoming_message(incoming.pk, deferred=True)
+
+        mock_generate.assert_not_called()
+        mock_send.assert_not_called()
 
     @patch('apps.chats.whatsapp.send_text')
     @patch('apps.ai.generate_reply')

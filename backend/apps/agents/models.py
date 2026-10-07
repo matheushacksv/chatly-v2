@@ -1,3 +1,4 @@
+from django.contrib.postgres.fields import ArrayField
 from django.db import models
 from pgvector.django import VectorField
 
@@ -21,6 +22,10 @@ class Credential(models.Model):
         return f'{self.company} - {self.provider}'
 
 
+def all_days() -> list[int]:
+    return list(range(7))
+
+
 class Agent(models.Model):
     company = models.ForeignKey('companies.Company', on_delete=models.CASCADE, related_name='agents')
     name = models.CharField(max_length=100)
@@ -32,6 +37,10 @@ class Agent(models.Model):
     split_messages = models.BooleanField(default=False)
     # IA pausada (handoff ou atendente) volta sozinha depois disso; 0 = só volta manualmente
     handoff_resume_hours = models.PositiveSmallIntegerField(default=24)
+    # horário em que a IA atende; sem início/fim = sempre. Fim <= início vira a meia-noite (18h-09h)
+    ai_hours_start = models.TimeField(null=True, blank=True)
+    ai_hours_end = models.TimeField(null=True, blank=True)
+    ai_days = ArrayField(models.PositiveSmallIntegerField(), default=all_days)  # 0 = segunda
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

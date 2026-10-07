@@ -6,6 +6,7 @@ from django.db.models import F
 from django.utils import timezone
 
 from apps import ai
+from apps.agents import services as agents_services
 from apps.chats import events, services, whatsapp
 from apps.chats.models import Campaign, Contact, Message
 from apps.crm import pipedrive
@@ -15,7 +16,7 @@ from core.exceptions import ValidationError
 
 
 @shared_task(bind=True, max_retries=3)
-def process_incoming_message(self, message_id: int):
+def process_incoming_message(self, message_id: int, deferred: bool = False):
     message = Message.objects.select_related('contact__account__agent__credential').filter(pk=message_id).first()
     if message is None:
         return
@@ -29,7 +30,8 @@ def process_incoming_message(self, message_id: int):
 
         from apps.automations import services as flow_services
 
-        if flow_services.dispatch_incoming(message):
+        # adiada pelo horário da IA: o fluxo já viu essa mensagem
+        if not deferred and flow_services.dispatch_incoming(message):
             return
 
         if contact.ai_paused and contact.ai_resume_at and contact.ai_resume_at <= timezone.now():
@@ -41,6 +43,13 @@ def process_incoming_message(self, message_id: int):
         # retry depois de envio parcial: o que saiu já está gravado, não gera nem reenvia de novo.
         # ponytail: as partes que faltavam se perdem; guardar a resposta gerada se isso incomodar
         if self.request.retries and Message.objects.filter(contact=contact, direction='out', from_human=False, pk__gt=message.pk).exists():
+            return
+        # esperou o horário da IA e alguém já respondeu nesse meio-tempo
+        if deferred and Message.objects.filter(contact=contact, direction='out', pk__gt=message.pk).exists():
+            return
+        opens_at = agents_services.next_ai_opening(account.agent, timezone.now())
+        if opens_at:
+            process_incoming_message.apply_async(args=(message.pk, True), eta=opens_at)
             return
         history = services.build_history(contact, exclude_pk=message.pk)
         image, mime_type = None, ''

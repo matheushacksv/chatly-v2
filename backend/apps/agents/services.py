@@ -1,7 +1,9 @@
+from datetime import datetime, time, timedelta
 from io import BytesIO
 
 from django.db import IntegrityError
 from django.db.models import ProtectedError, QuerySet
+from django.utils import timezone
 from ninja import UploadedFile
 from pypdf import PdfReader
 
@@ -93,9 +95,12 @@ def create_agent(
     response_delay: int = 0,
     split_messages: bool = False,
     handoff_resume_hours: int = 24,
+    ai_hours_start: time | None = None,
+    ai_hours_end: time | None = None,
+    ai_days: list[int] | None = None,
 ) -> Agent:
     credential = get_credential(company, credential_id)
-    return Agent.objects.create(
+    agent = Agent(
         company=company,
         name=name,
         description=description if description else '',
@@ -105,7 +110,39 @@ def create_agent(
         response_delay=response_delay,
         split_messages=split_messages,
         handoff_resume_hours=handoff_resume_hours,
+        ai_hours_start=ai_hours_start,
+        ai_hours_end=ai_hours_end,
+        ai_days=list(range(7)) if ai_days is None else ai_days,
     )
+    _check_ai_hours(agent)
+    agent.save()
+    return agent
+
+
+def _check_ai_hours(agent: Agent) -> None:
+    if (agent.ai_hours_start is None) != (agent.ai_hours_end is None):
+        raise ValidationError('ai hours need both start and end')
+    if not agent.ai_days:
+        raise ValidationError('ai days cannot be empty')
+
+
+def next_ai_opening(agent: Agent, now: datetime) -> datetime | None:
+    # None = IA atende agora. A janela é do dia em que começa: sexta 18h-09h vai até sábado 09h
+    start, end = agent.ai_hours_start, agent.ai_hours_end
+    if start is None or end is None:
+        return None
+    now = timezone.localtime(now)
+    for offset in range(-1, 8):  # ontem cobre a janela que virou a meia-noite
+        day = now.date() + timedelta(days=offset)
+        if day.weekday() not in agent.ai_days:
+            continue
+        opens = datetime.combine(day, start, tzinfo=now.tzinfo)
+        closes = datetime.combine(day + timedelta(days=1 if end <= start else 0), end, tzinfo=now.tzinfo)
+        if now < opens:
+            return opens
+        if now < closes:
+            return None
+    return None
 
 
 def get_agent(company: Company, agent_id: int) -> Agent:
@@ -127,6 +164,7 @@ def update_agent(company: Company, agent_id: int, data: dict) -> Agent:
 
     for field, value in data.items():
         setattr(agent, field, value)
+    _check_ai_hours(agent)
     agent.save()
     return agent
 

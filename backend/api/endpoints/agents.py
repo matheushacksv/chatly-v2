@@ -22,6 +22,9 @@ def create_agent_endpoint(request, company_id: int, payload: AgentInDTO):
             response_delay=payload.response_delay,
             split_messages=payload.split_messages,
             handoff_resume_hours=payload.handoff_resume_hours,
+            ai_hours_start=payload.ai_hours_start,
+            ai_hours_end=payload.ai_hours_end,
+            ai_days=payload.ai_days,
         ),
     )
 

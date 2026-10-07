@@ -38,6 +38,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django.contrib.postgres',
     # Ninja
     'ninja',
     # Cors
@@ -194,6 +195,8 @@ FIELD_ENCRYPTION_KEY = config('FIELD_ENCRYPTION_KEY')
 
 # Celery
 CELERY_BROKER_URL = config('CELERY_BROKER_URL', default='redis://localhost:6379/0')
+# Redis reentrega task com ETA além disso (o padrão é 1h): a IA fora do horário espera até 7 dias
+CELERY_BROKER_TRANSPORT_OPTIONS = {'visibility_timeout': 8 * 24 * 3600}
 
 # Groq (Transcription)
 GROQ_API_KEY = config('GROQ_API_KEY')
