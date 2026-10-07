@@ -484,6 +484,22 @@ class ValidateGraphTests(BaseAutomationsTestCase):
         flow = self.make_flow(graph=_LEAD_FLOW, trigger=Flow.Trigger.LEAD)
         services.validate_graph(flow)  # não levanta
 
+    def test_lead_with_window_condition_needs_template_only_on_nao(self):
+        def flow_with(nao_type):
+            nodes = [('start', 'start', {}), ('c', 'condition', {'op': 'window_open'}), ('a', 'ai', {}),
+                     ('n', nao_type, {'text': 'oi', 'template_name': 'boas_vindas'}), ('a2', 'ai', {})]
+            edges = [('start', 'c', None), ('c', 'a', 'sim'), ('c', 'n', 'nao'), ('n', 'a2', None)]
+            return self.make_flow(graph=_graph(nodes, edges), trigger=Flow.Trigger.LEAD)
+
+        services.validate_graph(flow_with('template'))  # não levanta
+        with self.assertRaises(ValidationError):
+            services.validate_graph(flow_with('message'))  # sem janela, texto livre não sai
+
+        # condição comum na frente continua barrada
+        flow = self.make_flow(graph=_cond_graph('contains', 'x'), trigger=Flow.Trigger.LEAD)
+        with self.assertRaises(ValidationError):
+            services.validate_graph(flow)
+
     def test_activate_lead_without_template_returns_400(self):
         flow = self.make_flow(graph=_graph([('start', 'start', {}), ('m', 'message', {'text': 'oi'})], [('start', 'm', None)]),
                               trigger=Flow.Trigger.LEAD)

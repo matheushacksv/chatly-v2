@@ -406,8 +406,11 @@ def validate_graph(flow: Flow) -> None:
         raise ValidationError('ligue o início ao primeiro passo')
     if flow.trigger in (Flow.Trigger.LEAD, Flow.Trigger.PIPEDRIVE):
         first = _node(graph, first_id)
+        # condição de janela na frente: o "sim" já pode falar livre, só o "não" precisa do template
+        if first and first['type'] == 'condition' and first.get('data', {}).get('op') == 'window_open':
+            first = _node(graph, _next_id(graph, first_id, 'nao'))
         if first is None or first['type'] != 'template':
-            raise ValidationError('fluxo de lead precisa começar com um template (janela de 24h)')
+            raise ValidationError('fluxo de lead precisa começar com um template, ou com a condição de janela de 24h e um template no "Não"')
     sources = {e['source'] for e in graph.get('edges', [])}
     for n in graph.get('nodes', []):
         if n['type'] not in TERMINAL and n['type'] not in ('start', 'pause') and n['id'] not in sources:
