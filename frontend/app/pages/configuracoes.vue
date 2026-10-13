@@ -674,7 +674,7 @@ async function disconnectPipedrive() {
               <li v-for="field in contactFields" :key="field.id" class="flex items-center justify-between gap-2 px-3 py-2">
                 <span class="text-sm">
                   {{ field.label }}
-                  <code class="ml-2 text-xs text-muted">{{ `{{${field.key}}}` }}</code>
+                  <code class="ml-2 text-xs text-muted" v-text="`{{${field.key}}}`" />
                 </span>
                 <UButton
                   v-if="isOwner"
