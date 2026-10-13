@@ -229,6 +229,18 @@ async function loadMembers() {
 }
 watch([companyId, isOwner], loadMembers, { immediate: true })
 
+// URL que vai no painel da Meta (WhatsApp → Configuração → Webhook). apiBase é relativo em prod ('/api')
+const webhookUrl = new URL(`${useRuntimeConfig().public.apiBase}/whatsapp/webhook`, location.origin).href
+
+async function copyWebhookUrl() {
+  try {
+    await navigator.clipboard.writeText(webhookUrl)
+    toast.add({ title: 'URL de callback copiada', icon: 'i-lucide-clipboard-check' })
+  } catch {
+    toast.add({ title: 'Não foi possível copiar', description: 'Selecione a URL e copie manualmente.', color: 'error' })
+  }
+}
+
 async function copyInvite(token: string) {
   try {
     await navigator.clipboard.writeText(`${location.origin}/convite/${token}`)
@@ -669,8 +681,19 @@ async function disconnectPipedrive() {
           <UInput v-model="accountState.app_secret" type="password" class="w-full font-mono" autocomplete="off" />
         </UFormField>
 
-        <UFormField label="Verify Token" required help="Mesmo valor configurado no webhook da Meta">
+        <UFormField label="Verify Token" required help="Invente um valor e use o mesmo no webhook da Meta">
           <UInput v-model="accountState.verify_token" class="w-full font-mono" />
+        </UFormField>
+
+        <UFormField
+          label="URL de callback"
+          help="Cole no app da Meta em WhatsApp → Configuração → Webhook, com o Verify Token acima, e assine o campo messages"
+        >
+          <UInput :model-value="webhookUrl" readonly class="w-full font-mono" @focus="($event.target as HTMLInputElement).select()">
+            <template #trailing>
+              <UButton icon="i-lucide-copy" variant="link" color="neutral" size="sm" aria-label="Copiar URL de callback" @click="copyWebhookUrl" />
+            </template>
+          </UInput>
         </UFormField>
 
         <UButton type="submit" block :loading="savingAccount" :disabled="!accountFormValid">
