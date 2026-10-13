@@ -1,14 +1,16 @@
+import json
 import re
 
 from django.db import IntegrityError
 from django.db.models import Count, QuerySet
 from django.utils import timezone
 
+from apps.automations import outbound
 from apps.automations.models import Flow, FlowRun, LeadSource
 from apps.chats import events, whatsapp
 from apps.chats import services as chat_services
 from apps.chats.models import Contact, Message
-from apps.chats.services import NAME_TOKEN, get_account
+from apps.chats.services import get_account
 from apps.companies.models import Company
 from core.exceptions import NotFound, ValidationError
 
@@ -32,6 +34,64 @@ def _next_id(graph: dict, source: str, handle: str = '') -> str:
         if e['source'] == source and (e.get('sourceHandle') or '') == (handle or ''):
             return e['target']
     return ''
+
+
+VAR_RE = re.compile(r'\{\{\s*(\w+)\s*\}\}')
+
+
+def _render(text: str, run: FlowRun, escape_json: bool = False) -> str:
+    """Troca {{nome}}, {{telefone}}, {{botao}}, {{campanha}} e {{<variável do fluxo>}}. Variável desconhecida fica como está."""
+    contact, ctx = run.contact, run.context
+    values = {k: str(v) for k, v in ctx.items() if v is not None and not isinstance(v, (dict, list))}
+    values |= {
+        'nome': contact.name or contact.wa_id,
+        'telefone': contact.wa_id,
+        'botao': str(ctx.get('button', '')),
+        'campanha': str(ctx.get('campanha', '')),
+    }
+
+    def sub(match: re.Match) -> str:
+        if match.group(1) not in values:
+            return match.group(0)
+        value = values[match.group(1)]
+        # dentro de corpo JSON: aspas e quebras de linha do valor não podem quebrar o documento
+        return json.dumps(value)[1:-1] if escape_json else value
+
+    return VAR_RE.sub(sub, text or '')
+
+
+def _run_http(data: dict, run: FlowRun) -> str:
+    headers = {
+        h['key'].strip(): _render(h.get('value', ''), run)
+        for h in data.get('headers') or []
+        if (h.get('key') or '').strip()
+    }
+    body = data.get('body', '') or ''
+    if body and not any(k.lower() == 'content-type' for k in headers):
+        headers['Content-Type'] = 'application/json'
+    is_json = any(k.lower() == 'content-type' and 'json' in v.lower() for k, v in headers.items())
+    try:
+        status = outbound.request(
+            (data.get('method') or 'POST').upper(), _render(data.get('url', ''), run), headers, _render(body, run, escape_json=is_json)
+        )
+    except Exception:
+        # URL recusada, timeout, DNS: não derruba o fluxo, segue pela saída de falha
+        status = 0
+    run.context['http_status'] = status
+    return 'sucesso' if 200 <= status < 300 else 'falha'
+
+
+def _run_tag(data: dict, run: FlowRun) -> None:
+    tag_id = data.get('tag_id')
+    if not tag_id:
+        return
+    try:
+        if data.get('action') == 'remove':
+            chat_services.remove_contact_tag(run.flow.company, run.contact.pk, tag_id)
+        else:
+            chat_services.add_contact_tag(run.flow.company, run.contact.pk, tag_id)
+    except NotFound:
+        pass  # etiqueta apagada depois do fluxo montado: segue sem ela
 
 
 def _match_condition(subject: str, op: str, value: str) -> bool:
@@ -63,7 +123,7 @@ def _run_crm(node: dict, run: FlowRun) -> None:
         run.context['deal_id'] = deal['id']
     elif action == 'note':
         person_id = crm_services.find_or_create_person(pd, contact)
-        text = (data.get('text', '') or '').replace(NAME_TOKEN, contact.name or contact.wa_id)
+        text = _render(data.get('text', ''), run)
         pipedrive.create_note(pd.api_key, text, person_id=person_id)
     elif action == 'stage':
         deal_id = run.context.get('deal_id')
@@ -93,7 +153,7 @@ def _execute(node: dict, run: FlowRun, message: Message | None) -> str | None:
         )
         return ''
     if t == 'message':
-        text = (data.get('text', '') or '').replace(NAME_TOKEN, contact.name or contact.wa_id)
+        text = _render(data.get('text', ''), run)
         wamid = whatsapp.send_text(account, contact.wa_id, text)
         chat_services.record_outgoing_message(contact, wamid, text)
         return ''
@@ -102,7 +162,7 @@ def _execute(node: dict, run: FlowRun, message: Message | None) -> str | None:
         events.publish(run.flow.company_id, {'type': 'handoff', 'contact_id': contact.id, 'name': contact.name or contact.wa_id})
         return ''
     if t == 'buttons':
-        text = (data.get('text', '') or '').replace(NAME_TOKEN, contact.name or contact.wa_id)
+        text = _render(data.get('text', ''), run)
         wamid = whatsapp.send_interactive(account, contact.wa_id, text, data.get('buttons', []))
         chat_services.record_outgoing_message(contact, wamid, text)
         return
@@ -126,6 +186,11 @@ def _execute(node: dict, run: FlowRun, message: Message | None) -> str | None:
         return None
     if t == 'crm':
         _run_crm(node, run)
+        return ''
+    if t == 'http':
+        return _run_http(data, run)
+    if t == 'tag':
+        _run_tag(data, run)
         return ''
     if t == 'ai':
         chat_services.resume_ai(contact)
@@ -296,7 +361,36 @@ def create_lead(source: LeadSource, payload: dict) -> tuple[Contact, bool]:
     return contact, True
 
 
+def _cancel_active_runs(contact: Contact, reason: str) -> None:
+    for run in FlowRun.objects.filter(contact=contact, status__in=FlowRun.ACTIVE_STATUSES):
+        run.status = FlowRun.Status.DONE
+        run.steps.append({'node': run.node_id, 'type': 'cancel', 'at': timezone.now().isoformat(), 'result': reason})
+        run.save(update_fields=['status', 'steps', 'updated_at'])
+
+
+def _dispatch_campaign_click(message: Message) -> bool:
+    """Clique num botão do template de uma campanha com fluxo: roda o fluxo uma vez por botão."""
+    if not (message.campaign_id and message.button_id):
+        return False
+    campaign = message.campaign
+    flow = campaign.flow
+    if flow is None or not flow.active:
+        return False
+    contact = message.contact
+    clicked = FlowRun.objects.filter(flow=flow, contact=contact, context__campaign_id=campaign.pk, context__button_id=message.button_id)
+    if clicked.exists():
+        return True  # mesmo botão de novo: já tratado, e a IA não precisa responder "Confirmar" outra vez
+    # o clique é a intenção mais recente do contato: encerra o que estava rodando pra ele
+    _cancel_active_runs(contact, 'cancelada pelo clique na campanha')
+    button = message.content or message.button_id
+    ctx = {'campaign_id': campaign.pk, 'campanha': campaign.name, 'button': button, 'button_id': message.button_id, 'last_message': button}
+    start_flow(flow, contact, ctx)
+    return True
+
+
 def dispatch_incoming(message: Message) -> bool:
+    if _dispatch_campaign_click(message):
+        return True
     contact = message.contact
     run = FlowRun.objects.filter(contact=contact, status__in=FlowRun.ACTIVE_STATUSES).select_related('flow').first()
     if run:
@@ -424,5 +518,6 @@ def validate_graph(flow: Flow) -> None:
             raise ValidationError('fluxo de lead precisa começar com um template, ou com a condição de janela de 24h e um template no "Não"')
     sources = {e['source'] for e in graph.get('edges', [])}
     for n in graph.get('nodes', []):
-        if n['type'] not in TERMINAL and n['type'] not in ('start', 'pause') and n['id'] not in sources:
+        # ação no fim do fluxo (pausar, etiquetar, avisar outro sistema) pode ser o último bloco
+        if n['type'] not in TERMINAL and n['type'] not in ('start', 'pause', 'tag', 'http') and n['id'] not in sources:
             raise ValidationError(f'bloco "{n.get("data", {}).get("text") or n["type"]}" está sem saída ligada')

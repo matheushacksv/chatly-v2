@@ -2,6 +2,7 @@ from uuid import uuid4
 
 from django.conf import settings
 from django.db import models
+from django.db.models.functions import Lower
 
 from core.fields import EncryptedTextField
 
@@ -25,6 +26,19 @@ class WhatsAppAccount(models.Model):
         return f'{self.company.name} - {self.phone_number_id}'
 
 
+class Tag(models.Model):
+    company = models.ForeignKey('companies.Company', on_delete=models.CASCADE, related_name='tags')
+    name = models.CharField(max_length=40)
+    color = models.CharField(max_length=20, default='neutral')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(Lower('name'), 'company', name='unique_tag_name_per_company')]
+
+    def __str__(self):
+        return self.name
+
+
 class Contact(models.Model):
     account = models.ForeignKey(WhatsAppAccount, on_delete=models.CASCADE, related_name='contacts')
     wa_id = models.CharField(max_length=32)
@@ -36,6 +50,7 @@ class Contact(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='assigned_contacts'
     )
     pipedrive_person_id = models.IntegerField(null=True, blank=True)
+    tags = models.ManyToManyField(Tag, blank=True, related_name='contacts')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -105,6 +120,8 @@ class Campaign(models.Model):
     body_params = models.JSONField(default=list)
     header_media_id = models.CharField(max_length=128, blank=True, default='')
     header_media_type = models.CharField(max_length=16, blank=True, default='')
+    # clique num botão do template dispara esse fluxo (gatilho 'campaign')
+    flow = models.ForeignKey('automations.Flow', on_delete=models.SET_NULL, null=True, blank=True, related_name='campaigns')
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.SENDING)
     total = models.PositiveIntegerField(default=0)
     sent = models.PositiveIntegerField(default=0)

@@ -38,6 +38,14 @@ export interface WhatsAppAccount {
   app_id: string
 }
 
+export type TagColor = 'neutral' | 'primary' | 'success' | 'info' | 'warning' | 'error'
+
+export interface Tag {
+  id: number
+  name: string
+  color: TagColor
+}
+
 export interface Contact {
   id: number
   wa_id: string
@@ -46,6 +54,7 @@ export interface Contact {
   ai_paused: boolean
   ai_resume_at: string | null
   assigned_to: number | null
+  tags: Tag[]
   created_at: string
   last_message: string | null
   last_message_at: string | null
@@ -153,6 +162,7 @@ export interface Campaign {
   name: string
   template_name: string
   template_language: string
+  flow: number | null
   status: 'sending' | 'done' | 'failed'
   total: number
   sent: number
@@ -295,9 +305,11 @@ export interface PersonalConnect {
 //   POST        /automations/leads/{token}                      (público, auth=None)
 
 export type FlowNodeType
-  = 'start' | 'template' | 'message' | 'buttons' | 'wait' | 'condition' | 'delay' | 'crm' | 'pause' | 'handoff' | 'ai' | 'end'
+  = 'start' | 'template' | 'message' | 'buttons' | 'wait' | 'condition' | 'delay' | 'crm' | 'http' | 'tag' | 'pause' | 'handoff' | 'ai' | 'end'
 
-export type FlowTrigger = 'lead' | 'first_message' | 'keyword' | 'pipedrive'
+export type FlowTrigger = 'lead' | 'first_message' | 'keyword' | 'pipedrive' | 'campaign'
+
+export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
 
 export interface FlowButton {
   id: string
@@ -318,9 +330,16 @@ export interface FlowNodeData {
   op?: 'contains' | 'equals' | 'regex' | 'window_open'
   value?: string
   minutes?: number
-  action?: 'person' | 'deal' | 'note' | 'stage'
+  action?: 'person' | 'deal' | 'note' | 'stage' | 'add' | 'remove'
   title?: string
   stage_id?: number
+  // requisição HTTP
+  method?: HttpMethod
+  url?: string
+  headers?: { key: string, value: string }[]
+  body?: string
+  // etiqueta
+  tag_id?: number
 }
 
 export interface FlowNode {

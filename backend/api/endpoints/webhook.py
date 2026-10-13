@@ -26,9 +26,10 @@ def parse_message(message: dict) -> tuple[str, str, str, str] | None:
     if msg_type == 'text':
         return message.get('text', {}).get('body', ''), 'text', '', ''
     if msg_type == 'button':
-        # resposta ao botão de um template: payload não vira button_id, é de outro fluxo que não os nossos
-        text = message.get('button', {}).get('text', '')
-        return (text, 'text', '', '') if text else None
+        # botão de resposta rápida de template: payload (ou o texto) identifica o botão pro fluxo da campanha
+        button = message.get('button', {})
+        text = button.get('text', '')
+        return (text, 'text', '', (button.get('payload') or text)[:64]) if text else None
     if msg_type == 'interactive':
         interactive = message.get('interactive', {})
         reply = interactive.get('button_reply') or interactive.get('list_reply') or {}
@@ -82,7 +83,9 @@ def receive_webhook_endpoint(request):
                 continue
             content, msg_type, media_id, button_id = parsed
             contact = services.get_or_create_contact(account, message['from'], name)
-            record, created = services.record_incoming_message(contact, message['id'], content, msg_type, media_id, button_id)
+            # context.id = wamid da mensagem respondida (o template da campanha, no clique de botão)
+            reply_to = message.get('context', {}).get('id', '') if message.get('type') == 'button' else ''
+            record, created = services.record_incoming_message(contact, message['id'], content, msg_type, media_id, button_id, reply_to)
             if created:
                 process_incoming_message.apply_async(args=(record.pk,), countdown=account.agent.response_delay)
 

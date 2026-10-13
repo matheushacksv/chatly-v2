@@ -4,7 +4,7 @@ from typing import Literal
 from ninja import ModelSchema, Schema
 from pydantic import Field
 
-from apps.chats.models import Campaign, Contact, Message, Sticker, WhatsAppAccount
+from apps.chats.models import Campaign, Contact, Message, Sticker, Tag, WhatsAppAccount
 
 
 class WhatsAppAccountInDTO(Schema):
@@ -36,7 +36,22 @@ class WhatsAppRegisterDTO(Schema):
     pin: str = Field(pattern=r'^\d{6}$')
 
 
+TAG_COLORS = Literal['neutral', 'primary', 'success', 'info', 'warning', 'error']
+
+
+class TagOutDTO(ModelSchema):
+    class Meta:
+        model = Tag
+        fields = ['id', 'name', 'color']
+
+
+class TagInDTO(Schema):
+    name: str = Field(min_length=1, max_length=40)
+    color: TAG_COLORS = 'neutral'
+
+
 class ContactOutDTO(ModelSchema):
+    tags: list[TagOutDTO] = []
     last_message: str | None = None
     last_message_at: datetime | None = None
     last_inbound_at: datetime | None = None
@@ -44,6 +59,10 @@ class ContactOutDTO(ModelSchema):
     class Meta:
         model = Contact
         fields = ['id', 'wa_id', 'name', 'memory', 'ai_paused', 'ai_resume_at', 'assigned_to', 'created_at']
+
+    @staticmethod
+    def resolve_tags(obj):
+        return list(obj.tags.all())
 
 
 class ContactPatchDTO(Schema):
@@ -146,6 +165,9 @@ class CampaignInDTO(Schema):
     contact_ids: list[int] | None = None
     numbers: list[CampaignRecipientDTO] = []
     header_media_id: str = ''
+    flow_id: int | None = None
+    include_tag_ids: list[int] = []
+    exclude_tag_ids: list[int] = []
 
 
 class CampaignOutDTO(ModelSchema):
@@ -154,7 +176,7 @@ class CampaignOutDTO(ModelSchema):
 
     class Meta:
         model = Campaign
-        fields = ['id', 'name', 'template_name', 'template_language', 'status', 'total', 'sent', 'failed', 'created_at']
+        fields = ['id', 'name', 'template_name', 'template_language', 'flow', 'status', 'total', 'sent', 'failed', 'created_at']
 
 
 class HeaderDTO(Schema):

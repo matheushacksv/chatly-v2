@@ -1,3 +1,4 @@
+import json
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -1020,3 +1021,168 @@ class PipedriveValidateGraphTests(BaseAutomationsTestCase):
     def test_pipedrive_template_first_activates(self):
         flow = self.make_flow(trigger=Flow.Trigger.PIPEDRIVE, graph=_PD_FLOW)
         self.assertTrue(services.set_active(self.company, flow.id, True).active)
+
+
+# * ------ campanha com fluxo no clique -----
+
+
+def _click_graph() -> dict:
+    # botão = Confirmar -> http (sucesso/falha) ; senão -> etiqueta
+    return _graph(
+        [
+            ('start', 'start', {}),
+            ('c1', 'condition', {'source': 'button', 'op': 'equals', 'value': 'Confirmar'}),
+            ('h1', 'http', {'method': 'POST', 'url': 'https://exemplo.com/hook', 'headers': [{'key': 'Authorization', 'value': 'Bearer x'}],
+                            'body': '{"nome": "{{nome}}", "botao": "{{botao}}", "campanha": "{{campanha}}"}'}),
+            ('ok', 'end', {}),
+            ('fail', 'handoff', {}),
+            ('t1', 'tag', {'action': 'add', 'tag_id': None}),
+        ],
+        [('start', 'c1', ''), ('c1', 'h1', 'sim'), ('c1', 't1', 'nao'), ('h1', 'ok', 'sucesso'), ('h1', 'fail', 'falha')],
+    )
+
+
+@patch('apps.chats.events.publish')
+@patch('apps.automations.outbound.request', return_value=200)
+class CampaignClickTests(BaseAutomationsTestCase):
+    def setUp(self):
+        super().setUp()
+        from apps.chats.models import Campaign, Tag
+
+        self.tag = Tag.objects.create(company=self.company, name='bloqueado')
+        graph = _click_graph()
+        next(n for n in graph['nodes'] if n['id'] == 't1')['data']['tag_id'] = self.tag.pk
+        self.flow = self.make_flow(trigger=Flow.Trigger.CAMPAIGN, graph=graph, active=True)
+        self.campaign = Campaign.objects.create(
+            account=self.account, name='Consultas', template_name='t', template_language='pt_BR', flow=self.flow
+        )
+        self.contact = Contact.objects.create(account=self.account, wa_id='5511999998888', name='Ana "Bia"')
+
+    def click(self, text, wamid='wamid.click', campaign=True):
+        return Message.objects.create(
+            contact=self.contact, direction='in', content=text, button_id=text, wa_message_id=wamid,
+            campaign=self.campaign if campaign else None,
+        )
+
+    def test_click_starts_flow_with_button_context(self, mock_http, mock_pub):
+        self.assertTrue(services.dispatch_incoming(self.click('Confirmar')))
+        run = FlowRun.objects.get(flow=self.flow, contact=self.contact)
+        self.assertEqual(run.context['button'], 'Confirmar')
+        self.assertEqual(run.context['campanha'], 'Consultas')
+        self.assertEqual(run.status, FlowRun.Status.DONE)
+        self.assertEqual(run.steps[-1]['node'], 'ok')
+        method, url, headers, body = mock_http.call_args.args
+        self.assertEqual((method, url), ('POST', 'https://exemplo.com/hook'))
+        self.assertEqual(headers['Authorization'], 'Bearer x')
+        self.assertEqual(headers['Content-Type'], 'application/json')
+        # aspas no nome não quebram o JSON
+        self.assertEqual(json.loads(body), {'nome': 'Ana "Bia"', 'botao': 'Confirmar', 'campanha': 'Consultas'})
+        self.assertEqual(run.context['http_status'], 200)
+
+    def test_http_error_status_goes_to_falha(self, mock_http, mock_pub):
+        mock_http.return_value = 500
+        services.dispatch_incoming(self.click('Confirmar'))
+        self.assertEqual(FlowRun.objects.get(flow=self.flow).steps[-1]['node'], 'fail')
+
+    def test_http_exception_goes_to_falha(self, mock_http, mock_pub):
+        mock_http.side_effect = ValidationError('a URL aponta pra um endereço interno')
+        services.dispatch_incoming(self.click('Confirmar'))
+        run = FlowRun.objects.get(flow=self.flow)
+        self.assertEqual(run.steps[-1]['node'], 'fail')
+        self.assertEqual(run.context['http_status'], 0)
+
+    def test_other_button_adds_tag(self, mock_http, mock_pub):
+        services.dispatch_incoming(self.click('Bloquear'))
+        self.assertTrue(self.contact.tags.filter(pk=self.tag.pk).exists())
+        mock_http.assert_not_called()
+
+    def test_tag_remove_action(self, mock_http, mock_pub):
+        self.contact.tags.add(self.tag)
+        node = next(n for n in self.flow.graph['nodes'] if n['id'] == 't1')
+        node['data']['action'] = 'remove'
+        self.flow.save()
+        services.dispatch_incoming(self.click('Bloquear'))
+        self.assertFalse(self.contact.tags.exists())
+
+    def test_deleted_tag_does_not_fail_flow(self, mock_http, mock_pub):
+        self.tag.delete()
+        services.dispatch_incoming(self.click('Bloquear'))
+        self.assertEqual(FlowRun.objects.get(flow=self.flow).status, FlowRun.Status.DONE)
+
+    def test_same_button_twice_runs_once_other_button_runs(self, mock_http, mock_pub):
+        services.dispatch_incoming(self.click('Confirmar', 'wamid.1'))
+        self.assertTrue(services.dispatch_incoming(self.click('Confirmar', 'wamid.2')))
+        self.assertEqual(FlowRun.objects.filter(flow=self.flow).count(), 1)
+        services.dispatch_incoming(self.click('Bloquear', 'wamid.3'))
+        self.assertEqual(FlowRun.objects.filter(flow=self.flow).count(), 2)
+
+    def test_inactive_flow_lets_message_reach_ai(self, mock_http, mock_pub):
+        self.flow.active = False
+        self.flow.save()
+        self.assertFalse(services.dispatch_incoming(self.click('Confirmar')))
+        self.assertFalse(FlowRun.objects.exists())
+
+    def test_campaign_without_flow_lets_message_reach_ai(self, mock_http, mock_pub):
+        self.campaign.flow = None
+        self.campaign.save()
+        self.assertFalse(services.dispatch_incoming(self.click('Confirmar')))
+
+    def test_click_cancels_other_active_run(self, mock_http, mock_pub):
+        waiting = self.make_flow(
+            trigger=Flow.Trigger.KEYWORD, active=True,
+            graph=_graph([('start', 'start', {}), ('w', 'wait', {'var': 'r'}), ('e', 'end', {})], [('start', 'w', ''), ('w', 'e', '')]),
+        )
+        old = services.start_flow(waiting, self.contact)
+        self.assertEqual(old.status, FlowRun.Status.WAITING)
+        services.dispatch_incoming(self.click('Confirmar'))
+        old.refresh_from_db()
+        self.assertEqual(old.status, FlowRun.Status.DONE)
+        self.assertEqual(old.steps[-1]['type'], 'cancel')
+        self.assertTrue(FlowRun.objects.filter(flow=self.flow).exists())
+
+    def test_validate_graph_campaign_without_template(self, mock_http, mock_pub):
+        services.validate_graph(self.flow)  # não levanta: o clique abriu a janela de 24h
+
+
+class RenderTests(BaseAutomationsTestCase):
+    def test_render_vars(self):
+        contact = Contact.objects.create(account=self.account, wa_id='5511999998888', name='')
+        run = FlowRun(flow=self.make_flow(), contact=contact, context={'cidade': 'BH', 'deal_id': 7})
+        self.assertEqual(
+            services._render('{{nome}} {{telefone}} {{cidade}} {{deal_id}} {{ desconhecida }}', run),
+            '5511999998888 5511999998888 BH 7 {{ desconhecida }}',
+        )
+
+
+class OutboundCheckTests(TestCase):
+    def _addr(self, ip):
+        return [(2, 1, 6, '', (ip, 443))]
+
+    def test_rejects_non_https(self):
+        from apps.automations import outbound
+
+        with self.assertRaises(ValidationError):
+            outbound.check_url('http://exemplo.com')
+
+    def test_rejects_internal_addresses(self):
+        from apps.automations import outbound
+
+        for ip in ('127.0.0.1', '10.0.0.5', '172.16.3.4', '192.168.1.1', '169.254.169.254', '::1', '172.18.0.4'):
+            with self.subTest(ip=ip), patch('apps.automations.outbound.socket.getaddrinfo', return_value=self._addr(ip)):
+                with self.assertRaises(ValidationError):
+                    outbound.check_url('https://minio:9000/x')
+
+    def test_accepts_public_address(self):
+        from apps.automations import outbound
+
+        with patch('apps.automations.outbound.socket.getaddrinfo', return_value=self._addr('93.184.216.34')):
+            outbound.check_url('https://exemplo.com/hook')
+
+    def test_request_refuses_internal_before_calling(self):
+        from apps.automations import outbound
+
+        with patch('apps.automations.outbound.socket.getaddrinfo', return_value=self._addr('127.0.0.1')), \
+                patch('apps.automations.outbound.httpx.request') as mock_req:
+            with self.assertRaises(ValidationError):
+                outbound.request('POST', 'https://localhost/x', {}, '')
+            mock_req.assert_not_called()

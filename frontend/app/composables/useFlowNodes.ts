@@ -69,6 +69,20 @@ export const FLOW_NODE_META: Record<FlowNodeType, NodeMeta> = {
     hint: 'Cria person, negócio, anotação ou move de estágio',
     data: () => ({ action: 'deal', title: '', text: '' })
   },
+  http: {
+    label: 'Requisição HTTP',
+    icon: 'i-lucide-globe',
+    color: 'text-success',
+    hint: 'Chama outro sistema (https). Segue por Sucesso (2xx) ou Falha',
+    data: () => ({ method: 'POST', url: '', headers: [], body: '{\n  "nome": "{{nome}}",\n  "telefone": "{{telefone}}",\n  "botao": "{{botao}}"\n}' })
+  },
+  tag: {
+    label: 'Etiqueta',
+    icon: 'i-lucide-tag',
+    color: 'text-info',
+    hint: 'Adiciona ou remove uma etiqueta do contato',
+    data: () => ({ action: 'add' })
+  },
   pause: {
     label: 'Pausar IA',
     icon: 'i-lucide-pause',
@@ -107,7 +121,8 @@ export const FLOW_PALETTE_TYPES = FLOW_NODE_TYPES.filter(type => type !== 'start
 export const FLOW_TRIGGER_LABELS: Record<string, string> = {
   lead: 'Lead recebido',
   first_message: 'Primeira mensagem do contato',
-  keyword: 'Palavra-chave'
+  keyword: 'Palavra-chave',
+  campaign: 'Clique em botão de campanha'
 }
 
 const CONDITION_OPS: Record<string, string> = {
@@ -115,6 +130,11 @@ const CONDITION_OPS: Record<string, string> = {
   equals: 'é igual a',
   regex: 'casa com',
   window_open: 'janela de 24h aberta'
+}
+
+const CONDITION_SOURCES: Record<string, string> = {
+  last_message: 'resposta',
+  button: 'botão clicado'
 }
 
 const CRM_ACTIONS: Record<string, string> = {
@@ -132,6 +152,7 @@ export function flowNodeOutputs(type: FlowNodeType, data: FlowNodeData): { id: s
   if (type === 'handoff' || type === 'ai' || type === 'end') return []
   if (type === 'buttons') return (data.buttons ?? []).map(b => ({ id: b.id, label: b.title || 'Sem nome' }))
   if (type === 'condition') return [{ id: 'sim', label: 'Sim' }, { id: 'nao', label: 'Não' }]
+  if (type === 'http') return [{ id: 'sucesso', label: 'Sucesso' }, { id: 'falha', label: 'Falha' }]
   if (type === 'wait' && data.timeout_minutes) {
     return [{ id: undefined, label: 'Respondeu' }, { id: 'timeout', label: 'Não respondeu' }]
   }
@@ -152,11 +173,15 @@ export function flowNodeSummary(type: FlowNodeType, data: FlowNodeData): string 
       return `Guarda em {{${data.var || 'resposta'}}}`
     case 'condition':
       if (data.op === 'window_open') return 'Janela de 24h aberta? (Sim = IA responde direto)'
-      return `${data.source === 'last_message' ? 'resposta' : `{{${data.source}}}`} ${CONDITION_OPS[data.op ?? 'contains']} "${data.value || '...'}"`
+      return `${CONDITION_SOURCES[data.source ?? 'last_message'] ?? `{{${data.source}}}`} ${CONDITION_OPS[data.op ?? 'contains']} "${data.value || '...'}"`
     case 'delay':
       return formatMinutes(data.minutes ?? 0)
     case 'crm':
       return CRM_ACTIONS[data.action ?? 'deal'] ?? ''
+    case 'http':
+      return data.url ? `${data.method ?? 'POST'} ${data.url}` : 'Informe a URL'
+    case 'tag':
+      return data.action === 'remove' ? 'Remove etiqueta' : 'Adiciona etiqueta'
     default:
       return FLOW_NODE_META[type].hint
   }

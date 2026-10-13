@@ -46,7 +46,8 @@ const triggerLabels: Record<FlowTrigger, string> = {
   lead: 'Lead recebido',
   first_message: 'Primeira mensagem',
   keyword: 'Palavra-chave',
-  pipedrive: 'Negócio no Pipedrive'
+  pipedrive: 'Negócio no Pipedrive',
+  campaign: 'Clique em botão de campanha'
 }
 const triggerItems = Object.entries(triggerLabels).map(([value, label]) => ({ label, value }))
 
@@ -565,6 +566,13 @@ const waLink = computed(() => {
             class="w-full"
           />
         </UFormField>
+        <UAlert
+          v-if="draft.trigger === 'campaign'"
+          color="info"
+          variant="subtle"
+          icon="i-lucide-megaphone"
+          description="Escolha este fluxo ao criar a campanha. Quando o contato clicar num botão do template, o fluxo roda com {{botao}} = texto do botão. Use uma Condição em 'Botão clicado' pra separar cada botão."
+        />
         <template v-if="draft.trigger === 'pipedrive'">
           <UFormField
             label="Quando"

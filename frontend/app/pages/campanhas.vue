@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Campaign, Contact, Paginated, Template, WhatsAppAccount } from '~/types/api'
+import type { Campaign, Contact, Flow, Paginated, Tag, Template, WhatsAppAccount } from '~/types/api'
 
 const api = useApi()
 const toast = useToast()
@@ -68,7 +68,32 @@ const modeItems = [
   { label: 'Importar CSV', value: 'csv' }
 ]
 
+// fluxo disparado no clique de um botão do template + filtro por etiqueta
+const flowId = ref<number | undefined>(undefined)
+const includeTagIds = ref<number[]>([])
+const excludeTagIds = ref<number[]>([])
+const flows = ref<Flow[]>([])
+const tags = ref<Tag[]>([])
+const flowItems = computed(() =>
+  flows.value.filter(f => f.trigger === 'campaign' && f.account === accountId.value).map(f => ({
+    label: f.active ? f.name : `${f.name} (inativo)`,
+    value: f.id
+  }))
+)
+const tagItems = computed(() => tags.value.map(t => ({ label: t.name, value: t.id })))
+
+watch(createOpen, async (open) => {
+  if (!open) return
+  ;[flows.value, tags.value] = await Promise.all([
+    api<Flow[]>(`/automations/${companyId.value}/flows`),
+    api<Tag[]>(`/companies/${companyId.value}/tags`)
+  ])
+})
+
 function openCreate() {
+  flowId.value = undefined
+  includeTagIds.value = []
+  excludeTagIds.value = []
   name.value = ''
   template.value = null
   params.value = []
@@ -149,8 +174,11 @@ async function create() {
       template_name: template.value.name,
       template_language: template.value.language,
       body_params: params.value,
-      header_media_id: headerMediaId.value
+      header_media_id: headerMediaId.value,
+      flow_id: flowId.value ?? null,
+      exclude_tag_ids: excludeTagIds.value
     }
+    if (mode.value === 'all') body.include_tag_ids = includeTagIds.value
     if (mode.value === 'select') body.contact_ids = selectedContactIds.value
     if (mode.value === 'csv') {
       body.contact_ids = []
@@ -287,6 +315,18 @@ async function create() {
           <URadioGroup v-model="mode" :items="modeItems" />
         </UFormField>
 
+        <UFormField
+          v-if="mode === 'all'"
+          label="Só quem tem a etiqueta"
+          help="Vazio = todos os contatos da conta"
+        >
+          <USelectMenu v-model="includeTagIds" :items="tagItems" value-key="value" multiple placeholder="Qualquer etiqueta" class="w-full" />
+        </UFormField>
+
+        <UFormField label="Nunca enviar pra quem tem" help="Vale pra qualquer modo, inclusive CSV (ex.: bloqueado)">
+          <USelectMenu v-model="excludeTagIds" :items="tagItems" value-key="value" multiple placeholder="Nenhuma" class="w-full" />
+        </UFormField>
+
         <div v-if="mode === 'select'" class="rounded-lg ring-1 ring-default max-h-56 overflow-y-auto divide-y divide-default">
           <p v-if="!contacts.length" class="p-3 text-sm text-muted">Nenhum contato nessa conta.</p>
           <label
@@ -323,6 +363,28 @@ async function create() {
             :description="csvInvalid.slice(0, 3).join(' · ')"
           />
         </div>
+
+        <UFormField
+          label="Fluxo ao clicar"
+          help="Opcional. Roda quando o contato clica num botão de resposta rápida do template (gatilho 'Clique em botão de campanha' em Automações)"
+        >
+          <USelect
+            v-model="flowId"
+            :items="flowItems"
+            :placeholder="flowItems.length ? 'Nenhum' : 'Nenhum fluxo de campanha nessa conta'"
+            :disabled="!flowItems.length"
+            class="w-full"
+          />
+        </UFormField>
+        <UButton
+          v-if="flowId"
+          label="Não usar fluxo"
+          variant="link"
+          size="xs"
+          color="neutral"
+          class="-mt-4"
+          @click="flowId = undefined"
+        />
 
         <p v-if="campaignMissingReasons.length" class="text-xs text-warning">
           Falta: {{ campaignMissingReasons.join(', ') }}

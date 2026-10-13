@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Formulário do nó selecionado. Escreve direto no `data` do nó (objeto do grafo),
 // então o canvas reflete a edição enquanto se digita.
-import type { FlowNodeData, FlowNodeType, PipedrivePipeline, Template } from '~/types/api'
+import type { FlowNodeData, FlowNodeType, PipedrivePipeline, Tag, Template } from '~/types/api'
 
 const props = defineProps<{
   type: FlowNodeType
@@ -40,6 +40,38 @@ function addButton() {
 
 function removeButton(id: string) {
   data.value.buttons = buttons.value.filter(b => b.id !== id)
+}
+
+// ---- requisição HTTP ----
+const httpMethodItems = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
+const httpHeaders = computed(() => data.value.headers ?? [])
+
+function addHeader() {
+  data.value.headers = [...httpHeaders.value, { key: '', value: '' }]
+}
+
+function removeHeader(index: number) {
+  data.value.headers = httpHeaders.value.filter((_, i) => i !== index)
+}
+
+// ---- etiqueta ----
+const tagItems = ref<{ label: string, value: number }[]>([])
+const toast = useToast()
+
+watch(() => props.type, async (type) => {
+  if (type !== 'tag' || tagItems.value.length) return
+  const tags = await api<Tag[]>(`/companies/${props.companyId}/tags`)
+  tagItems.value = tags.map(t => ({ label: t.name, value: t.id }))
+}, { immediate: true })
+
+async function createTag(name: string) {
+  try {
+    const tag = await api<Tag>(`/companies/${props.companyId}/tags`, { method: 'POST', body: { name } })
+    if (!tagItems.value.some(t => t.value === tag.id)) tagItems.value.push({ label: tag.name, value: tag.id })
+    data.value.tag_id = tag.id
+  } catch (error) {
+    toast.add({ title: apiErrorDetail(error, 'Não foi possível criar a etiqueta'), color: 'error' })
+  }
 }
 
 // ---- estágios do Pipedrive (nó crm: mover de estágio) ----
@@ -168,7 +200,7 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
       <UFormField
         v-if="data.op !== 'window_open'"
         label="Comparar"
-        help="last_message = a última resposta do contato"
+        help="last_message = última resposta, button = botão clicado na campanha, ou o nome de uma variável"
       >
         <UInput
           v-model="data.source"
@@ -211,6 +243,97 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
         class="w-full"
       />
     </UFormField>
+
+    <template v-if="type === 'http'">
+      <div class="flex gap-2">
+        <USelect
+          v-model="data.method"
+          :items="httpMethodItems"
+          class="w-28"
+        />
+        <UInput
+          v-model="data.url"
+          class="flex-1"
+          placeholder="https://sistema.com/webhook"
+        />
+      </div>
+      <UFormField
+        label="Headers"
+        help="Ex.: Authorization: Bearer seu-token"
+      >
+        <div class="space-y-2">
+          <div
+            v-for="(header, index) in httpHeaders"
+            :key="index"
+            class="flex gap-2"
+          >
+            <UInput
+              v-model="header.key"
+              placeholder="Nome"
+              class="w-2/5"
+            />
+            <UInput
+              v-model="header.value"
+              placeholder="Valor"
+              class="flex-1"
+            />
+            <UButton
+              icon="i-lucide-x"
+              variant="ghost"
+              color="neutral"
+              aria-label="Remover header"
+              @click="removeHeader(index)"
+            />
+          </div>
+          <UButton
+            label="Adicionar header"
+            icon="i-lucide-plus"
+            variant="soft"
+            size="xs"
+            @click="addHeader"
+          />
+        </div>
+      </UFormField>
+      <UFormField
+        v-if="data.method !== 'GET'"
+        label="Corpo"
+        help="Sem Content-Type nos headers, vai como application/json"
+      >
+        <UTextarea
+          v-model="data.body"
+          :rows="6"
+          class="w-full font-mono text-xs"
+        />
+      </UFormField>
+      <p class="text-xs text-muted">
+        Variáveis: <code v-pre>{{nome}}</code>, <code v-pre>{{telefone}}</code>, <code v-pre>{{botao}}</code>, <code v-pre>{{campanha}}</code> e as guardadas no fluxo (<code v-pre>{{resposta}}</code>...). Só https, endereço interno é recusado. Timeout de 10s.
+      </p>
+    </template>
+
+    <template v-if="type === 'tag'">
+      <UFormField label="Ação">
+        <USelect
+          v-model="data.action"
+          :items="[{ label: 'Adicionar', value: 'add' }, { label: 'Remover', value: 'remove' }]"
+          class="w-full"
+        />
+      </UFormField>
+      <UFormField
+        label="Etiqueta"
+        required
+        help="Digite pra buscar ou criar uma nova"
+      >
+        <USelectMenu
+          v-model="data.tag_id"
+          :items="tagItems"
+          value-key="value"
+          create-item
+          placeholder="Escolha"
+          class="w-full"
+          @create="createTag"
+        />
+      </UFormField>
+    </template>
 
     <template v-if="type === 'crm'">
       <UFormField label="Ação">

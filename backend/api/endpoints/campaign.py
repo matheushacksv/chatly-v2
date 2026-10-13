@@ -28,6 +28,9 @@ def create_campaign_endpoint(request, company_id: int, payload: CampaignInDTO):
         payload.contact_ids,
         [n.dict() for n in payload.numbers],
         payload.header_media_id,
+        payload.flow_id,
+        payload.include_tag_ids,
+        payload.exclude_tag_ids,
     )
     return Status(201, campaign)
 

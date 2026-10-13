@@ -22,7 +22,7 @@ from django.core.files.base import ContentFile
 
 from apps.accounts.models import User
 from apps.agents.models import Agent, Credential, Document, DocumentChunk
-from apps.chats.models import Campaign, Contact, Message, Sticker, TemplateHeaderMedia, WhatsAppAccount
+from apps.chats.models import Campaign, Contact, Message, Sticker, Tag, TemplateHeaderMedia, WhatsAppAccount
 from apps.companies.models import Company, Membership
 from apps.crm.models import PipedriveAccount
 from core.exceptions import NotFound, PipedriveError, ValidationError
@@ -1711,8 +1711,33 @@ class WebhookTests(BaseChatsTestCase):
         self.post_webhook(payload)
         msg = Message.objects.get(wa_message_id='wamid.tipo')
         self.assertEqual(msg.content, 'Quero saber mais')
-        self.assertEqual(msg.button_id, '')  # payload do template não conversa com os botões dos fluxos
+        self.assertEqual(msg.button_id, 'MAIS_INFO')
+        self.assertIsNone(msg.campaign_id)  # sem context.id de campanha: segue pra IA normal
         self.mock_enqueue.assert_called_once()
+
+    def test_template_button_without_payload_uses_text(self):
+        self.post_webhook(self.with_message({'type': 'button', 'button': {'text': 'Confirmar'}}))
+        self.assertEqual(Message.objects.get(wa_message_id='wamid.tipo').button_id, 'Confirmar')
+
+    def test_template_button_reply_inherits_campaign(self):
+        contact = Contact.objects.create(account=self.account, wa_id='5511777777777')
+        campaign = Campaign.objects.create(account=self.account, name='Consultas', template_name='t', template_language='pt_BR')
+        Message.objects.create(contact=contact, direction='out', content='Confirma?', wa_message_id='wamid.template', campaign=campaign)
+        self.post_webhook(self.with_message({
+            'type': 'button', 'button': {'text': 'Confirmar', 'payload': 'Confirmar'}, 'context': {'from': '5511000000000', 'id': 'wamid.template'},
+        }))
+        msg = Message.objects.get(wa_message_id='wamid.tipo')
+        self.assertEqual(msg.campaign_id, campaign.pk)
+        self.assertEqual(msg.button_id, 'Confirmar')
+
+    def test_reply_to_other_contacts_message_does_not_inherit_campaign(self):
+        stranger = Contact.objects.create(account=self.account, wa_id='5511666666666')
+        campaign = Campaign.objects.create(account=self.account, name='Consultas', template_name='t', template_language='pt_BR')
+        Message.objects.create(contact=stranger, direction='out', content='x', wa_message_id='wamid.template', campaign=campaign)
+        self.post_webhook(self.with_message({
+            'type': 'button', 'button': {'text': 'Confirmar'}, 'context': {'id': 'wamid.template'},
+        }))
+        self.assertIsNone(Message.objects.get(wa_message_id='wamid.tipo').campaign_id)
 
     def test_list_reply_stores_title_and_id(self):
         payload = self.with_message({
@@ -3991,3 +4016,102 @@ class ImportMediaCommandTests(BaseChatsTestCase):
         put = storage.connection.meta.client.put_object
         put.assert_called_once_with(Bucket='media', Key='chat/a/foto.jpg', Body=b'bytes-chat/a/foto.jpg', ContentType='image/jpeg')
         self.assertIn('3 referenciados: 1 copiados, 1 já existiam, 1 faltando na origem', out.getvalue())
+
+
+class CampaignFlowAndTagsTests(BaseChatsTestCase):
+    """Campanha com fluxo no clique e filtro por etiqueta."""
+
+    url = CampaignTests.url
+    campaign_payload = CampaignTests.campaign_payload
+    post_campaign = CampaignTests.post_campaign
+
+    def setUp(self):
+        super().setUp()
+        self.mock_delay = self.start_patch('apps.chats.tasks.run_campaign.delay')
+        self.start_patch('apps.chats.whatsapp.list_templates', return_value=TEMPLATES_FIXTURE)
+        self.vip = Tag.objects.create(company=self.company, name='vip')
+        self.blocked = Tag.objects.create(company=self.company, name='bloqueado')
+        self.second = Contact.objects.create(account=self.account, wa_id='5511911112222')
+
+    def start_patch(self, target, **kwargs):
+        patcher = patch(target, **kwargs)
+        self.addCleanup(patcher.stop)
+        return patcher.start()
+
+    def make_flow(self, **kwargs):
+        from apps.automations.models import Flow
+
+        defaults = dict(company=self.company, account=self.account, name='F', trigger=Flow.Trigger.CAMPAIGN)
+        defaults.update(kwargs)
+        return Flow.objects.create(**defaults)
+
+    def test_campaign_saves_flow(self):
+        flow = self.make_flow()
+        response = self.post_campaign(self.company.pk, flow_id=flow.pk)
+        self.assertEqual(response.status_code, 201, response.json())
+        self.assertEqual(response.json()['flow'], flow.pk)
+
+    def test_campaign_rejects_flow_with_other_trigger_or_company(self):
+        from apps.automations.models import Flow
+
+        wrong_trigger = self.make_flow(trigger=Flow.Trigger.KEYWORD)
+        foreign = self.make_flow(company=self.other_company, account=self.other_account)
+        for flow in (wrong_trigger, foreign):
+            with self.subTest(flow=flow.pk):
+                self.assertEqual(self.post_campaign(self.company.pk, flow_id=flow.pk).status_code, 400)
+        self.mock_delay.assert_not_called()
+
+    def test_include_tags_filters_all_contacts(self):
+        self.second.tags.add(self.vip)
+        response = self.post_campaign(self.company.pk, include_tag_ids=[self.vip.pk])
+        self.assertEqual(response.status_code, 201, response.json())
+        self.mock_delay.assert_called_once_with(response.json()['id'], [self.second.pk])
+
+    def test_exclude_tags_applies_to_every_mode(self):
+        self.second.tags.add(self.blocked)
+        response = self.post_campaign(
+            self.company.pk, contact_ids=[], numbers=[{'number': self.second.wa_id}], exclude_tag_ids=[self.blocked.pk]
+        )
+        self.assertEqual(response.status_code, 400)  # o único destinatário do CSV está bloqueado
+        response = self.post_campaign(self.company.pk, exclude_tag_ids=[self.blocked.pk])
+        self.mock_delay.assert_called_once_with(response.json()['id'], [self.contact.pk])
+
+
+@patch('apps.chats.events.publish')
+class TagTests(BaseChatsTestCase):
+    def setUp(self):
+        super().setUp()
+        self.base = f'/api/companies/{self.company.pk}'
+
+    def test_create_list_and_case_insensitive_reuse(self, mock_pub):
+        r1 = self.client.post(f'{self.base}/tags', data={'name': 'Bloqueado', 'color': 'error'}, content_type='application/json', headers=self.auth)
+        r2 = self.client.post(f'{self.base}/tags', data={'name': ' bloqueado '}, content_type='application/json', headers=self.auth)
+        self.assertEqual(r1.status_code, 201)
+        self.assertEqual(r1.json()['id'], r2.json()['id'])
+        listed = self.client.get(f'{self.base}/tags', headers=self.auth).json()
+        self.assertEqual([t['name'] for t in listed], ['Bloqueado'])
+
+    def test_add_remove_tag_on_contact_and_list_filter(self, mock_pub):
+        tag = Tag.objects.create(company=self.company, name='vip')
+        r = self.client.post(f'{self.base}/contacts/{self.contact.pk}/tags/{tag.pk}', headers=self.auth)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()['tags'], [{'id': tag.pk, 'name': 'vip', 'color': 'neutral'}])
+        listed = self.client.get(f'{self.base}/whatsapp-accounts/{self.account.pk}/contacts?tag={tag.pk}', headers=self.auth).json()
+        self.assertEqual([c['id'] for c in listed['items']], [self.contact.pk])
+        r = self.client.delete(f'{self.base}/contacts/{self.contact.pk}/tags/{tag.pk}', headers=self.auth)
+        self.assertEqual(r.json()['tags'], [])
+
+    def test_foreign_tag_or_company_is_404(self, mock_pub):
+        foreign = Tag.objects.create(company=self.other_company, name='alheia')
+        r = self.client.post(f'{self.base}/contacts/{self.contact.pk}/tags/{foreign.pk}', headers=self.auth)
+        self.assertEqual(r.status_code, 404)
+        r = self.client.get(f'/api/companies/{self.other_company.pk}/tags', headers=self.auth)
+        self.assertEqual(r.status_code, 404)
+        r = self.client.delete(f'{self.base}/tags/{foreign.pk}', headers=self.auth)
+        self.assertEqual(r.status_code, 404)
+
+    def test_delete_tag(self, mock_pub):
+        tag = Tag.objects.create(company=self.company, name='vip')
+        self.contact.tags.add(tag)
+        self.assertEqual(self.client.delete(f'{self.base}/tags/{tag.pk}', headers=self.auth).status_code, 204)
+        self.assertFalse(self.contact.tags.exists())

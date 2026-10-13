@@ -13,7 +13,7 @@ from django.utils import timezone
 
 from apps.agents.services import get_agent
 from apps.chats import events, whatsapp
-from apps.chats.models import Campaign, Contact, Message, Sticker, TemplateHeaderMedia, WhatsAppAccount
+from apps.chats.models import Campaign, Contact, Message, Sticker, Tag, TemplateHeaderMedia, WhatsAppAccount
 from apps.companies.models import Company, Membership
 from core.exceptions import Conflict, NotFound, ValidationError
 
@@ -211,11 +211,13 @@ def import_contacts(company: Company, account_id: int, numbers: list[dict]) -> d
     return {'created': created, 'existing': len(entries) - created}
 
 
-def list_contacts(company: Company, account_id: int, search: str = '', queue: str = '', user=None) -> QuerySet[Contact]:
+def list_contacts(company: Company, account_id: int, search: str = '', queue: str = '', user=None, tag: int | None = None) -> QuerySet[Contact]:
     account = get_account(company, account_id)
     last = Message.objects.filter(contact=OuterRef('pk')).order_by('-id')
     last_in = Message.objects.filter(contact=OuterRef('pk'), direction='in').order_by('-id')
-    qs = Contact.objects.filter(account=account)
+    qs = Contact.objects.filter(account=account).prefetch_related('tags')
+    if tag:
+        qs = qs.filter(tags=tag)
     if search:
         qs = qs.filter(Q(name__icontains=search) | Q(wa_id__contains=search))
     if queue == 'waiting':
@@ -246,6 +248,56 @@ def update_contact(company: Company, contact_id: int, data: dict) -> Contact:
         setattr(contact, field, value)
     contact.save()
     events.publish(contact.account.company_id, {'type': 'contact', 'contact_id': contact.pk})
+    return contact
+
+
+# * ----- Etiquetas ------
+
+
+def list_tags(company: Company) -> QuerySet[Tag]:
+    return Tag.objects.filter(company=company).order_by('name')
+
+
+def get_tag(company: Company, tag_id: int) -> Tag:
+    tag = Tag.objects.filter(company=company, pk=tag_id).first()
+    if tag is None:
+        raise NotFound('tag not found')
+    return tag
+
+
+def create_tag(company: Company, name: str, color: str = 'neutral') -> Tag:
+    name = name.strip()
+    if not name:
+        raise ValidationError('nome da etiqueta vazio')
+    # mesma etiqueta com outra caixa: devolve a existente (o fluxo e o painel podem criar ao mesmo tempo)
+    existing = Tag.objects.filter(company=company, name__iexact=name).first()
+    if existing:
+        return existing
+    try:
+        return Tag.objects.create(company=company, name=name, color=color)
+    except IntegrityError:
+        return Tag.objects.get(company=company, name__iexact=name)
+
+
+def delete_tag(company: Company, tag_id: int) -> None:
+    get_tag(company, tag_id).delete()
+
+
+def _publish_contact(contact: Contact) -> None:
+    events.publish(contact.account.company_id, {'type': 'contact', 'contact_id': contact.pk})
+
+
+def add_contact_tag(company: Company, contact_id: int, tag_id: int) -> Contact:
+    contact = get_contact(company, contact_id)
+    contact.tags.add(get_tag(company, tag_id))
+    _publish_contact(contact)
+    return contact
+
+
+def remove_contact_tag(company: Company, contact_id: int, tag_id: int) -> Contact:
+    contact = get_contact(company, contact_id)
+    contact.tags.remove(get_tag(company, tag_id))
+    _publish_contact(contact)
     return contact
 
 
@@ -577,10 +629,19 @@ def create_campaign(
     contact_ids: list[int] | None = None,
     numbers: list[dict] | None = None,
     header_media_id: str = '',
+    flow_id: int | None = None,
+    include_tag_ids: list[int] | None = None,
+    exclude_tag_ids: list[int] | None = None,
 ) -> Campaign:
+    from apps.automations.models import Flow
     from apps.chats.tasks import run_campaign
 
     account = get_account(company, account_id)
+    flow = None
+    if flow_id is not None:
+        flow = Flow.objects.filter(company=company, account=account, pk=flow_id, trigger=Flow.Trigger.CAMPAIGN).first()
+        if flow is None:
+            raise ValidationError('fluxo inválido: precisa ser da mesma conta e ter o gatilho de clique em campanha')
     body, header_format = get_template_send_info(account, template_name, template_language)
     param_count = max((int(p) for p in TEMPLATE_PARAM_RE.findall(body)), default=0)
     if len(body_params) != param_count:
@@ -593,11 +654,18 @@ def create_campaign(
     header_media_type = header_format.lower() if header_media_id else ''
 
     if contact_ids is None and not numbers:
-        recipients = list(Contact.objects.filter(account=account))
+        qs = Contact.objects.filter(account=account)
+        if include_tag_ids:
+            qs = qs.filter(tags__in=include_tag_ids).distinct()
+        recipients = list(qs)
     else:
         recipients = list(Contact.objects.filter(account=account, pk__in=contact_ids or []))
     for entry in numbers or []:
         recipients.append(get_or_create_contact(account, normalize_number(entry['number']), entry.get('name', '')))
+    if exclude_tag_ids:
+        # vale pra qualquer modo (CSV inclusive): quem tem a etiqueta, tipo "bloqueado", nunca recebe
+        blocked = set(Contact.tags.through.objects.filter(tag_id__in=exclude_tag_ids).values_list('contact_id', flat=True))
+        recipients = [c for c in recipients if c.pk not in blocked]
     if not recipients:
         raise ValidationError('campaign has no recipients')
 
@@ -609,6 +677,7 @@ def create_campaign(
         body_params=body_params,
         header_media_id=header_media_id,
         header_media_type=header_media_type,
+        flow=flow,
         total=len(recipients),
     )
     run_campaign.delay(campaign.pk, [c.pk for c in recipients])
@@ -665,8 +734,18 @@ def get_or_create_contact(account: WhatsAppAccount, wa_id: str, name: str = '') 
 
 
 def record_incoming_message(
-    contact: Contact, wa_mesage_id: str, content: str, message_type: str = 'text', media_id: str = '', button_id: str = ''
+    contact: Contact,
+    wa_mesage_id: str,
+    content: str,
+    message_type: str = 'text',
+    media_id: str = '',
+    button_id: str = '',
+    reply_to_wamid: str = '',
 ) -> tuple[Message, bool]:
+    # resposta a uma mensagem de campanha herda a campanha: o clique no botão sabe de onde veio
+    campaign_id = None
+    if reply_to_wamid:
+        campaign_id = Message.objects.filter(wa_message_id=reply_to_wamid, contact=contact).values_list('campaign_id', flat=True).first()
     message, created = Message.objects.get_or_create(
         wa_message_id=wa_mesage_id,
         defaults={
@@ -676,6 +755,7 @@ def record_incoming_message(
             'message_type': message_type,
             'media_id': media_id,
             'button_id': button_id,
+            'campaign_id': campaign_id,
         },
     )
     events.publish(contact.account.company_id, {'type': 'message', 'contact_id': contact.pk})

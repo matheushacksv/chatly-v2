@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import type { TabsItem } from '@nuxt/ui'
-import type { Agent, Credential, Invite, Member, PipedriveConfig, PipedrivePipeline, WhatsAppAccount } from '~/types/api'
+import type { Agent, Credential, Invite, Member, PipedriveConfig, PipedrivePipeline, Tag, TagColor, WhatsAppAccount } from '~/types/api'
 
 const tab = ref('credenciais')
 const settingsTabs: TabsItem[] = [
   { label: 'Credenciais de IA', icon: 'i-lucide-key-round', value: 'credenciais', slot: 'credenciais' },
   { label: 'Pipedrive', icon: 'i-lucide-handshake', value: 'pipedrive', slot: 'pipedrive' },
   { label: 'WhatsApp', icon: 'i-lucide-phone', value: 'whatsapp', slot: 'whatsapp' },
+  { label: 'Etiquetas', icon: 'i-lucide-tag', value: 'etiquetas', slot: 'etiquetas' },
   { label: 'Membros', icon: 'i-lucide-users', value: 'membros', slot: 'membros' },
   { label: 'Empresa', icon: 'i-lucide-building-2', value: 'empresa', slot: 'empresa' }
 ]
@@ -172,6 +173,47 @@ async function removeAccount(account: WhatsAppAccount) {
     await api(`/companies/${companyId.value}/whatsapp-accounts/${account.id}`, { method: 'DELETE' })
     accounts.value = accounts.value.filter(a => a.id !== account.id)
     toast.add({ title: 'Conta desconectada', icon: 'i-lucide-trash-2' })
+  } catch (error) {
+    toast.add({ title: apiErrorDetail(error), color: 'error' })
+  }
+}
+
+// ---- etiquetas ----
+const tags = ref<Tag[]>([])
+const newTag = reactive({ name: '', color: 'neutral' as TagColor })
+const tagColorItems: { label: string, value: TagColor }[] = [
+  { label: 'Cinza', value: 'neutral' },
+  { label: 'Azul', value: 'info' },
+  { label: 'Verde', value: 'success' },
+  { label: 'Amarelo', value: 'warning' },
+  { label: 'Vermelho', value: 'error' },
+  { label: 'Destaque', value: 'primary' }
+]
+watch(companyId, async (id) => {
+  tags.value = id ? await api<Tag[]>(`/companies/${id}/tags`) : []
+}, { immediate: true })
+
+async function createTag() {
+  if (!newTag.name.trim()) return
+  try {
+    const tag = await api<Tag>(`/companies/${companyId.value}/tags`, { method: 'POST', body: { ...newTag } })
+    if (!tags.value.some(t => t.id === tag.id)) tags.value = [...tags.value, tag].sort((a, b) => a.name.localeCompare(b.name))
+    newTag.name = ''
+  } catch (error) {
+    toast.add({ title: apiErrorDetail(error, 'Não foi possível criar a etiqueta'), color: 'error' })
+  }
+}
+
+async function removeTag(tag: Tag) {
+  const ok = await confirmModal({
+    title: `Excluir a etiqueta "${tag.name}"?`,
+    description: 'Ela sai de todos os contatos. Fluxos que usam essa etiqueta seguem sem ela.',
+    confirmLabel: 'Excluir'
+  })
+  if (!ok) return
+  try {
+    await api(`/companies/${companyId.value}/tags/${tag.id}`, { method: 'DELETE' })
+    tags.value = tags.value.filter(t => t.id !== tag.id)
   } catch (error) {
     toast.add({ title: apiErrorDetail(error), color: 'error' })
   }
@@ -561,6 +603,36 @@ async function disconnectPipedrive() {
               </div>
             </div>
             <p v-else-if="agents.length" class="text-sm text-muted">Nenhum número conectado ainda.</p>
+          </section>
+          </template>
+
+          <template #etiquetas>
+          <section class="space-y-3 pt-4">
+            <div>
+              <h2 class="font-display font-semibold text-lg">Etiquetas</h2>
+              <p class="text-sm text-muted">Marcam contatos no painel e nos fluxos. Use em campanhas pra incluir ou excluir (ex.: bloqueado).</p>
+            </div>
+            <form class="flex gap-2" @submit.prevent="createTag">
+              <UInput v-model="newTag.name" placeholder="Nova etiqueta" maxlength="40" class="flex-1" />
+              <USelect v-model="newTag.color" :items="tagColorItems" class="w-32" />
+              <UButton type="submit" label="Criar" icon="i-lucide-plus" variant="soft" :disabled="!newTag.name.trim()" />
+            </form>
+            <div v-if="tags.length" class="flex flex-wrap gap-2">
+              <UBadge v-for="tag in tags" :key="tag.id" :color="tag.color" variant="subtle" class="gap-1">
+                {{ tag.name }}
+                <UButton
+                  v-if="isOwner"
+                  icon="i-lucide-x"
+                  variant="link"
+                  :color="tag.color"
+                  size="xs"
+                  class="p-0"
+                  :aria-label="`Excluir etiqueta ${tag.name}`"
+                  @click="removeTag(tag)"
+                />
+              </UBadge>
+            </div>
+            <p v-else class="text-sm text-muted">Nenhuma etiqueta ainda.</p>
           </section>
           </template>
 

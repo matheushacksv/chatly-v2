@@ -25,6 +25,7 @@ class Flow(models.Model):
         FIRST_MESSAGE = 'first_message', 'Primeira mensagem'
         KEYWORD = 'keyword', 'Palavra-chave'
         PIPEDRIVE = 'pipedrive', 'Negócio no Pipedrive'
+        CAMPAIGN = 'campaign', 'Clique em botão de campanha'
 
     company = models.ForeignKey('companies.Company', on_delete=models.CASCADE, related_name='flows')
     account = models.ForeignKey('chats.WhatsAppAccount', on_delete=models.CASCADE, related_name='flows')

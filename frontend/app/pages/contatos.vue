@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Contact, Paginated, WhatsAppAccount } from '~/types/api'
+import type { Contact, Paginated, Tag, WhatsAppAccount } from '~/types/api'
 
 const api = useApi()
 const toast = useToast()
@@ -23,6 +23,14 @@ const accountItems = computed(() =>
 
 // ---- lista + busca server-side ----
 const contacts = ref<Contact[]>([])
+
+// filtro por etiqueta
+const tagFilter = ref(0) // 0 = todas
+const tags = ref<Tag[]>([])
+const tagItems = computed(() => tags.value.map(t => ({ label: t.name, value: t.id })))
+watch(companyId, async (id) => {
+  tags.value = id ? await api<Tag[]>(`/companies/${id}/tags`) : []
+}, { immediate: true })
 const total = ref(0)
 const search = ref('')
 const loading = ref(false)
@@ -36,7 +44,7 @@ async function loadContacts() {
   loading.value = true
   try {
     const page = await api<Paginated<Contact>>(
-      `/companies/${companyId.value}/whatsapp-accounts/${accountId.value}/contacts?limit=100&search=${encodeURIComponent(search.value)}`
+      `/companies/${companyId.value}/whatsapp-accounts/${accountId.value}/contacts?limit=100&search=${encodeURIComponent(search.value)}${tagFilter.value ? `&tag=${tagFilter.value}` : ''}`
     )
     contacts.value = page.items
     total.value = page.count
@@ -44,7 +52,7 @@ async function loadContacts() {
     loading.value = false
   }
 }
-watch(accountId, () => loadContacts(), { immediate: true })
+watch([accountId, tagFilter], () => loadContacts(), { immediate: true })
 
 let searchTimer: ReturnType<typeof setTimeout> | undefined
 watch(search, () => {
@@ -184,6 +192,15 @@ const lastTalk = (iso: string | null) => (iso ? dateFmt.format(new Date(iso)) : 
           class="w-full max-w-sm"
           size="sm"
         />
+        <USelect
+          v-if="tagItems.length"
+          v-model="tagFilter"
+          :items="[{ label: 'Todas as etiquetas', value: 0 }, ...tagItems]"
+          icon="i-lucide-tag"
+          placeholder="Etiqueta"
+          size="sm"
+          class="w-44"
+        />
         <span class="text-xs text-muted ml-auto tabular-nums">{{ total }} contato(s)</span>
       </UDashboardToolbar>
     </template>
@@ -205,6 +222,12 @@ const lastTalk = (iso: string | null) => (iso ? dateFmt.format(new Date(iso)) : 
             <p class="font-medium truncate">{{ contact.name || 'Sem nome' }}</p>
             <p class="text-xs text-muted font-mono truncate">{{ contact.wa_id }}</p>
           </div>
+          <AppContactTags
+            :contact="contact"
+            :company-id="companyId ?? 0"
+            size="xs"
+            @updated="updated => contacts = contacts.map(c => (c.id === updated.id ? { ...c, tags: updated.tags } : c))"
+          />
           <UBadge v-if="!contact.last_message_at" color="neutral" variant="subtle" size="sm">
             Sem conversa
           </UBadge>

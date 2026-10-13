@@ -401,7 +401,10 @@ async function createContact() {
 
 // ---- handoff / memória ----
 async function patchSelected(body: Record<string, unknown>) {
-  const updated = await api<Contact>(`/companies/${companyId.value}/contacts/${selected.value!.id}`, { method: 'PATCH', body })
+  mergeContact(await api<Contact>(`/companies/${companyId.value}/contacts/${selected.value!.id}`, { method: 'PATCH', body }))
+}
+
+function mergeContact(updated: Contact) {
   // PATCH não traz os campos da lista (última mensagem): mescla em vez de substituir
   contacts.value = contacts.value.map(c => (c.id === updated.id ? { ...c, ...updated, last_message: c.last_message, last_message_at: c.last_message_at, last_inbound_at: c.last_inbound_at } : c))
 }
@@ -670,6 +673,13 @@ const accountItems = computed(() =>
               <p class="font-medium text-sm truncate">{{ selected.name || selected.wa_id }}</p>
               <p class="text-[11px] text-muted font-mono truncate">{{ selected.wa_id }}</p>
             </div>
+            <AppContactTags
+              class="hidden sm:flex"
+              :contact="selected"
+              :company-id="companyId ?? 0"
+              size="xs"
+              @updated="mergeContact"
+            />
           </div>
         </template>
         <template #right>
