@@ -181,14 +181,6 @@ async function removeAccount(account: WhatsAppAccount) {
 // ---- etiquetas ----
 const tags = ref<Tag[]>([])
 const newTag = reactive({ name: '', color: 'neutral' as TagColor })
-const tagColorItems: { label: string, value: TagColor }[] = [
-  { label: 'Cinza', value: 'neutral' },
-  { label: 'Azul', value: 'info' },
-  { label: 'Verde', value: 'success' },
-  { label: 'Amarelo', value: 'warning' },
-  { label: 'Vermelho', value: 'error' },
-  { label: 'Destaque', value: 'primary' }
-]
 watch(companyId, async (id) => {
   tags.value = id ? await api<Tag[]>(`/companies/${id}/tags`) : []
 }, { immediate: true })
@@ -614,7 +606,7 @@ async function disconnectPipedrive() {
             </div>
             <form class="flex gap-2" @submit.prevent="createTag">
               <UInput v-model="newTag.name" placeholder="Nova etiqueta" maxlength="40" class="flex-1" />
-              <USelect v-model="newTag.color" :items="tagColorItems" class="w-32" />
+              <USelect v-model="newTag.color" :items="TAG_COLOR_ITEMS" class="w-32" />
               <UButton type="submit" label="Criar" icon="i-lucide-plus" variant="soft" :disabled="!newTag.name.trim()" />
             </form>
             <div v-if="tags.length" class="flex flex-wrap gap-2">

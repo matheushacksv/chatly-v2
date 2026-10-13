@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Formulário do nó selecionado. Escreve direto no `data` do nó (objeto do grafo),
 // então o canvas reflete a edição enquanto se digita.
-import type { FlowNodeData, FlowNodeType, PipedrivePipeline, Tag, Template } from '~/types/api'
+import type { FlowNodeData, FlowNodeType, PipedrivePipeline, Tag, TagColor, Template } from '~/types/api'
 
 const props = defineProps<{
   type: FlowNodeType
@@ -64,13 +64,21 @@ watch(() => props.type, async (type) => {
   tagItems.value = tags.map(t => ({ label: t.name, value: t.id }))
 }, { immediate: true })
 
-async function createTag(name: string) {
+const newTag = reactive({ name: '', color: 'neutral' as TagColor })
+const creatingTag = ref(false)
+
+async function createTag(name: string, color: TagColor = 'neutral') {
+  if (!name.trim() || creatingTag.value) return
+  creatingTag.value = true
   try {
-    const tag = await api<Tag>(`/companies/${props.companyId}/tags`, { method: 'POST', body: { name } })
+    const tag = await api<Tag>(`/companies/${props.companyId}/tags`, { method: 'POST', body: { name, color } })
     if (!tagItems.value.some(t => t.value === tag.id)) tagItems.value.push({ label: tag.name, value: tag.id })
     data.value.tag_id = tag.id
+    newTag.name = ''
   } catch (error) {
     toast.add({ title: apiErrorDetail(error, 'Não foi possível criar a etiqueta'), color: 'error' })
+  } finally {
+    creatingTag.value = false
   }
 }
 
@@ -330,8 +338,37 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
           create-item
           placeholder="Escolha"
           class="w-full"
-          @create="createTag"
+          @create="name => createTag(name)"
         />
+      </UFormField>
+      <UFormField
+        label="Nova etiqueta"
+        help="Cria e já seleciona neste bloco"
+      >
+        <form
+          class="flex gap-2"
+          @submit.prevent="createTag(newTag.name, newTag.color)"
+        >
+          <UInput
+            v-model="newTag.name"
+            placeholder="bloqueado"
+            maxlength="40"
+            class="flex-1"
+          />
+          <USelect
+            v-model="newTag.color"
+            :items="TAG_COLOR_ITEMS"
+            class="w-28"
+          />
+          <UButton
+            type="submit"
+            icon="i-lucide-plus"
+            variant="soft"
+            aria-label="Criar etiqueta"
+            :loading="creatingTag"
+            :disabled="!newTag.name.trim()"
+          />
+        </form>
       </UFormField>
     </template>
 
