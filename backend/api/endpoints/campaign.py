@@ -2,7 +2,7 @@ from ninja import Router, Status
 from ninja.pagination import paginate
 
 from apps.chats import services
-from apps.chats.schemas import CampaignInDTO, CampaignOutDTO
+from apps.chats.schemas import CampaignAudienceInDTO, CampaignAudienceOutDTO, CampaignInDTO, CampaignOutDTO
 from apps.companies import services as companies_services
 
 router = Router(tags=['Campaigns'])
@@ -29,10 +29,16 @@ def create_campaign_endpoint(request, company_id: int, payload: CampaignInDTO):
         [n.dict() for n in payload.numbers],
         payload.header_media_id,
         payload.flow_id,
-        payload.include_tag_ids,
+        payload.tag_groups,
         payload.exclude_tag_ids,
     )
     return Status(201, campaign)
+
+
+@router.post('/{company_id}/campaigns/audience', response=CampaignAudienceOutDTO)
+def preview_campaign_audience_endpoint(request, company_id: int, payload: CampaignAudienceInDTO):
+    company = companies_services.get_company(request.auth, company_id)
+    return services.preview_campaign_audience(company, payload.account_id, payload.tag_groups, payload.exclude_tag_ids)
 
 
 @router.get('/{company_id}/campaigns/{campaign_id}', response=CampaignOutDTO)

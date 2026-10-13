@@ -70,7 +70,16 @@ const modeItems = [
 
 // fluxo disparado no clique de um botão do template + filtro por etiqueta
 const flowId = ref<number | undefined>(undefined)
-const includeTagIds = ref<number[]>([])
+const tagGroups = ref<number[][]>([])
+const audienceOpen = ref(false)
+const audienceCount = ref<number | null>(null)
+const tagName = (id: number) => tags.value.find(t => t.id === id)?.name ?? '?'
+// "(vip e quente) ou frio, exceto bloqueado"
+const audienceSummary = computed(() => {
+  const groups = tagGroups.value.map(g => g.length > 1 ? `(${g.map(tagName).join(' e ')})` : tagName(g[0]!))
+  const text = groups.length ? groups.join(' ou ') : 'Todos os contatos'
+  return excludeTagIds.value.length ? `${text}, exceto ${excludeTagIds.value.map(tagName).join(', ')}` : text
+})
 const excludeTagIds = ref<number[]>([])
 const flows = ref<Flow[]>([])
 const tags = ref<Tag[]>([])
@@ -92,7 +101,8 @@ watch(createOpen, async (open) => {
 
 function openCreate() {
   flowId.value = undefined
-  includeTagIds.value = []
+  tagGroups.value = []
+  audienceCount.value = null
   excludeTagIds.value = []
   name.value = ''
   template.value = null
@@ -177,7 +187,7 @@ async function create() {
       flow_id: flowId.value ?? null,
       exclude_tag_ids: excludeTagIds.value
     }
-    if (mode.value === 'all') body.include_tag_ids = includeTagIds.value
+    if (mode.value === 'all') body.tag_groups = tagGroups.value
     if (mode.value === 'select') body.contact_ids = selectedContactIds.value
     if (mode.value === 'csv') {
       body.contact_ids = []
@@ -314,15 +324,29 @@ async function create() {
           <URadioGroup v-model="mode" :items="modeItems" />
         </UFormField>
 
-        <UFormField
-          v-if="mode === 'all'"
-          label="Só quem tem a etiqueta"
-          help="Vazio = todos os contatos da conta"
-        >
-          <USelectMenu v-model="includeTagIds" :items="tagItems" value-key="value" multiple placeholder="Qualquer etiqueta" class="w-full" />
-        </UFormField>
+        <div v-if="mode === 'all'" class="flex items-center justify-between gap-3 rounded-lg ring-1 ring-default p-3">
+          <div class="min-w-0">
+            <p class="text-sm truncate">
+              {{ audienceSummary }}
+            </p>
+            <p v-if="audienceCount !== null" class="text-xs text-muted">
+              {{ audienceCount }} contato(s)
+            </p>
+          </div>
+          <UButton label="Filtrar por etiquetas" icon="i-lucide-filter" variant="soft" size="sm" @click="() => { audienceOpen = true }" />
+        </div>
+        <CampaignAudienceModal
+          v-if="accountId && companyId"
+          v-model:open="audienceOpen"
+          v-model:groups="tagGroups"
+          v-model:exclude="excludeTagIds"
+          :company-id="companyId"
+          :account-id="accountId"
+          :tags="tags"
+          @applied="audienceCount = $event"
+        />
 
-        <UFormField label="Nunca enviar pra quem tem" help="Vale pra qualquer modo, inclusive CSV (ex.: bloqueado)">
+        <UFormField v-if="mode !== 'all'" label="Nunca enviar pra quem tem" help="Vale pra qualquer modo, inclusive CSV (ex.: bloqueado)">
           <USelectMenu v-model="excludeTagIds" :items="tagItems" value-key="value" multiple placeholder="Nenhuma" class="w-full" />
         </UFormField>
 

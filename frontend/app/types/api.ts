@@ -87,7 +87,8 @@ export interface Message {
   sticker_saved: boolean
   wa_message_id: string | null
   from_human: boolean
-  status: string
+  status: 'sent' | 'delivered' | 'read' | 'failed' | string
+  error_detail: string // motivo da falha devolvido pela Meta
   created_at: string
 }
 

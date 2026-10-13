@@ -179,6 +179,11 @@ watch(lastEvent, (entry) => {
     loadContacts()
     return
   }
+  if (event.type === 'message_status') {
+    // ✓, ✓✓ ou falha de entrega: só a conversa aberta muda, a lista não
+    if (event.contact_id === selectedId.value) loadMessages()
+    return
+  }
   if (event.type === 'message') {
     if (event.contact_id === selectedId.value) {
       loadMessages()
@@ -513,6 +518,13 @@ const timeFmt = new Intl.DateTimeFormat('pt-BR', { hour: '2-digit', minute: '2-d
 const dateFmt = new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
 const dayFmt = new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' })
 const time = (iso: string) => timeFmt.format(new Date(iso))
+// enviado = aceito pela Meta; a entrega (ou a falha) chega depois pelo webhook
+const STATUS_ICONS: Record<string, { icon: string, class: string, label: string }> = {
+  sent: { icon: 'i-lucide-check', class: 'text-muted', label: 'Enviada' },
+  delivered: { icon: 'i-lucide-check-check', class: 'text-muted', label: 'Entregue' },
+  read: { icon: 'i-lucide-check-check', class: 'text-info', label: 'Lida' },
+  failed: { icon: 'i-lucide-circle-alert', class: 'text-error', label: 'Não entregue' }
+}
 const fullDate = (iso: string) => dateFmt.format(new Date(iso))
 
 // caption real aparece sob a mídia; placeholder ([imagem], [vídeo]...) não repete
@@ -812,8 +824,22 @@ const accountItems = computed(() =>
                 class="whitespace-pre-wrap break-words"
                 :class="message.message_type !== 'text' ? 'mt-1' : ''"
               >{{ message.content }}</p>
-              <p class="text-[10px] text-muted text-right mt-1 font-mono" :title="fullDate(message.created_at)">
+              <p
+                v-if="message.direction === 'out' && message.status === 'failed'"
+                class="text-xs text-error mt-1 flex items-start gap-1"
+              >
+                <UIcon name="i-lucide-circle-alert" class="size-3.5 shrink-0 mt-0.5" />
+                Não entregue{{ message.error_detail ? `: ${message.error_detail}` : '' }}
+              </p>
+              <p class="text-[10px] text-muted mt-1 font-mono flex items-center justify-end gap-1" :title="fullDate(message.created_at)">
                 {{ time(message.created_at) }}
+                <UIcon
+                  v-if="message.direction === 'out' && STATUS_ICONS[message.status]"
+                  :name="STATUS_ICONS[message.status]!.icon"
+                  class="size-3.5"
+                  :class="STATUS_ICONS[message.status]!.class"
+                  :aria-label="STATUS_ICONS[message.status]!.label"
+                />
               </p>
             </div>
           </div>

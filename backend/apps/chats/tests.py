@@ -1667,6 +1667,18 @@ class WebhookTests(BaseChatsTestCase):
         message.refresh_from_db()
         self.assertEqual(message.status, 'failed')
 
+    @patch('apps.chats.events.publish')
+    def test_delivery_failure_moves_campaign_count_and_notifies(self, mock_pub):
+        campaign = Campaign.objects.create(account=self.account, name='c', template_name='t', template_language='pt_BR', total=1, sent=1)
+        message = self.outgoing()
+        message.campaign = campaign
+        message.save()
+        for _ in range(2):  # Meta reenvia o mesmo status: conta uma vez só
+            self.post_webhook(self.status_payload(wamid='wamid.out', status='failed'))
+        campaign.refresh_from_db()
+        self.assertEqual((campaign.sent, campaign.failed), (0, 1))
+        mock_pub.assert_called_once_with(self.company.pk, {'type': 'message_status', 'contact_id': self.contact.pk})
+
     def test_unknown_status_is_ignored(self):
         message = self.outgoing(status='sent')
         self.post_webhook(self.status_payload(wamid='wamid.out', status='deleted'))
@@ -4073,11 +4085,37 @@ class CampaignFlowAndTagsTests(BaseChatsTestCase):
                 self.assertEqual(self.post_campaign(self.company.pk, flow_id=flow.pk).status_code, 400)
         self.mock_delay.assert_not_called()
 
-    def test_include_tags_filters_all_contacts(self):
+    def test_tag_groups_filter_all_contacts(self):
         self.second.tags.add(self.vip)
-        response = self.post_campaign(self.company.pk, include_tag_ids=[self.vip.pk])
+        response = self.post_campaign(self.company.pk, tag_groups=[[self.vip.pk]])
         self.assertEqual(response.status_code, 201, response.json())
         self.mock_delay.assert_called_once_with(response.json()['id'], [self.second.pk])
+
+    def test_tag_groups_are_or_of_and(self):
+        x, y, z = (Tag.objects.create(company=self.company, name=n) for n in ('x', 'y', 'z'))
+        only_x = Contact.objects.create(account=self.account, wa_id='5511900000001')
+        x_and_y = Contact.objects.create(account=self.account, wa_id='5511900000002')
+        only_z = Contact.objects.create(account=self.account, wa_id='5511900000003')
+        z_blocked = Contact.objects.create(account=self.account, wa_id='5511900000004')
+        only_x.tags.add(x)
+        x_and_y.tags.add(x, y)
+        only_z.tags.add(z)
+        z_blocked.tags.add(z, self.blocked)
+        audience = services.campaign_audience(self.account, [[x.pk, y.pk], [z.pk], []], [self.blocked.pk])
+        self.assertEqual(set(audience), {x_and_y, only_z})
+        self.assertEqual(services.campaign_audience(self.account, []).count(), Contact.objects.filter(account=self.account).count())
+
+        response = self.client.post(
+            f'/api/companies/{self.company.pk}/campaigns/audience',
+            data=json.dumps({'account_id': self.account.pk, 'tag_groups': [[x.pk, y.pk], [z.pk]], 'exclude_tag_ids': [self.blocked.pk]}),
+            content_type='application/json', headers=self.auth,
+        )
+        self.assertEqual(response.json()['count'], 2)
+        response = self.client.post(
+            f'/api/companies/{self.company.pk}/campaigns/audience',
+            data=json.dumps({'account_id': self.other_account.pk}), content_type='application/json', headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 404)
 
     def test_exclude_tags_applies_to_every_mode(self):
         self.second.tags.add(self.blocked)

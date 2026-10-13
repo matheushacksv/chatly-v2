@@ -185,8 +185,19 @@ class CampaignInDTO(Schema):
     numbers: list[CampaignRecipientDTO] = []
     header_media_id: str = ''
     flow_id: int | None = None
-    include_tag_ids: list[int] = []
+    tag_groups: list[list[int]] = []  # só no modo todos: OU entre grupos, E dentro do grupo
     exclude_tag_ids: list[int] = []
+
+
+class CampaignAudienceInDTO(Schema):
+    account_id: int
+    tag_groups: list[list[int]] = []
+    exclude_tag_ids: list[int] = []
+
+
+class CampaignAudienceOutDTO(Schema):
+    count: int
+    sample: list[str]
 
 
 class CampaignOutDTO(ModelSchema):

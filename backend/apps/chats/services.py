@@ -699,7 +699,7 @@ def create_campaign(
     numbers: list[dict] | None = None,
     header_media_id: str = '',
     flow_id: int | None = None,
-    include_tag_ids: list[int] | None = None,
+    tag_groups: list[list[int]] | None = None,
     exclude_tag_ids: list[int] | None = None,
 ) -> Campaign:
     from apps.automations.models import Flow
@@ -726,10 +726,7 @@ def create_campaign(
         raise ValidationError(f'variável desconhecida: {", ".join("{{" + v + "}}" for v in sorted(unknown))}')
 
     if contact_ids is None and not numbers:
-        qs = Contact.objects.filter(account=account)
-        if include_tag_ids:
-            qs = qs.filter(tags__in=include_tag_ids).distinct()
-        recipients = list(qs)
+        recipients = list(campaign_audience(account, tag_groups or []))
     else:
         recipients = list(Contact.objects.filter(account=account, pk__in=contact_ids or []))
     known_keys = _field_keys(company)
@@ -757,6 +754,29 @@ def create_campaign(
     )
     run_campaign.delay(campaign.pk, [c.pk for c in recipients])
     return campaign
+
+
+def campaign_audience(account: WhatsAppAccount, tag_groups: list[list[int]], exclude_tag_ids: list[int] | None = None) -> QuerySet[Contact]:
+    """Contatos da conta que batem com algum grupo (OU), tendo todas as etiquetas do grupo (E).
+    Sem grupo = todos. Ex.: [[x, y], [z], [p]] = (x e y) ou z ou p."""
+    qs = Contact.objects.filter(account=account)
+    groups = [g for g in tag_groups if g]
+    if groups:
+        match = Q()
+        for group in groups:
+            has_all = Contact.objects.filter(account=account)
+            for tag_id in group:
+                has_all = has_all.filter(tags=tag_id)
+            match |= Q(pk__in=has_all.values('pk'))
+        qs = qs.filter(match)
+    if exclude_tag_ids:
+        qs = qs.exclude(tags__in=exclude_tag_ids)
+    return qs
+
+
+def preview_campaign_audience(company: Company, account_id: int, tag_groups: list[list[int]], exclude_tag_ids: list[int]) -> dict:
+    qs = campaign_audience(get_account(company, account_id), tag_groups, exclude_tag_ids)
+    return {'count': qs.count(), 'sample': [c.name or c.wa_id for c in qs.order_by('-id')[:5]]}
 
 
 def list_campaigns(company: Company) -> QuerySet[Campaign]:
@@ -844,9 +864,19 @@ def update_message_status(wa_message_id: str, status: str, error_detail: str = '
     # webhooks chegam fora de ordem: só avança (um "delivered" atrasado não rebaixa "read"); failed grava sempre
     qs = Message.objects.filter(wa_message_id=wa_message_id)
     if status == Message.Status.FAILED:
+        # a Meta aceitou o envio (contou como enviado) e recusou a entrega depois: a campanha passa a contar como falha
+        changed = qs.exclude(status=status).exists()  # reenvio do mesmo failed não conta nem avisa de novo
+        for campaign_id in qs.exclude(status=status).exclude(campaign=None).values_list('campaign_id', flat=True):
+            Campaign.objects.filter(pk=campaign_id, sent__gt=0).update(sent=F('sent') - 1, failed=F('failed') + 1)
         qs.update(status=status, **({'error_detail': error_detail[:255]} if error_detail else {}))
     elif status in STATUS_ORDER:
-        qs.filter(status__in=STATUS_ORDER[: STATUS_ORDER.index(status)]).update(status=status)
+        changed = qs.filter(status__in=STATUS_ORDER[: STATUS_ORDER.index(status)]).update(status=status)
+    else:
+        return
+    if changed:
+        # status (✓, ✓✓, falha) atualiza na conversa aberta sem recarregar a página
+        for company_id, contact_id in qs.values_list('contact__account__company_id', 'contact_id'):
+            events.publish(company_id, {'type': 'message_status', 'contact_id': contact_id})
 
 
 def record_outgoing_message(
