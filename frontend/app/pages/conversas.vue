@@ -426,6 +426,16 @@ const resumeText = computed(() => {
   return minutes < 60 ? `IA volta em ${minutes} min` : `IA volta em ${Math.round(minutes / 60)}h`
 })
 
+// ponytail: calculado no carregamento do contato; atualiza quando a lista recarrega (SSE), sem relógio próprio
+const aiOpensText = computed(() => {
+  const at = selected.value?.ai_paused ? null : selected.value?.ai_opens_at
+  if (!at || new Date(at).getTime() <= Date.now()) return null
+  const opens = new Date(at)
+  const time = opens.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+  if (opens.toDateString() === new Date().toDateString()) return `IA responde às ${time}`
+  return `IA responde ${opens.toLocaleDateString('pt-BR', { weekday: 'short' }).replace('.', '')} ${time}`
+})
+
 async function setPaused(paused: boolean) {
   if (!selected.value) return
   try {
@@ -696,12 +706,12 @@ const accountItems = computed(() =>
               @click="openInPersonal"
             />
             <UBadge
-              :color="selected.ai_paused ? 'warning' : 'success'"
+              :color="selected.ai_paused ? 'warning' : aiOpensText ? 'neutral' : 'success'"
               variant="subtle"
-              :icon="selected.ai_paused ? 'i-lucide-user' : 'i-lucide-bot'"
+              :icon="selected.ai_paused ? 'i-lucide-user' : aiOpensText ? 'i-lucide-clock' : 'i-lucide-bot'"
               :title="resumeText ?? undefined"
             >
-              {{ selected.ai_paused ? 'Atendimento humano' : 'IA respondendo' }}
+              {{ selected.ai_paused ? 'Atendimento humano' : aiOpensText ?? 'IA respondendo' }}
             </UBadge>
             <USelect
               :model-value="selected.assigned_to ?? 0"
@@ -970,10 +980,12 @@ const accountItems = computed(() =>
           <p class="text-xs font-semibold text-muted uppercase mb-2">Atendimento</p>
           <USwitch
             :model-value="!selected.ai_paused"
-            :label="selected.ai_paused ? 'IA pausada' : 'IA respondendo'"
+            :label="selected.ai_paused ? 'IA pausada' : 'IA ativa'"
             :description="selected.ai_paused
               ? (resumeText ? `A IA não responde. ${resumeText}.` : 'A IA não responde até ser reativada.')
-              : 'Responder pelo chat também pausa a IA.'"
+              : aiOpensText
+                ? `Fora do horário: ${aiOpensText}, se ninguém responder antes.`
+                : 'Responder pelo chat também pausa a IA.'"
             @update:model-value="setPaused(!$event)"
           />
         </div>

@@ -2,8 +2,10 @@ from datetime import datetime
 from typing import Literal
 
 from ninja import ModelSchema, Schema
+from django.utils import timezone
 from pydantic import Field
 
+from apps.agents.services import next_ai_opening
 from apps.chats.models import Campaign, Contact, Message, Sticker, Tag, WhatsAppAccount
 
 
@@ -55,6 +57,7 @@ class ContactOutDTO(ModelSchema):
     last_message: str | None = None
     last_message_at: datetime | None = None
     last_inbound_at: datetime | None = None
+    ai_opens_at: datetime | None = None  # fora do horário da IA: quando ela volta a responder
 
     class Meta:
         model = Contact
@@ -63,6 +66,10 @@ class ContactOutDTO(ModelSchema):
     @staticmethod
     def resolve_tags(obj):
         return list(obj.tags.all())
+
+    @staticmethod
+    def resolve_ai_opens_at(obj):
+        return next_ai_opening(obj.account.agent, timezone.now())
 
 
 class ContactPatchDTO(Schema):

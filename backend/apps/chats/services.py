@@ -215,7 +215,7 @@ def list_contacts(company: Company, account_id: int, search: str = '', queue: st
     account = get_account(company, account_id)
     last = Message.objects.filter(contact=OuterRef('pk')).order_by('-id')
     last_in = Message.objects.filter(contact=OuterRef('pk'), direction='in').order_by('-id')
-    qs = Contact.objects.filter(account=account).prefetch_related('tags')
+    qs = Contact.objects.filter(account=account).select_related('account__agent').prefetch_related('tags')
     if tag:
         qs = qs.filter(tags=tag)
     if search:

@@ -53,6 +53,7 @@ export interface Contact {
   memory: string
   ai_paused: boolean
   ai_resume_at: string | null
+  ai_opens_at: string | null // fora do horário da IA: quando ela volta a responder
   assigned_to: number | null
   tags: Tag[]
   created_at: string

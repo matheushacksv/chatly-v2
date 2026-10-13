@@ -382,6 +382,18 @@ class ContactTests(BaseChatsTestCase):
         self.assertEqual(body['items'][0]['wa_id'], '5511999999999')
         self.assertEqual(body['items'][0]['name'], 'Cliente A')
 
+    def test_list_contacts_exposes_ai_opens_at(self):
+        item = self.client.get(self.url(self.company.pk, self.account.pk), headers=self.auth).json()['items'][0]
+        self.assertIsNone(item['ai_opens_at'])  # sem horário = IA sempre atende
+
+        now = timezone.localtime()
+        opens = (now + timedelta(hours=2)).replace(second=0, microsecond=0)
+        Agent.objects.filter(pk=self.agent.pk).update(
+            ai_hours_start=opens.time(), ai_hours_end=(opens + timedelta(hours=1)).time(), ai_days=[opens.weekday()]
+        )
+        item = self.client.get(self.url(self.company.pk, self.account.pk), headers=self.auth).json()['items'][0]
+        self.assertEqual(datetime.fromisoformat(item['ai_opens_at']), opens)
+
     def test_list_contacts_of_foreign_account_returns_404(self):
         response = self.client.get(self.url(self.company.pk, self.other_account.pk), headers=self.auth)
         self.assertEqual(response.status_code, 404)
