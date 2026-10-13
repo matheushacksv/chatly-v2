@@ -969,12 +969,12 @@ const accountItems = computed(() =>
         <div>
           <p class="text-xs font-semibold text-muted uppercase mb-2">Atendimento</p>
           <USwitch
-            :model-value="selected.ai_paused"
-            label="IA pausada"
+            :model-value="!selected.ai_paused"
+            :label="selected.ai_paused ? 'IA pausada' : 'IA respondendo'"
             :description="selected.ai_paused
               ? (resumeText ? `A IA não responde. ${resumeText}.` : 'A IA não responde até ser reativada.')
               : 'Responder pelo chat também pausa a IA.'"
-            @update:model-value="setPaused($event)"
+            @update:model-value="setPaused(!$event)"
           />
         </div>
 
