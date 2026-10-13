@@ -6,16 +6,19 @@ from core.exceptions import ValidationError
 GRAPH_URL = 'https://graph.facebook.com/v25.0'
 
 
-def _graph_error(response: httpx.Response) -> None:
-    """Levanta ValidationError com a mensagem real da Meta"""
-    if response.is_success:
-        return
+def graph_error_message(response: httpx.Response) -> str:
+    """Mensagem real da Meta numa resposta de erro"""
     try:
         error = response.json()['error']
-        message = error.get('error_user_msg') or error.get('message') or 'erro no WhatsApp'
+        return error.get('error_user_msg') or error.get('message') or 'erro no WhatsApp'
     except Exception:
-        message = 'erro no WhatsApp'
-    raise ValidationError(message)
+        return 'erro no WhatsApp'
+
+
+def _graph_error(response: httpx.Response) -> None:
+    """Levanta ValidationError com a mensagem real da Meta"""
+    if not response.is_success:
+        raise ValidationError(graph_error_message(response))
 
 
 def send_text(account: WhatsAppAccount, wa_id: str, text: str) -> str:

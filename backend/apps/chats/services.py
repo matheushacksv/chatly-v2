@@ -350,8 +350,8 @@ def send_manual_message(company: Company, contact_id: int, content: str, user=No
     check_service_window(contact)
     try:
         wamid = whatsapp.send_text(contact.account, contact.wa_id, content)
-    except httpx.HTTPStatusError:
-        raise ValidationError('whatsapp invalid send')
+    except httpx.HTTPStatusError as e:
+        raise ValidationError(f'whatsapp invalid send: {whatsapp.graph_error_message(e.response)}')
     take_over(contact, user)
     return record_outgoing_message(contact, wamid, content, from_human=True)
 
@@ -374,8 +374,8 @@ def send_manual_media(company: Company, contact_id: int, file, caption: str = ''
     try:
         media_id = whatsapp.upload_media(contact.account, content_bytes, file.content_type, file.name)
         waimd = whatsapp.send_media(contact.account, contact.wa_id, kind, media_id, caption, file.name)
-    except httpx.HTTPStatusError:
-        raise ValidationError('whatsapp invalid send')
+    except httpx.HTTPStatusError as e:
+        raise ValidationError(f'whatsapp invalid send: {whatsapp.graph_error_message(e.response)}')
     file.seek(0)
     take_over(contact, user)
     content = caption or PLACEHOLDERS.get(kind) or f'[documento: {file.name}]'
@@ -441,8 +441,8 @@ def send_saved_sticker(company: Company, contact_id: int, sticker_id: int, user=
     try:
         media_id = whatsapp.upload_media(contact.account, content, 'image/webp', 'sticker.webp')
         wamid = whatsapp.send_media(contact.account, contact.wa_id, 'sticker', media_id)
-    except httpx.HTTPStatusError:
-        raise ValidationError('whatsapp invalid send')
+    except httpx.HTTPStatusError as e:
+        raise ValidationError(f'whatsapp invalid send: {whatsapp.graph_error_message(e.response)}')
     take_over(contact, user)
     return record_outgoing_message(
         contact, wamid, '[figurinha]', from_human=True, message_type='sticker', media_file=ContentFile(content, name='sticker.webp')
@@ -509,8 +509,8 @@ def send_template_message(
         wamid = whatsapp.send_template(
             contact.account, contact.wa_id, template_name, language, resolve_params(params, contact), header_media_id, header_media_type
         )
-    except httpx.HTTPStatusError:
-        raise ValidationError('whatsapp invalid send')
+    except httpx.HTTPStatusError as e:
+        raise ValidationError(f'whatsapp invalid send: {whatsapp.graph_error_message(e.response)}')
     return record_outgoing_message(contact, wamid, render_template(body, params, contact), from_human=True)
 
 
