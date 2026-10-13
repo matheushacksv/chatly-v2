@@ -40,12 +40,12 @@ VAR_RE = re.compile(r'\{\{\s*(\w+)\s*\}\}')
 
 
 def _render(text: str, run: FlowRun, escape_json: bool = False) -> str:
-    """Troca {{nome}}, {{telefone}}, {{botao}}, {{campanha}} e {{<variável do fluxo>}}. Variável desconhecida fica como está."""
+    """Troca {{nome}}, {{telefone}}, {{botao}}, {{campanha}}, {{<campo do contato>}} e {{<variável do fluxo>}}.
+    Variável desconhecida fica como está."""
     contact, ctx = run.contact, run.context
     values = {k: str(v) for k, v in ctx.items() if v is not None and not isinstance(v, (dict, list))}
+    values |= chat_services.contact_variables(contact)
     values |= {
-        'nome': contact.name or contact.wa_id,
-        'telefone': contact.wa_id,
         'botao': str(ctx.get('button', '')),
         'campanha': str(ctx.get('campanha', '')),
     }

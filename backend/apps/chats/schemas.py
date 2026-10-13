@@ -6,7 +6,7 @@ from django.utils import timezone
 from pydantic import Field
 
 from apps.agents.services import next_ai_opening
-from apps.chats.models import Campaign, Contact, Message, Sticker, Tag, WhatsAppAccount
+from apps.chats.models import Campaign, Contact, ContactField, Message, Sticker, Tag, WhatsAppAccount
 
 
 class WhatsAppAccountInDTO(Schema):
@@ -47,6 +47,16 @@ class TagOutDTO(ModelSchema):
         fields = ['id', 'name', 'color']
 
 
+class ContactFieldOutDTO(ModelSchema):
+    class Meta:
+        model = ContactField
+        fields = ['id', 'key', 'label']
+
+
+class ContactFieldInDTO(Schema):
+    label: str = Field(min_length=1, max_length=60)
+
+
 class TagInDTO(Schema):
     name: str = Field(min_length=1, max_length=40)
     color: TAG_COLORS = 'neutral'
@@ -61,7 +71,7 @@ class ContactOutDTO(ModelSchema):
 
     class Meta:
         model = Contact
-        fields = ['id', 'wa_id', 'name', 'memory', 'ai_paused', 'ai_resume_at', 'assigned_to', 'created_at']
+        fields = ['id', 'wa_id', 'name', 'memory', 'ai_paused', 'ai_resume_at', 'assigned_to', 'custom_fields', 'created_at']
 
     @staticmethod
     def resolve_tags(obj):
@@ -74,6 +84,7 @@ class ContactOutDTO(ModelSchema):
 
 class ContactPatchDTO(Schema):
     ai_paused: bool | None = None
+    custom_fields: dict[str, str] | None = None  # mescla; valor vazio apaga o campo
     assigned_to: int | None = None  # null explícito desatribui
     name: str | None = None
 
@@ -152,6 +163,7 @@ class SendTemplateDTO(Schema):
 class CampaignRecipientDTO(Schema):
     number: str
     name: str = ''
+    fields: dict[str, str] = {}  # colunas extras do CSV: {ContactField.key: valor}
 
 
 class ContactImportDTO(Schema):

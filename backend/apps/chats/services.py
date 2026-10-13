@@ -7,13 +7,14 @@ import httpx
 import phonenumbers
 from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import UploadedFile
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.db.models import Count, Exists, F, OuterRef, Q, QuerySet, Subquery
 from django.utils import timezone
+from django.utils.text import slugify
 
 from apps.agents.services import get_agent
 from apps.chats import events, whatsapp
-from apps.chats.models import Campaign, Contact, Message, Sticker, Tag, TemplateHeaderMedia, WhatsAppAccount
+from apps.chats.models import Campaign, Contact, ContactField, Message, Sticker, Tag, TemplateHeaderMedia, WhatsAppAccount
 from apps.companies.models import Company, Membership
 from core.exceptions import Conflict, NotFound, ValidationError
 
@@ -26,8 +27,10 @@ MEDIA_SPECS = {
 }
 PLACEHOLDERS = {'image': '[imagem]', 'audio': '[áudio]', 'video': '[vídeo]', 'sticker': '[figurinha]'}
 TEMPLATE_PARAM_RE = re.compile(r'\{\{(\d+)\}\}')
+VAR_RE = re.compile(r'\{\{\s*(\w+)\s*\}\}')
+# variáveis embutidas: campo personalizado não pode ter esses nomes
+RESERVED_VARS = {'nome', 'telefone', 'botao', 'campanha'}
 TEMPLATE_NAME_RE = re.compile(r'^[a-z0-9_]+$')
-NAME_TOKEN = '{{nome}}'
 SERVICE_WINDOW = timedelta(hours=24)
 
 # * ------ Helpers ------
@@ -202,13 +205,26 @@ def import_contacts(company: Company, account_id: int, numbers: list[dict]) -> d
     account = get_account(company, account_id)
     if not numbers:
         raise ValidationError('no contacts to import')
-    entries = [(normalize_number(e['number']), e.get('name', '')) for e in numbers]
+    entries = [(normalize_number(e['number']), e.get('name', ''), e.get('fields') or {}) for e in numbers]
+    known = _field_keys(company)
     created = 0
-    for wa_id, name in entries:
+    for wa_id, name, fields in entries:
         if find_contact(account, wa_id) is None:
-            get_or_create_contact(account, wa_id, name)
             created += 1
+        _merge_import_fields(get_or_create_contact(account, wa_id, name), fields, known)
     return {'created': created, 'existing': len(entries) - created}
+
+
+def _field_keys(company: Company) -> set[str]:
+    return set(ContactField.objects.filter(company=company).values_list('key', flat=True))
+
+
+def _merge_import_fields(contact: Contact, fields: dict, known: set[str]) -> None:
+    """Valores do CSV sobrescrevem os do contato; coluna vazia ou que não é campo cadastrado é ignorada."""
+    values = {k: v.strip() for k, v in fields.items() if k in known and v.strip()}
+    if values:
+        contact.custom_fields |= values
+        contact.save(update_fields=['custom_fields'])
 
 
 def list_contacts(company: Company, account_id: int, search: str = '', queue: str = '', user=None, tag: int | None = None) -> QuerySet[Contact]:
@@ -244,6 +260,17 @@ def update_contact(company: Company, contact_id: int, data: dict) -> Contact:
         paused = data.pop('ai_paused')
         contact.ai_paused = paused
         contact.ai_resume_at = resume_deadline(contact) if paused else None
+    if data.get('custom_fields') is not None:
+        values = data.pop('custom_fields')
+        if unknown := set(values) - _field_keys(company):
+            raise ValidationError(f'campo desconhecido: {", ".join(sorted(unknown))}')
+        for key, value in values.items():
+            # valor vazio apaga o campo do contato
+            if value.strip():
+                contact.custom_fields[key] = value.strip()
+            else:
+                contact.custom_fields.pop(key, None)
+    data.pop('custom_fields', None)
     for field, value in data.items():
         setattr(contact, field, value)
     contact.save()
@@ -281,6 +308,39 @@ def create_tag(company: Company, name: str, color: str = 'neutral') -> Tag:
 
 def delete_tag(company: Company, tag_id: int) -> None:
     get_tag(company, tag_id).delete()
+
+
+# * ----- Campos personalizados ------
+
+
+def list_contact_fields(company: Company) -> QuerySet[ContactField]:
+    return ContactField.objects.filter(company=company).order_by('label')
+
+
+def create_contact_field(company: Company, label: str) -> ContactField:
+    label = label.strip()
+    key = slugify(label).replace('-', '_')[:40]
+    if not key:
+        raise ValidationError('nome do campo inválido')
+    if key in RESERVED_VARS:
+        raise ValidationError(f'{{{{{key}}}}} já é uma variável do sistema, escolha outro nome')
+    try:
+        with transaction.atomic():
+            return ContactField.objects.create(company=company, key=key, label=label)
+    except IntegrityError:
+        raise Conflict(f'já existe um campo com a variável {{{{{key}}}}}')
+
+
+def delete_contact_field(company: Company, field_id: int) -> None:
+    # ponytail: o valor fica órfão no JSON dos contatos (invisível e ignorado); limpar em lote se o volume pesar
+    deleted, _ = ContactField.objects.filter(company=company, pk=field_id).delete()
+    if not deleted:
+        raise NotFound('field not found')
+
+
+def contact_variables(contact: Contact) -> dict[str, str]:
+    """Valores das variáveis {{...}} de um contato: nome, telefone e os campos personalizados."""
+    return {**contact.custom_fields, 'nome': contact.name or contact.wa_id, 'telefone': contact.wa_id}
 
 
 def _publish_contact(contact: Contact) -> None:
@@ -487,7 +547,16 @@ def get_template_send_info(account: WhatsAppAccount, name: str, language: str) -
 
 
 def resolve_params(params: list[str], contact: Contact) -> list[str]:
-    return [contact.name or contact.wa_id if p == NAME_TOKEN else p for p in params]
+    """Troca {{nome}}, {{telefone}} e {{campo}} em cada variável. Campo sem valor no contato vira vazio e,
+    se a variável inteira ficar vazia, recusa (a Meta não aceita parâmetro em branco)."""
+    values = contact_variables(contact)
+    resolved = []
+    for p in params:
+        value = VAR_RE.sub(lambda m: values.get(m.group(1), m.group(0) if m.group(1) in RESERVED_VARS else ''), p)
+        if not value.strip():
+            raise ValidationError(f'{contact.name or contact.wa_id} está sem valor para {p}')
+        resolved.append(value)
+    return resolved
 
 
 def render_template(body: str, params: list[str], contact: Contact) -> str:
@@ -652,6 +721,9 @@ def create_campaign(
         raise ValidationError('esse template exige um arquivo no cabeçalho, envie antes de criar a campanha')
 
     header_media_type = header_format.lower() if header_media_id else ''
+    known = {'nome', 'telefone', *_field_keys(company)}
+    if unknown := {v for p in body_params for v in VAR_RE.findall(p)} - known:
+        raise ValidationError(f'variável desconhecida: {", ".join("{{" + v + "}}" for v in sorted(unknown))}')
 
     if contact_ids is None and not numbers:
         qs = Contact.objects.filter(account=account)
@@ -660,8 +732,11 @@ def create_campaign(
         recipients = list(qs)
     else:
         recipients = list(Contact.objects.filter(account=account, pk__in=contact_ids or []))
+    known_keys = _field_keys(company)
     for entry in numbers or []:
-        recipients.append(get_or_create_contact(account, normalize_number(entry['number']), entry.get('name', '')))
+        contact = get_or_create_contact(account, normalize_number(entry['number']), entry.get('name', ''))
+        _merge_import_fields(contact, entry.get('fields') or {}, known_keys)
+        recipients.append(contact)
     if exclude_tag_ids:
         # vale pra qualquer modo (CSV inclusive): quem tem a etiqueta, tipo "bloqueado", nunca recebe
         blocked = set(Contact.tags.through.objects.filter(tag_id__in=exclude_tag_ids).values_list('contact_id', flat=True))

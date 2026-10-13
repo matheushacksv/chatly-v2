@@ -40,6 +40,18 @@ watch(selectedKey, (k) => {
   headerMediaFileName.value = ''
 })
 
+// menu de dados do contato: insere {{nome}}, {{telefone}} ou {{campo}} na variável
+const { variables, load: loadFields } = useContactFields()
+onMounted(loadFields)
+const variableItems = (index: number) => variables.value.map(v => ({
+  label: v.label,
+  suffix: `{{${v.key}}}`,
+  onSelect: () => {
+    const current = params.value[index]?.trim()
+    params.value[index] = current ? `${current} {{${v.key}}}` : `{{${v.key}}}`
+  }
+}))
+
 // preview ao vivo: variáveis preenchidas substituem os {{n}} do corpo
 const preview = computed(() =>
   template.value?.body_text.replace(/\{\{(\d+)\}\}/g, (raw, i) => params.value[+i - 1]?.trim() || raw) ?? ''
@@ -130,9 +142,15 @@ async function onHeaderMediaPicked(event: Event) {
         :key="i"
         :label="`Variável {{${i}}}`"
         required
-        :help="i === 1 ? 'Use {{nome}} pra inserir o nome de cada contato' : undefined"
+        :help="i === 1 ? 'Texto fixo ou um dado do contato (botão ao lado), preenchido em cada envio' : undefined"
       >
-        <UInput v-model="params[i - 1]" class="w-full" :placeholder="`Valor de {{${i}}}`" />
+        <UInput v-model="params[i - 1]" class="w-full" :placeholder="`Valor de {{${i}}}`" :ui="{ trailing: 'pe-1' }">
+          <template #trailing>
+            <UDropdownMenu :items="variableItems(i - 1)" :content="{ align: 'end' }">
+              <UButton icon="i-lucide-braces" variant="link" color="neutral" size="xs" aria-label="Inserir dado do contato" />
+            </UDropdownMenu>
+          </template>
+        </UInput>
       </UFormField>
     </template>
   </div>

@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import type { TabsItem } from '@nuxt/ui'
-import type { Agent, Credential, Invite, Member, PipedriveConfig, PipedrivePipeline, Tag, TagColor, WhatsAppAccount } from '~/types/api'
+import type { Agent, ContactField, Credential, Invite, Member, PipedriveConfig, PipedrivePipeline, Tag, TagColor, WhatsAppAccount } from '~/types/api'
 
 const tab = ref('credenciais')
 const settingsTabs: TabsItem[] = [
   { label: 'Credenciais de IA', icon: 'i-lucide-key-round', value: 'credenciais', slot: 'credenciais' },
   { label: 'Pipedrive', icon: 'i-lucide-handshake', value: 'pipedrive', slot: 'pipedrive' },
   { label: 'WhatsApp', icon: 'i-lucide-phone', value: 'whatsapp', slot: 'whatsapp' },
-  { label: 'Etiquetas', icon: 'i-lucide-tag', value: 'etiquetas', slot: 'etiquetas' },
+  { label: 'Contatos', icon: 'i-lucide-tag', value: 'etiquetas', slot: 'etiquetas' },
   { label: 'Membros', icon: 'i-lucide-users', value: 'membros', slot: 'membros' },
   { label: 'Empresa', icon: 'i-lucide-building-2', value: 'empresa', slot: 'empresa' }
 ]
@@ -206,6 +206,37 @@ async function removeTag(tag: Tag) {
   try {
     await api(`/companies/${companyId.value}/tags/${tag.id}`, { method: 'DELETE' })
     tags.value = tags.value.filter(t => t.id !== tag.id)
+  } catch (error) {
+    toast.add({ title: apiErrorDetail(error), color: 'error' })
+  }
+}
+
+// ---- campos personalizados ----
+const { fields: contactFields, load: loadContactFields } = useContactFields()
+watch(companyId, loadContactFields, { immediate: true })
+const newFieldLabel = ref('')
+
+async function createContactField() {
+  if (!newFieldLabel.value.trim()) return
+  try {
+    const field = await api<ContactField>(`/companies/${companyId.value}/contact-fields`, { method: 'POST', body: { label: newFieldLabel.value } })
+    contactFields.value = [...contactFields.value, field].sort((a, b) => a.label.localeCompare(b.label))
+    newFieldLabel.value = ''
+  } catch (error) {
+    toast.add({ title: apiErrorDetail(error, 'Não foi possível criar o campo'), color: 'error' })
+  }
+}
+
+async function removeContactField(field: ContactField) {
+  const ok = await confirmModal({
+    title: `Excluir o campo "${field.label}"?`,
+    description: `Some dos contatos, e templates ou fluxos que usam {{${field.key}}} deixam de preencher.`,
+    confirmLabel: 'Excluir'
+  })
+  if (!ok) return
+  try {
+    await api(`/companies/${companyId.value}/contact-fields/${field.id}`, { method: 'DELETE' })
+    contactFields.value = contactFields.value.filter(f => f.id !== field.id)
   } catch (error) {
     toast.add({ title: apiErrorDetail(error), color: 'error' })
   }
@@ -625,6 +656,38 @@ async function disconnectPipedrive() {
               </UBadge>
             </div>
             <p v-else class="text-sm text-muted">Nenhuma etiqueta ainda.</p>
+          </section>
+
+          <section class="space-y-3 pt-6">
+            <div>
+              <h2 class="font-display font-semibold text-lg">Campos personalizados</h2>
+              <p class="text-sm text-muted">
+                Dados extras do contato (plano, CPF, aniversário...). Viram variáveis em templates, campanhas e fluxos,
+                entram como coluna na importação de CSV e a IA enxerga os preenchidos.
+              </p>
+            </div>
+            <form v-if="isOwner" class="flex gap-2" @submit.prevent="createContactField">
+              <UInput v-model="newFieldLabel" placeholder="Novo campo, ex.: Plano" maxlength="60" class="flex-1" />
+              <UButton type="submit" label="Criar" icon="i-lucide-plus" variant="soft" :disabled="!newFieldLabel.trim()" />
+            </form>
+            <ul v-if="contactFields.length" class="divide-y divide-default rounded-md border border-default">
+              <li v-for="field in contactFields" :key="field.id" class="flex items-center justify-between gap-2 px-3 py-2">
+                <span class="text-sm">
+                  {{ field.label }}
+                  <code class="ml-2 text-xs text-muted">{{ `{{${field.key}}}` }}</code>
+                </span>
+                <UButton
+                  v-if="isOwner"
+                  icon="i-lucide-trash-2"
+                  variant="ghost"
+                  color="neutral"
+                  size="xs"
+                  :aria-label="`Excluir campo ${field.label}`"
+                  @click="removeContactField(field)"
+                />
+              </li>
+            </ul>
+            <p v-else class="text-sm text-muted">Nenhum campo ainda.</p>
           </section>
           </template>
 

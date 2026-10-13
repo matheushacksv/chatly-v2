@@ -39,6 +39,21 @@ class Tag(models.Model):
         return self.name
 
 
+class ContactField(models.Model):
+    """Campo personalizado do contato. O valor fica em Contact.custom_fields[key] e vira a variável {{key}}."""
+
+    company = models.ForeignKey('companies.Company', on_delete=models.CASCADE, related_name='contact_fields')
+    key = models.SlugField(max_length=40)
+    label = models.CharField(max_length=60)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['company', 'key'], name='unique_contact_field_key_per_company')]
+
+    def __str__(self):
+        return self.label
+
+
 class Contact(models.Model):
     account = models.ForeignKey(WhatsAppAccount, on_delete=models.CASCADE, related_name='contacts')
     wa_id = models.CharField(max_length=32)
@@ -51,6 +66,7 @@ class Contact(models.Model):
     )
     pipedrive_person_id = models.IntegerField(null=True, blank=True)
     tags = models.ManyToManyField(Tag, blank=True, related_name='contacts')
+    custom_fields = models.JSONField(default=dict, blank=True)  # {ContactField.key: valor}
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

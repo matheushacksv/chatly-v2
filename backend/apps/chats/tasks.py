@@ -8,7 +8,7 @@ from django.utils import timezone
 from apps import ai
 from apps.agents import services as agents_services
 from apps.chats import events, services, whatsapp
-from apps.chats.models import Campaign, Contact, Message
+from apps.chats.models import Campaign, Contact, ContactField, Message
 from apps.crm import pipedrive
 from apps.crm import services as crm_services
 from apps.crm.models import PipedriveAccount
@@ -96,7 +96,7 @@ def process_incoming_message(self, message_id: int, deferred: bool = False, pend
 
             tools += [criar_negocio, anotar_crm]
 
-        reply = ai.generate_reply(account.agent, history, message.content, image=image, mime_type=mime_type, memory=contact.memory, tools=tools)
+        reply = ai.generate_reply(account.agent, history, message.content, image=image, mime_type=mime_type, memory=_memory_with_fields(contact), tools=tools)
         parts = [p.strip() for p in reply.split('\n\n') if p.strip()] if account.agent.split_messages else [reply]
     except Exception as exc:
         raise self.retry(exc=exc, countdown=2**self.request.retries)
@@ -135,6 +135,13 @@ def update_contact_memory(self, contact_id: int):
     contact.save(update_fields=['memory'])
 
 
+def _memory_with_fields(contact: Contact) -> str:
+    """Memória da IA + campos personalizados preenchidos, pra IA saber o que já está cadastrado."""
+    labels = dict(ContactField.objects.filter(company_id=contact.account.company_id).values_list('key', 'label'))
+    data = '\n'.join(f'{labels[k]}: {v}' for k, v in contact.custom_fields.items() if k in labels)
+    return '\n\n'.join(filter(None, [contact.memory, data and f'Dados cadastrados:\n{data}']))
+
+
 @shared_task
 def run_campaign(campaign_id: int, contact_ids: list[int]):
     campaign = Campaign.objects.select_related('account').filter(pk=campaign_id).first()
@@ -146,8 +153,8 @@ def run_campaign(campaign_id: int, contact_ids: list[int]):
         Campaign.objects.filter(pk=campaign_id).update(status='failed')
         return
     for contact in Contact.objects.filter(pk__in=contact_ids):
-        params = services.resolve_params(campaign.body_params, contact)
         try:
+            params = services.resolve_params(campaign.body_params, contact)
             wamid = whatsapp.send_template(
                 campaign.account,
                 contact.wa_id,
@@ -157,7 +164,7 @@ def run_campaign(campaign_id: int, contact_ids: list[int]):
                 campaign.header_media_id,
                 campaign.header_media_type,
             )
-        except httpx.HTTPStatusError:
+        except (httpx.HTTPStatusError, ValidationError):  # ValidationError: contato sem valor num campo usado
             Campaign.objects.filter(pk=campaign_id).update(failed=F('failed') + 1)
             continue
         services.record_outgoing_message(

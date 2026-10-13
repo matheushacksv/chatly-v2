@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Campaign, Contact, Flow, Paginated, Tag, Template, WhatsAppAccount } from '~/types/api'
+import type { Campaign, Contact, CsvRecipient, Flow, Paginated, Tag, Template, WhatsAppAccount } from '~/types/api'
 
 const api = useApi()
 const toast = useToast()
@@ -123,9 +123,16 @@ function toggleContact(id: number) {
     : [...selectedContactIds.value, id]
 }
 
-// CSV: "numero,nome" por linha, parse no browser - backend revalida os números
+// CSV: "numero,nome" por linha ou com cabeçalho e colunas de campos personalizados, parse no browser - backend revalida os números
 const csvInput = ref<HTMLInputElement | null>(null)
-const csvNumbers = ref<{ number: string, name: string }[]>([])
+const csvNumbers = ref<CsvRecipient[]>([])
+const csvColumns = ref<{ matched: string[], ignored: string[] }>({ matched: [], ignored: [] })
+const { fields: contactFields, load: loadContactFields } = useContactFields()
+const csvColumnsText = computed(() => [
+  csvColumns.value.matched.length ? `Campos: ${csvColumns.value.matched.join(', ')}` : '',
+  csvColumns.value.ignored.length ? `Colunas ignoradas (não são campos): ${csvColumns.value.ignored.join(', ')}` : ''
+].filter(Boolean).join(' · ') || undefined)
+onMounted(loadContactFields)
 const csvInvalid = ref<string[]>([])
 
 function onCsvPicked(event: Event) {
@@ -133,18 +140,10 @@ function onCsvPicked(event: Event) {
   if (!file) return
   const reader = new FileReader()
   reader.onload = () => {
-    csvNumbers.value = []
-    csvInvalid.value = []
-    for (const line of String(reader.result).split(/\r?\n/)) {
-      if (!line.trim()) continue
-      const [rawNumber = '', ...rest] = line.split(',')
-      const digits = rawNumber.replace(/\D/g, '')
-      if (digits.length >= 10 && digits.length <= 15) {
-        csvNumbers.value.push({ number: digits, name: rest.join(',').trim() })
-      } else {
-        csvInvalid.value.push(line.trim())
-      }
-    }
+    const parsed = parseContactsCsv(String(reader.result), contactFields.value)
+    csvNumbers.value = parsed.rows
+    csvInvalid.value = parsed.invalid
+    csvColumns.value = { matched: parsed.matched, ignored: parsed.ignored }
   }
   reader.readAsText(file)
   ;(event.target as HTMLInputElement).value = ''
@@ -346,13 +345,17 @@ async function create() {
         <div v-if="mode === 'csv'" class="space-y-2">
           <input ref="csvInput" type="file" accept=".csv,.txt" class="hidden" @change="onCsvPicked">
           <UButton label="Escolher arquivo" icon="i-lucide-upload" variant="soft" @click="csvInput?.click()" />
-          <p class="text-xs text-muted">Uma linha por contato: <span class="font-mono">numero,nome</span> (nome opcional).</p>
+          <p class="text-xs text-muted">
+            Uma linha por contato: <span class="font-mono">numero,nome</span>. Pra preencher campos, use cabeçalho:
+            <span class="font-mono">numero,nome,plano</span> (colunas com o nome do campo).
+          </p>
           <UAlert
             v-if="csvNumbers.length"
             icon="i-lucide-check"
             color="success"
             variant="subtle"
             :title="`${csvNumbers.length} número(s) pronto(s) pra envio`"
+            :description="csvColumnsText"
           />
           <UAlert
             v-if="csvInvalid.length"

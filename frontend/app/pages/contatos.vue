@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Contact, Paginated, Tag, WhatsAppAccount } from '~/types/api'
+import type { Contact, CsvRecipient, Paginated, Tag, WhatsAppAccount } from '~/types/api'
 
 const api = useApi()
 const toast = useToast()
@@ -106,9 +106,16 @@ async function remove(contact: Contact) {
   }
 }
 
-// ---- import CSV: "numero,nome" por linha, parse no browser - backend revalida ----
+// ---- import CSV: "numero,nome" por linha ou com cabeçalho e colunas de campos personalizados, parse no browser - backend revalida ----
 const csvInput = ref<HTMLInputElement | null>(null)
-const importNumbers = ref<{ number: string, name: string }[]>([])
+const importNumbers = ref<CsvRecipient[]>([])
+const csvColumns = ref<{ matched: string[], ignored: string[] }>({ matched: [], ignored: [] })
+const { fields: contactFields, load: loadContactFields } = useContactFields()
+const csvColumnsText = computed(() => [
+  csvColumns.value.matched.length ? `Campos: ${csvColumns.value.matched.join(', ')}` : '',
+  csvColumns.value.ignored.length ? `Colunas ignoradas (não são campos): ${csvColumns.value.ignored.join(', ')}` : ''
+].filter(Boolean).join(' · ') || undefined)
+onMounted(loadContactFields)
 const importInvalid = ref<string[]>([])
 const importModalOpen = ref(false)
 const importing = ref(false)
@@ -118,18 +125,10 @@ function onCsvPicked(event: Event) {
   if (!file) return
   const reader = new FileReader()
   reader.onload = () => {
-    importNumbers.value = []
-    importInvalid.value = []
-    for (const line of String(reader.result).split(/\r?\n/)) {
-      if (!line.trim()) continue
-      const [rawNumber = '', ...rest] = line.split(',')
-      const digits = rawNumber.replace(/\D/g, '')
-      if (digits.length >= 10 && digits.length <= 15) {
-        importNumbers.value.push({ number: digits, name: rest.join(',').trim() })
-      } else {
-        importInvalid.value.push(line.trim())
-      }
-    }
+    const parsed = parseContactsCsv(String(reader.result), contactFields.value)
+    importNumbers.value = parsed.rows
+    importInvalid.value = parsed.invalid
+    csvColumns.value = { matched: parsed.matched, ignored: parsed.ignored }
     importModalOpen.value = true
   }
   reader.readAsText(file)
@@ -271,7 +270,7 @@ const lastTalk = (iso: string | null) => (iso ? dateFmt.format(new Date(iso)) : 
       <UModal
         v-model:open="importModalOpen"
         title="Importar contatos"
-        description="Uma linha por contato: numero,nome (nome opcional)"
+        description="Uma linha por contato: numero,nome. Com cabeçalho (numero,nome,plano...) as colunas preenchem os campos personalizados, inclusive de quem já existe."
       >
         <template #body>
           <div class="space-y-4">
@@ -280,6 +279,7 @@ const lastTalk = (iso: string | null) => (iso ? dateFmt.format(new Date(iso)) : 
               color="primary"
               variant="subtle"
               :title="`${importNumbers.length} número(s) válido(s)`"
+              :description="csvColumnsText"
             />
             <UAlert
               v-if="importInvalid.length"

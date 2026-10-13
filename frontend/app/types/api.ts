@@ -46,6 +46,20 @@ export interface Tag {
   color: TagColor
 }
 
+/** Campo personalizado do contato: o valor vira a variável {{key}} em templates e fluxos */
+export interface ContactField {
+  id: number
+  key: string
+  label: string
+}
+
+/** Linha de CSV importada (contatos e campanha): fields = {ContactField.key: valor} */
+export interface CsvRecipient {
+  number: string
+  name: string
+  fields: Record<string, string>
+}
+
 export interface Contact {
   id: number
   wa_id: string
@@ -54,6 +68,7 @@ export interface Contact {
   ai_paused: boolean
   ai_resume_at: string | null
   ai_opens_at: string | null // fora do horário da IA: quando ela volta a responder
+  custom_fields: Record<string, string>
   assigned_to: number | null
   tags: Tag[]
   created_at: string

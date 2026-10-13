@@ -314,7 +314,7 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
         />
       </UFormField>
       <p class="text-xs text-muted">
-        Variáveis: <code v-pre>{{nome}}</code>, <code v-pre>{{telefone}}</code>, <code v-pre>{{botao}}</code>, <code v-pre>{{campanha}}</code> e as guardadas no fluxo (<code v-pre>{{resposta}}</code>...). Só https, endereço interno é recusado. Timeout de 10s.
+        Variáveis: <code v-pre>{{nome}}</code>, <code v-pre>{{telefone}}</code>, <code v-pre>{{botao}}</code>, <code v-pre>{{campanha}}</code>, os campos do contato (<code v-pre>{{plano}}</code>...) e as guardadas no fluxo (<code v-pre>{{resposta}}</code>...). Só https, endereço interno é recusado. Timeout de 10s.
       </p>
     </template>
 

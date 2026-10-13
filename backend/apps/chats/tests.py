@@ -22,7 +22,7 @@ from django.core.files.base import ContentFile
 
 from apps.accounts.models import User
 from apps.agents.models import Agent, Credential, Document, DocumentChunk
-from apps.chats.models import Campaign, Contact, Message, Sticker, Tag, TemplateHeaderMedia, WhatsAppAccount
+from apps.chats.models import Campaign, Contact, ContactField, Message, Sticker, Tag, TemplateHeaderMedia, WhatsAppAccount
 from apps.companies.models import Company, Membership
 from apps.crm.models import PipedriveAccount
 from core.exceptions import NotFound, PipedriveError, ValidationError
@@ -4127,3 +4127,88 @@ class TagTests(BaseChatsTestCase):
         self.contact.tags.add(tag)
         self.assertEqual(self.client.delete(f'{self.base}/tags/{tag.pk}', headers=self.auth).status_code, 204)
         self.assertFalse(self.contact.tags.exists())
+
+
+@patch('apps.chats.events.publish')
+class ContactFieldTests(BaseChatsTestCase):
+    url = CampaignTests.url
+    campaign_payload = CampaignTests.campaign_payload
+    post_campaign = CampaignTests.post_campaign
+
+    def setUp(self):
+        super().setUp()
+        self.base = f'/api/companies/{self.company.pk}'
+        self.plano = ContactField.objects.create(company=self.company, key='plano', label='Plano')
+
+    def post(self, path, data):
+        return self.client.post(f'{self.base}{path}', data=json.dumps(data), content_type='application/json', headers=self.auth)
+
+    def test_create_field_slugifies_and_rejects_duplicate_or_reserved(self, mock_pub):
+        r = self.post('/contact-fields', {'label': 'Data de Nascimento'})
+        self.assertEqual(r.status_code, 201, r.json())
+        self.assertEqual(r.json()['key'], 'data_de_nascimento')
+        self.assertEqual(self.post('/contact-fields', {'label': 'data de nascimento'}).status_code, 409)
+        self.assertEqual(self.post('/contact-fields', {'label': 'Nome'}).status_code, 400)
+        listed = self.client.get(f'{self.base}/contact-fields', headers=self.auth).json()
+        self.assertEqual([f['key'] for f in listed], ['data_de_nascimento', 'plano'])
+        self.assertEqual(self.client.get(f'/api/companies/{self.other_company.pk}/contact-fields', headers=self.auth).status_code, 404)
+
+    def test_patch_contact_sets_and_clears_fields(self, mock_pub):
+        url = f'{self.base}/contacts/{self.contact.pk}'
+        r = self.client.patch(url, data={'custom_fields': {'plano': ' Gold '}}, content_type='application/json', headers=self.auth)
+        self.assertEqual(r.json()['custom_fields'], {'plano': 'Gold'})
+        r = self.client.patch(url, data={'custom_fields': {'plano': ''}}, content_type='application/json', headers=self.auth)
+        self.assertEqual(r.json()['custom_fields'], {})
+        r = self.client.patch(url, data={'custom_fields': {'cpf': '1'}}, content_type='application/json', headers=self.auth)
+        self.assertEqual(r.status_code, 400)
+
+    def test_resolve_params_uses_fields_and_refuses_blank(self, mock_pub):
+        self.contact.custom_fields = {'plano': 'Gold'}
+        self.assertEqual(
+            services.resolve_params(['{{nome}}', 'plano {{ plano }}', '{{telefone}}'], self.contact),
+            ['Cliente A', 'plano Gold', '5511999999999'],
+        )
+        self.contact.custom_fields = {}
+        with self.assertRaises(ValidationError):
+            services.resolve_params(['{{plano}}'], self.contact)
+
+    @patch('apps.chats.tasks.run_campaign.delay')
+    @patch('apps.chats.whatsapp.list_templates', return_value=TEMPLATES_FIXTURE)
+    def test_campaign_csv_saves_fields_and_rejects_unknown_variable(self, mock_list, mock_delay, mock_pub):
+        r = self.post_campaign(self.company.pk, body_params=['{{nome}}', '{{cpf}}'])
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('{{cpf}}', r.json()['detail'])
+        r = self.post_campaign(
+            self.company.pk, body_params=['{{nome}}', '{{plano}}'], contact_ids=[],
+            numbers=[{'number': '5511988887777', 'name': 'Novo', 'fields': {'plano': 'Prata', 'ignorada': 'x'}}],
+        )
+        self.assertEqual(r.status_code, 201, r.json())
+        self.assertEqual(Contact.objects.get(wa_id='5511988887777').custom_fields, {'plano': 'Prata'})
+
+    def test_import_contacts_updates_fields_of_existing(self, mock_pub):
+        r = self.post(f'/whatsapp-accounts/{self.account.pk}/contacts/import', {
+            'numbers': [{'number': self.contact.wa_id, 'fields': {'plano': 'Gold'}}, {'number': '5511977776666', 'fields': {'plano': ''}}],
+        })
+        self.assertEqual(r.json(), {'created': 1, 'existing': 1})
+        self.contact.refresh_from_db()
+        self.assertEqual(self.contact.custom_fields, {'plano': 'Gold'})
+        self.assertEqual(Contact.objects.get(wa_id='5511977776666').custom_fields, {})
+
+    @patch('apps.chats.whatsapp.send_template', return_value='wamid.ok')
+    @patch('apps.chats.whatsapp.list_templates', return_value=TEMPLATES_FIXTURE)
+    def test_run_campaign_fails_only_contact_without_value(self, mock_list, mock_send, mock_pub):
+        self.contact.custom_fields = {'plano': 'Gold'}
+        self.contact.save()
+        empty = Contact.objects.create(account=self.account, wa_id='5511966665555')
+        campaign = Campaign.objects.create(
+            account=self.account, name='c', template_name='oferta', template_language='pt_BR', body_params=['{{nome}}', '{{plano}}'], total=2
+        )
+        tasks.run_campaign(campaign.pk, [self.contact.pk, empty.pk])
+        campaign.refresh_from_db()
+        self.assertEqual((campaign.sent, campaign.failed), (1, 1))
+        self.assertEqual(mock_send.call_args.args[4], ['Cliente A', 'Gold'])
+
+    def test_ai_memory_includes_filled_fields(self, mock_pub):
+        self.contact.memory = 'Gosta de café.'
+        self.contact.custom_fields = {'plano': 'Gold', 'apagado': 'x'}
+        self.assertEqual(tasks._memory_with_fields(self.contact), 'Gosta de café.\n\nDados cadastrados:\nPlano: Gold')

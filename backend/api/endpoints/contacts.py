@@ -4,7 +4,7 @@ from ninja import Router, Status
 from ninja.pagination import paginate
 
 from apps.chats import services
-from apps.chats.schemas import ContactCreateDTO, ContactImportDTO, ContactImportResultDTO, ContactOutDTO, ContactPatchDTO, TagInDTO, TagOutDTO
+from apps.chats.schemas import ContactCreateDTO, ContactImportDTO, ContactImportResultDTO, ContactOutDTO, ContactFieldInDTO, ContactFieldOutDTO, ContactPatchDTO, TagInDTO, TagOutDTO
 from apps.companies import services as companies_services
 
 router = Router(tags=['Contacts'])
@@ -67,6 +67,25 @@ def create_tag_endpoint(request, company_id: int, payload: TagInDTO):
 def delete_tag_endpoint(request, company_id: int, tag_id: int):
     company = companies_services.get_owned_company(request.auth, company_id)
     services.delete_tag(company, tag_id)
+    return Status(204, None)
+
+
+@router.get('/{company_id}/contact-fields', response=list[ContactFieldOutDTO])
+def list_contact_fields_endpoint(request, company_id: int):
+    company = companies_services.get_company(request.auth, company_id)
+    return services.list_contact_fields(company)
+
+
+@router.post('/{company_id}/contact-fields', response={201: ContactFieldOutDTO})
+def create_contact_field_endpoint(request, company_id: int, payload: ContactFieldInDTO):
+    company = companies_services.get_owned_company(request.auth, company_id)
+    return Status(201, services.create_contact_field(company, payload.label))
+
+
+@router.delete('/{company_id}/contact-fields/{field_id}', response={204: None})
+def delete_contact_field_endpoint(request, company_id: int, field_id: int):
+    company = companies_services.get_owned_company(request.auth, company_id)
+    services.delete_contact_field(company, field_id)
     return Status(204, None)
 
 

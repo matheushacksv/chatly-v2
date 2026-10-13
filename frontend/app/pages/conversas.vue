@@ -990,6 +990,13 @@ const accountItems = computed(() =>
           />
         </div>
 
+        <div v-if="companyId">
+          <p class="text-xs font-semibold text-muted uppercase mb-2">
+            Campos
+          </p>
+          <AppContactFields :contact="selected" :company-id="companyId" @updated="mergeContact" />
+        </div>
+
         <div>
           <div class="flex items-center justify-between mb-2">
             <p class="text-xs font-semibold text-muted uppercase">Memória da IA</p>
