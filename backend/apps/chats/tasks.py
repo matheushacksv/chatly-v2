@@ -7,11 +7,8 @@ from django.utils import timezone
 
 from apps import ai
 from apps.agents import services as agents_services
-from apps.chats import events, services, whatsapp
-from apps.chats.models import Campaign, Contact, ContactField, Message
-from apps.crm import pipedrive
-from apps.crm import services as crm_services
-from apps.crm.models import PipedriveAccount
+from apps.chats import ai_tools, events, services, whatsapp
+from apps.chats.models import Campaign, Contact, ContactField, FollowUp, Message
 from core.exceptions import ValidationError
 
 
@@ -60,47 +57,12 @@ def process_incoming_message(self, message_id: int, deferred: bool = False, pend
         if message.message_type == 'image':
             image, mime_type = whatsapp.download_media(account, message.media_id)
 
-        handed_off = False
-
-        def transferir_para_atendente() -> str:
-            """Transfere a conversa para um humano. Use quando o cliente pedir para falar com uma pessoa
-            ou quando você não conseguir resolver"""
-            nonlocal handed_off
-            handed_off = True
-            services.pause_ai(contact)
-            events.publish(contact.account.company_id, {'type': 'handoff', 'contact_id': contact.pk, 'name': contact.name or contact.wa_id})
-            return 'Transferido'
-
-        tools = [transferir_para_atendente]
-        pd = PipedriveAccount.objects.filter(company=account.company).first()
-        if pd:
-
-            def criar_negocio(titulo: str) -> str:
-                """Cria negócio (deal) no CRM para este cliente. Use quando você concluir seu objetivo
-                O título deve ser o nome"""
-                try:
-                    deal = crm_services.create_deal_for_contact(pd, contact, titulo)
-                    return f'Negócio criado no CRM (id {deal["id"]})'
-                except Exception as exc:
-                    return f'Falha ao criar negócio: {exc}'
-
-            def anotar_crm(anotacao: str) -> str:
-                """Salva uma anotação sobre este cliente no CRM. Use para registrar fatos importantes para a equipe de vendas:
-                orçamento, objeções, quem decide e etc"""
-                try:
-                    person_id = crm_services.find_or_create_person(pd, contact)
-                    pipedrive.create_note(pd.api_key, anotacao, person_id=person_id)
-                    return 'Anotação salva no CRM'
-                except Exception as exc:
-                    return f'Falha ao anotar no CRM: {exc}'
-
-            tools += [criar_negocio, anotar_crm]
-
+        tools, tool_state = ai_tools.build_tools(contact)
         reply = ai.generate_reply(account.agent, history, message.content, image=image, mime_type=mime_type, memory=_memory_with_fields(contact), tools=tools)
         parts = [p.strip() for p in reply.split('\n\n') if p.strip()] if account.agent.split_messages else [reply]
     except Exception as exc:
         raise self.retry(exc=exc, countdown=2**self.request.retries)
-    _send_parts(self, message_id, contact, parts, deferred, handed_off)
+    _send_parts(self, message_id, contact, parts, deferred, tool_state['handed_off'])
     update_contact_memory.delay(contact.pk)
 
 
@@ -182,3 +144,24 @@ def dispatch_scheduled_campaigns():
     for campaign in due:
         if Campaign.objects.filter(pk=campaign.pk, status=Campaign.Status.SCHEDULED).update(status=Campaign.Status.SENDING):
             run_campaign.delay(campaign.pk, campaign.recipient_ids)
+
+
+@shared_task
+def dispatch_followups():
+    """Beat, a cada minuto: envia as retomadas agendadas pela IA. Atendente no controle (IA pausada) cancela."""
+    due = FollowUp.objects.filter(status=FollowUp.Status.PENDING, send_at__lte=timezone.now()).select_related('contact__account')
+    for followup in due:
+        # update condicional: dois beats (ou um retry) não mandam a mesma retomada duas vezes
+        if not FollowUp.objects.filter(pk=followup.pk, status=FollowUp.Status.PENDING).update(status=FollowUp.Status.SENT):
+            continue
+        contact = followup.contact
+        if contact.ai_paused:
+            FollowUp.objects.filter(pk=followup.pk).update(status=FollowUp.Status.CANCELED, error='atendente assumiu a conversa')
+            continue
+        try:
+            wamid = whatsapp.send_text(contact.account, contact.wa_id, followup.text)
+        except httpx.HTTPError as exc:
+            detail = whatsapp.graph_error_message(exc.response) if isinstance(exc, httpx.HTTPStatusError) else str(exc)
+            FollowUp.objects.filter(pk=followup.pk).update(status=FollowUp.Status.FAILED, error=detail[:255])
+            continue
+        services.record_outgoing_message(contact, wamid, followup.text)

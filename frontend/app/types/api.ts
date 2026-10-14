@@ -207,6 +207,50 @@ export interface Agent {
   ai_hours_start: string | null // 'HH:MM:SS'; null = IA sempre atende
   ai_hours_end: string | null
   ai_days: number[] // 0 = segunda
+  native_tools: NativeTool[]
+  created_at: string
+}
+
+export type NativeTool = 'handoff' | 'followup' | 'save_field' | 'tag' | 'pipedrive'
+
+export interface AgentToolParam {
+  name: string
+  type: 'string' | 'number' | 'boolean'
+  description: string
+  required: boolean
+}
+
+/** Ferramenta HTTP criada pelo dono; secret_header_keys traz só os nomes, o valor nunca volta */
+export interface AgentTool {
+  id: number
+  name: string
+  description: string
+  parameters: AgentToolParam[]
+  method: HttpMethod
+  url: string
+  headers: { key: string, value: string }[]
+  secret_header_keys: string[]
+  body: string
+  requires_confirmation: boolean
+  active: boolean
+  created_at: string
+}
+
+export interface ToolCall {
+  id: number
+  name: string
+  arguments: Record<string, unknown>
+  result: string
+  ok: boolean
+  created_at: string
+}
+
+export interface FollowUp {
+  id: number
+  send_at: string
+  text: string
+  status: 'pending' | 'sent' | 'canceled' | 'failed'
+  error: string
   created_at: string
 }
 

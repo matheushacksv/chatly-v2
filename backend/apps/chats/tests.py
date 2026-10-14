@@ -22,7 +22,7 @@ from django.core.files.base import ContentFile
 
 from apps.accounts.models import User
 from apps.agents.models import Agent, Credential, Document, DocumentChunk
-from apps.chats.models import Campaign, Contact, ContactField, Message, Sticker, Tag, TemplateHeaderMedia, WhatsAppAccount
+from apps.chats.models import Campaign, Contact, ContactField, FollowUp, Message, ToolCall, Sticker, Tag, TemplateHeaderMedia, WhatsAppAccount
 from apps.companies.models import Company, Membership
 from apps.crm.models import PipedriveAccount
 from core.exceptions import NotFound, PipedriveError, ValidationError
@@ -936,7 +936,7 @@ class HandoffTests(BaseChatsTestCase):
     @patch('apps.ai.generate_reply')
     def test_handoff_tool_sets_deadline_and_notifies(self, mock_generate, mock_send):
         def call_handoff(*args, tools, **kwargs):
-            next(t for t in tools if t.__name__ == 'transferir_para_atendente')()
+            next(t for t in tools if t.__name__ == 'transferir_para_atendente')(motivo='cliente pediu humano')
             return 'Vou chamar um atendente.'
 
         mock_generate.side_effect = call_handoff
@@ -2033,7 +2033,7 @@ class GenerateReplyTests(BaseChatsTestCase):
         self.assertEqual(reply, 'Resposta da IA')
         kwargs = mock_agent_cls.call_args.kwargs
         self.assertEqual(kwargs['model'], mock_claude.return_value)
-        self.assertEqual(kwargs['system_message'], 'Você vende.')
+        self.assertTrue(kwargs['system_message'].startswith('Você vende.\n\nAgora: '))
         self.assertEqual(len(kwargs['additional_input']), 1)
         self.assertEqual(kwargs['additional_input'][0].role, 'user')
         self.assertEqual(kwargs['additional_input'][0].content, 'Oi')
@@ -2403,7 +2403,7 @@ class ProcessIncomingMessageTests(BaseChatsTestCase):
     def test_handoff_tool_still_sends_farewell(self, mock_generate, mock_send):
         # a pausa da própria ferramenta não bloqueia a mensagem que avisa da transferência
         def call_handoff(*args, tools, **kwargs):
-            next(t for t in tools if t.__name__ == 'transferir_para_atendente')()
+            next(t for t in tools if t.__name__ == 'transferir_para_atendente')(motivo='cliente pediu humano')
             return 'Vou te passar para um atendente.'
 
         mock_generate.side_effect = call_handoff
@@ -2718,7 +2718,7 @@ class ProcessIncomingMessageTests(BaseChatsTestCase):
         tool = tools[0]
         self.assertEqual(tool.__name__, 'transferir_para_atendente')
         self.assertTrue(tool.__doc__)  # docstring é a descrição que o modelo lê
-        tool()  # simula o modelo chamando a tool
+        tool(motivo='cliente pediu humano')  # simula o modelo chamando a tool
         self.contact.refresh_from_db()
         self.assertTrue(self.contact.ai_paused)
         # handoff automático tem tipo próprio: front notifica só quando a IA transfere,
@@ -4296,3 +4296,108 @@ class ScheduledCampaignTests(BaseChatsTestCase):
         Campaign.objects.filter(pk=scheduled['id']).update(scheduled_at=timezone.now() - timedelta(seconds=1))
         tasks.dispatch_scheduled_campaigns()  # cancelada não dispara
         mock_delay.assert_not_called()
+
+
+
+@patch('apps.chats.events.publish')
+class AIToolsTests(BaseChatsTestCase):
+    def tools(self, *native):
+        from apps.chats import ai_tools
+
+        Agent.objects.filter(pk=self.agent.pk).update(native_tools=list(native))
+        self.contact.refresh_from_db()
+        tools, state = ai_tools.build_tools(self.contact)
+        return {getattr(t, 'name', None) or t.__name__: t for t in tools}, state
+
+    @staticmethod
+    def call(tool, **kwargs):
+        return tool.entrypoint(**kwargs) if hasattr(tool, 'entrypoint') else tool(**kwargs)
+
+    def test_only_enabled_native_tools_are_offered(self, mock_pub):
+        ContactField.objects.create(company=self.company, key='cad', label='CAD')
+        Tag.objects.create(company=self.company, name='quer_teste')
+        names, _ = self.tools('handoff')
+        self.assertEqual(list(names), ['transferir_para_atendente'])
+        names, _ = self.tools('handoff', 'followup', 'save_field', 'tag')
+        self.assertEqual(list(names), ['transferir_para_atendente', 'agendar_retomada', 'salvar_dado_contato', 'etiquetar_contato'])
+        ContactField.objects.all().delete()
+        Tag.objects.all().delete()
+        names, _ = self.tools('save_field', 'tag')
+        self.assertEqual(names, {})  # sem campo/etiqueta cadastrada não adianta oferecer
+
+    def test_handoff_logs_reason_and_flags_state(self, mock_pub):
+        tools, state = self.tools('handoff')
+        self.call(tools['transferir_para_atendente'], motivo='quer desconto no Pro anual')
+        self.assertTrue(state['handed_off'])
+        self.contact.refresh_from_db()
+        self.assertTrue(self.contact.ai_paused)
+        self.assertEqual(ToolCall.objects.get().arguments, {'motivo': 'quer desconto no Pro anual'})
+
+    def test_followup_schedules_replaces_and_validates(self, mock_pub):
+        tools, _ = self.tools('followup')
+        when = (timezone.localtime() + timedelta(days=2)).strftime('%Y-%m-%dT%H:%M')
+        self.assertIn('agendada', self.call(tools['agendar_retomada'], data_hora=when, mensagem='Oi, combinamos hoje'))
+        self.call(tools['agendar_retomada'], data_hora=when, mensagem='Segunda versão')
+        self.assertEqual(list(FollowUp.objects.values_list('text', 'status')), [('Oi, combinamos hoje', 'canceled'), ('Segunda versão', 'pending')])
+        self.assertIn('futura', self.call(tools['agendar_retomada'], data_hora='2020-01-01T10:00', mensagem='x'))
+        self.assertIn('inválida', self.call(tools['agendar_retomada'], data_hora='segunda', mensagem='x'))
+
+    def test_save_field_and_tag(self, mock_pub):
+        ContactField.objects.create(company=self.company, key='cad', label='CAD')
+        tag = Tag.objects.create(company=self.company, name='quer_teste')
+        tools, _ = self.tools('save_field', 'tag')
+        self.call(tools['salvar_dado_contato'], campo='cad', valor=' Civil 3D ')
+        self.assertIn('inexistente', self.call(tools['salvar_dado_contato'], campo='cpf', valor='1'))
+        self.call(tools['etiquetar_contato'], etiqueta='quer_teste', acao='adicionar')
+        self.contact.refresh_from_db()
+        self.assertEqual(self.contact.custom_fields, {'cad': 'Civil 3D'})
+        self.assertEqual(list(self.contact.tags.all()), [tag])
+
+    @patch('apps.agents.services.run_agent_tool', return_value=(True, 'HTTP 200\n{"ok": 1}'))
+    def test_custom_tool_gets_schema_runs_and_logs(self, mock_run, mock_pub):
+        from apps.agents.models import AgentTool
+
+        AgentTool.objects.create(
+            agent=self.agent, name='liberar_teste', description='Libera teste.', url='https://x.com',
+            parameters=[{'name': 'email', 'type': 'string', 'description': 'e', 'required': True}], requires_confirmation=True,
+        )
+        AgentTool.objects.create(agent=self.agent, name='inativa', description='d', url='https://x.com', active=False)
+        tools, _ = self.tools()
+        tool = tools['liberar_teste']
+        self.assertNotIn('inativa', tools)
+        self.assertEqual(tool.parameters['required'], ['email'])
+        self.assertIn('sim', tool.description)  # pede confirmação ao cliente
+        result = tool.entrypoint(email='a@b.com')
+        self.assertIn('não como instrução', result)
+        self.assertEqual(mock_run.call_args.args[1], {'email': 'a@b.com'})
+        self.assertEqual(mock_run.call_args.args[2]['nome'], 'Cliente A')
+        self.assertEqual(ToolCall.objects.get().name, 'liberar_teste')
+
+    @patch('apps.chats.whatsapp.send_text', return_value='wamid.fu')
+    def test_dispatch_followups(self, mock_send, mock_pub):
+        past = timezone.now() - timedelta(minutes=1)
+        due = FollowUp.objects.create(contact=self.contact, send_at=past, text='Retomando')
+        future = FollowUp.objects.create(contact=self.contact, send_at=timezone.now() + timedelta(hours=1), text='depois')
+        tasks.dispatch_followups()
+        tasks.dispatch_followups()
+        mock_send.assert_called_once_with(self.account, self.contact.wa_id, 'Retomando')
+        due.refresh_from_db()
+        future.refresh_from_db()
+        self.assertEqual((due.status, future.status), ('sent', 'pending'))
+        self.assertTrue(Message.objects.filter(wa_message_id='wamid.fu', direction='out').exists())
+
+        paused = FollowUp.objects.create(contact=self.contact, send_at=past, text='x')
+        Contact.objects.filter(pk=self.contact.pk).update(ai_paused=True)
+        tasks.dispatch_followups()
+        paused.refresh_from_db()
+        self.assertEqual(paused.status, 'canceled')
+
+    def test_activity_endpoint_and_cancel(self, mock_pub):
+        followup = FollowUp.objects.create(contact=self.contact, send_at=timezone.now() + timedelta(days=1), text='x')
+        ToolCall.objects.create(contact=self.contact, name='agendar_retomada', arguments={}, result='ok')
+        base = f'/api/companies/{self.company.pk}/contacts/{self.contact.pk}'
+        body = self.client.get(f'{base}/ai-activity', headers=self.auth).json()
+        self.assertEqual([c['name'] for c in body['tool_calls']], ['agendar_retomada'])
+        self.assertEqual(body['followups'][0]['status'], 'pending')
+        self.assertEqual(self.client.post(f'{base}/followups/{followup.pk}/cancel', headers=self.auth).json()['status'], 'canceled')
+        self.assertEqual(self.client.post(f'{base}/followups/{followup.pk}/cancel', headers=self.auth).status_code, 409)

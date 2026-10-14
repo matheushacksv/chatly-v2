@@ -165,3 +165,30 @@ class TemplateHeaderMedia(models.Model):
         constraints = [
             models.UniqueConstraint(fields=['account', 'template_name', 'template_language'], name='unique_template_header_media')
         ]
+
+class ToolCall(models.Model):
+    """Registro de cada ferramenta que a IA usou na conversa: o atendente vê o que ela fez."""
+
+    contact = models.ForeignKey(Contact, on_delete=models.CASCADE, related_name='tool_calls')
+    name = models.CharField(max_length=64)
+    arguments = models.JSONField(default=dict)
+    result = models.TextField(blank=True, default='')
+    ok = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class FollowUp(models.Model):
+    """Retomada agendada pela IA ("me chama segunda"). dispatch_followups envia quando vencer."""
+
+    class Status(models.TextChoices):
+        PENDING = 'pending', 'Agendada'
+        SENT = 'sent', 'Enviada'
+        CANCELED = 'canceled', 'Cancelada'
+        FAILED = 'failed', 'Falhou'
+
+    contact = models.ForeignKey(Contact, on_delete=models.CASCADE, related_name='followups')
+    send_at = models.DateTimeField()
+    text = models.TextField()
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    error = models.CharField(max_length=255, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)

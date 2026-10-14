@@ -10,7 +10,9 @@ from django.test import TestCase
 from apps import ai
 from apps.accounts.models import User
 from apps.agents import services, tasks
-from apps.agents.models import Agent, Credential, Document, DocumentChunk
+import json
+
+from apps.agents.models import Agent, AgentTool, Credential, Document, DocumentChunk
 from apps.companies.models import Company
 from apps.testing import auth_header
 
@@ -761,4 +763,80 @@ class KnowledgeContextTests(BaseAgentsTestCase):
 
         ai.generate_reply(self.agent, [], 'oi')
 
-        self.assertEqual(mock_agent_cls.call_args.kwargs['system_message'], self.agent.prompt)
+        self.assertNotIn('<knowledge>', mock_agent_cls.call_args.kwargs['system_message'])
+
+
+class AgentToolTests(BaseAgentsTestCase):
+    def url(self, tool_id=None, suffix=''):
+        base = f'/api/companies/{self.company.pk}/agents/{self.agent.pk}/tools'
+        return f'{base}/{tool_id}{suffix}' if tool_id else base
+
+    def payload(self, **overrides):
+        data = {
+            'name': 'consultar_pagamento',
+            'description': 'Use quando o cliente disser que pagou.',
+            'url': 'https://api.exemplo.com/pagamentos?email={{email}}',
+            'method': 'GET',
+            'parameters': [{'name': 'email', 'type': 'string', 'description': 'email do cliente'}],
+            'headers': [{'key': 'X-Origem', 'value': 'chatly'}],
+            'secret_headers': [{'key': 'Authorization', 'value': 'Bearer segredo'}],
+        }
+        data.update(overrides)
+        return data
+
+    def post(self, data, user=None):
+        return self.client.post(self.url(), data=json.dumps(data), content_type='application/json', headers=auth_header(user or self.user))
+
+    def test_create_hides_secret_and_patch_keeps_it(self):
+        response = self.post(self.payload())
+        self.assertEqual(response.status_code, 201, response.json())
+        body = response.json()
+        self.assertEqual(body['secret_header_keys'], ['Authorization'])
+        self.assertNotIn('segredo', json.dumps(body))
+
+        url = self.url(body['id'])
+        patch_body = {'secret_headers': [{'key': 'Authorization', 'value': ''}], 'description': 'Nova descrição'}
+        response = self.client.patch(url, data=json.dumps(patch_body), content_type='application/json', headers=self.auth)
+        self.assertEqual(response.status_code, 200, response.json())
+        tool = AgentTool.objects.get(pk=body['id'])
+        self.assertEqual(json.loads(tool.secret_headers), {'Authorization': 'Bearer segredo'})
+
+    def test_validation_and_owner_only(self):
+        for bad in ({'name': 'Com Espaço'}, {'name': 'transferir_para_atendente'}, {'url': 'http://x.com'}, {'description': ' '}):
+            with self.subTest(bad=bad):
+                self.assertEqual(self.post(self.payload(**bad)).status_code, 400)
+        self.assertEqual(self.post(self.payload()).status_code, 201)
+        self.assertEqual(self.post(self.payload()).status_code, 409)
+
+        from apps.companies.models import Membership
+        Membership.objects.create(company=self.company, user=self.other_user)
+        self.assertEqual(self.post(self.payload(name='outra'), user=self.other_user).status_code, 404)
+
+    @patch('apps.automations.outbound.fetch', return_value=(200, '{"pago": true}'))
+    def test_run_renders_arguments_contact_and_secret(self, mock_fetch):
+        tool = AgentTool.objects.create(
+            agent=self.agent, name='registrar', description='d', method='POST', url='https://api.x.com/c?q={{email}}',
+            headers=[{'key': 'X-Nome', 'value': '{{nome}}'}], secret_headers=json.dumps({'Authorization': 'Bearer s'}),
+            body='{"nome": "{{nome}}", "obs": "{{obs}}"}',
+        )
+        ok, result = services.run_agent_tool(tool, {'email': 'a b@c.com', 'obs': 'disse "oi"'}, {'nome': 'Ana'})
+        self.assertTrue(ok)
+        self.assertIn('{"pago": true}', result)
+        method, url, headers, body = mock_fetch.call_args.args
+        self.assertEqual(url, 'https://api.x.com/c?q=a%20b%40c.com')
+        self.assertEqual(headers['Authorization'], 'Bearer s')
+        self.assertEqual(headers['X-Nome'], 'Ana')
+        self.assertEqual(json.loads(body), {'nome': 'Ana', 'obs': 'disse "oi"'})
+
+    def test_run_failure_returns_text_instead_of_raising(self):
+        tool = AgentTool.objects.create(agent=self.agent, name='x_y', description='d', url='https://localhost/x')
+        ok, result = services.run_agent_tool(tool, {}, {})
+        self.assertFalse(ok)
+        self.assertIn('Falha', result)
+
+    def test_native_tools_patch_validates_names(self):
+        url = f'/api/companies/{self.company.pk}/agents/{self.agent.pk}'
+        response = self.client.patch(url, data={'native_tools': ['handoff', 'followup', 'followup']}, content_type='application/json', headers=self.auth)
+        self.assertEqual(response.json()['native_tools'], ['handoff', 'followup'])
+        response = self.client.patch(url, data={'native_tools': ['inventada']}, content_type='application/json', headers=self.auth)
+        self.assertEqual(response.status_code, 422)

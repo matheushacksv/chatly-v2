@@ -168,11 +168,15 @@ async function enableNotifications() {
 // aqui só consumimos os eventos pra atualizar chat e lista
 const { lastEvent, openContact, openContactData } = useChatEvents()
 
+// muda a cada evento da conversa aberta: o painel "Ações da IA" recarrega
+const activityKey = ref(0)
+
 watch(lastEvent, (entry) => {
   if (!entry) return
   const event = entry.event
   // eventos de conexão pessoal têm tabela/endpoints próprios - ignora aqui
   if (event.channel === 'personal' || event.type === 'personal_status') return
+  if (event.contact_id === selectedId.value) activityKey.value++
   if (event.type === 'reconnect') {
     // ficou offline: catch-up do que perdeu
     loadMessages()
@@ -1021,6 +1025,13 @@ const accountItems = computed(() =>
             Campos
           </p>
           <AppContactFields :contact="selected" :company-id="companyId" @updated="mergeContact" />
+        </div>
+
+        <div v-if="companyId">
+          <p class="text-xs font-semibold text-muted uppercase mb-2">
+            Ações da IA
+          </p>
+          <AppAIActivity :contact-id="selected.id" :company-id="companyId" :refresh-key="activityKey" />
         </div>
 
         <div>

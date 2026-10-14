@@ -6,6 +6,7 @@ from agno.models.message import Message
 from agno.models.openai import OpenAIResponses
 from agno.run.base import RunStatus
 from django.conf import settings
+from django.utils import timezone
 from openai import OpenAI
 from pgvector.django import CosineDistance
 
@@ -20,6 +21,8 @@ MEMORY_PROMPT = (
     '(nome, preferências, contexto de compra, decisões). Máximo 20 linhas. '
     'Não inclua opiniões nem transcrição da conversa. Responda apenas com as anotações. '
 )
+WEEKDAYS = ('segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado', 'domingo')
+
 SPLIT_PROMPT = (
     '\n\nDivida sua resposta em mensagens curtas de WhatsApp separadas por uma linha em branco. '
     'Cada bloco vira uma mensagem separada no chat. Use de 1 a 4 mensagens, como uma pessoa digitando.'
@@ -68,7 +71,9 @@ def embed_text(texts: list[str]) -> list[list[float]]:
 
 
 def generate_reply(agent: Agent, history: list[dict], text: str, image: bytes | None = None, mime_type: str = '', memory='', tools=None) -> str:
-    system_message = agent.prompt
+    now = timezone.localtime()
+    # sem isso a IA não sabe que dia é hoje e erra "segunda que vem", "depois do dia 14"
+    system_message = agent.prompt + f'\n\nAgora: {WEEKDAYS[now.weekday()]}, {now:%d/%m/%Y %H:%M} (horário de Brasília).'
     if memory:
         system_message += f'\n\nAnotações sobre este cliente:\n<memory>\n{memory}\n</memory>'
     context = _knowledge_context(agent, text)

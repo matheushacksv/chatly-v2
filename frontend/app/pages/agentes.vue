@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { z } from 'zod'
-import type { Agent, AgentDocument, Credential } from '~/types/api'
+import type { Agent, AgentDocument, Credential, NativeTool } from '~/types/api'
 
 const api = useApi()
 const toast = useToast()
 const confirmModal = useConfirm()
-const { activeId: companyId } = useCompany()
+const { activeId: companyId, isOwner } = useCompany()
 
 // ---- dados ----
 const agents = ref<Agent[]>([])
@@ -70,7 +70,8 @@ const schema = z.object({
   ai_hours_on: z.boolean(),
   ai_hours_start: z.string(),
   ai_hours_end: z.string(),
-  ai_days: z.array(z.number())
+  ai_days: z.array(z.number()),
+  native_tools: z.array(z.string())
 }).refine(data => editing.value !== null || data.credential_id !== null, {
   message: 'Escolha uma credencial',
   path: ['credential_id']
@@ -117,8 +118,18 @@ const state = reactive({
   ai_hours_on: false,
   ai_hours_start: '09:00',
   ai_hours_end: '18:00',
-  ai_days: [...ALL_DAYS]
+  ai_days: [...ALL_DAYS],
+  native_tools: ['handoff', 'pipedrive'] as NativeTool[]
 })
+
+// ferramentas embutidas: o dono escolhe o que a IA pode fazer sozinha
+const NATIVE_TOOL_ITEMS: { label: string, description: string, value: NativeTool }[] = [
+  { label: 'Transferir para atendente', description: 'Pausa a IA e passa a conversa pra equipe, com o motivo', value: 'handoff' },
+  { label: 'Agendar retomada', description: 'Programa uma mensagem pra data combinada ("me chama segunda")', value: 'followup' },
+  { label: 'Salvar dado do contato', description: 'Preenche os campos personalizados com o que o cliente informou', value: 'save_field' },
+  { label: 'Etiquetar contato', description: 'Adiciona ou remove etiquetas existentes', value: 'tag' },
+  { label: 'Pipedrive', description: 'Cria negócio e anota no CRM (precisa do Pipedrive conectado)', value: 'pipedrive' }
+]
 
 const modelItems = computed(() => {
   const cred = credentials.value.find(c => c.id === state.credential_id)
@@ -137,7 +148,7 @@ watch(() => state.credential_id, (id) => {
 
 function openCreate() {
   editing.value = null
-  Object.assign(state, { name: '', description: '', model: '', prompt: '', response_delay: 0, split_messages: false, handoff_resume_hours: 24, credential_id: null, ai_hours_on: false, ai_hours_start: '09:00', ai_hours_end: '18:00', ai_days: [...ALL_DAYS] })
+  Object.assign(state, { name: '', description: '', model: '', prompt: '', response_delay: 0, split_messages: false, handoff_resume_hours: 24, credential_id: null, ai_hours_on: false, ai_hours_start: '09:00', ai_hours_end: '18:00', ai_days: [...ALL_DAYS], native_tools: ['handoff', 'pipedrive'] })
   documents.value = []
   open.value = true
 }
@@ -156,7 +167,8 @@ function openEdit(agent: Agent) {
     ai_hours_on: agent.ai_hours_start !== null,
     ai_hours_start: agent.ai_hours_start?.slice(0, 5) ?? '09:00',
     ai_hours_end: agent.ai_hours_end?.slice(0, 5) ?? '18:00',
-    ai_days: [...agent.ai_days]
+    ai_days: [...agent.ai_days],
+    native_tools: [...agent.native_tools]
   })
   loadDocuments(agent.id)
   open.value = true
@@ -174,6 +186,7 @@ async function save() {
         response_delay: Number(state.response_delay),
         split_messages: state.split_messages,
         handoff_resume_hours: Number(state.handoff_resume_hours),
+        native_tools: state.native_tools,
         ...aiHoursBody()
       }
       if (state.credential_id !== null) body.credential_id = state.credential_id
@@ -423,6 +436,10 @@ const statusBadge: Record<AgentDocument['status'], { label: string, color: 'warn
           />
         </UFormField>
 
+        <UFormField name="native_tools" label="O que a IA pode fazer" help="Ferramentas nativas. As personalizadas (sistemas externos) ficam abaixo, depois de salvar">
+          <UCheckboxGroup v-model="state.native_tools" :items="NATIVE_TOOL_ITEMS" />
+        </UFormField>
+
         <UFormField name="prompt" label="Prompt" required help="Instruções que definem como a IA se comporta">
           <UTextarea v-model="state.prompt" :rows="10" class="w-full" placeholder="Você é o atendente da..." />
         </UFormField>
@@ -471,6 +488,9 @@ const statusBadge: Record<AgentDocument['status'], { label: string, color: 'warn
           </div>
           <p v-else class="text-sm text-muted">Nenhum documento ainda.</p>
         </div>
+
+        <USeparator class="my-6" label="Ferramentas personalizadas" />
+        <AgentToolsPanel v-if="companyId" :company-id="companyId" :agent-id="editing.id" :is-owner="isOwner" />
       </template>
     </template>
   </USlideover>

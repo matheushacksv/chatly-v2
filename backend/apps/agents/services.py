@@ -1,13 +1,16 @@
+import json
+import re
 from datetime import datetime, time, timedelta
 from io import BytesIO
+from urllib.parse import quote
 
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.db.models import ProtectedError, QuerySet
 from django.utils import timezone
 from ninja import UploadedFile
 from pypdf import PdfReader
 
-from apps.agents.models import Agent, Credential, Document
+from apps.agents.models import Agent, AgentTool, Credential, Document
 from apps.companies.models import Company
 from core.exceptions import Conflict, NotFound, ValidationError
 
@@ -98,6 +101,7 @@ def create_agent(
     ai_hours_start: time | None = None,
     ai_hours_end: time | None = None,
     ai_days: list[int] | None = None,
+    native_tools: list[str] | None = None,
 ) -> Agent:
     credential = get_credential(company, credential_id)
     agent = Agent(
@@ -113,6 +117,7 @@ def create_agent(
         ai_hours_start=ai_hours_start,
         ai_hours_end=ai_hours_end,
         ai_days=list(range(7)) if ai_days is None else ai_days,
+        native_tools=['handoff', 'pipedrive'] if native_tools is None else list(dict.fromkeys(native_tools)),
     )
     _check_ai_hours(agent)
     agent.save()
@@ -162,6 +167,8 @@ def update_agent(company: Company, agent_id: int, data: dict) -> Agent:
     if credential_id is not None:
         agent.credential = get_credential(company, credential_id)
 
+    if data.get('native_tools') is not None:
+        data['native_tools'] = list(dict.fromkeys(data['native_tools']))
     for field, value in data.items():
         setattr(agent, field, value)
     _check_ai_hours(agent)
@@ -219,3 +226,97 @@ def list_documents(company, agent_id: int) -> QuerySet[Document]:
 def delete_document(company, agent_id: int, document_id: int) -> None:
     document = get_document(company, agent_id, document_id)
     document.delete()
+
+
+# * ------ Ferramentas personalizadas (HTTP) ------
+
+TOOL_NAME_RE = re.compile(r'^[a-z][a-z0-9_]{1,63}$')
+VAR_RE = re.compile(r'\{\{\s*(\w+)\s*\}\}')
+# nomes das ferramentas nativas (apps/chats/ai_tools.py): uma personalizada não pode esconder uma delas
+RESERVED_TOOL_NAMES = {'transferir_para_atendente', 'agendar_retomada', 'salvar_dado_contato', 'etiquetar_contato', 'criar_negocio', 'anotar_crm'}
+TOOL_METHODS = ('GET', 'POST', 'PUT', 'PATCH', 'DELETE')
+
+
+def list_agent_tools(company: Company, agent_id: int) -> QuerySet[AgentTool]:
+    return AgentTool.objects.filter(agent=get_agent(company, agent_id)).order_by('name')
+
+
+def get_agent_tool(company: Company, agent_id: int, tool_id: int) -> AgentTool:
+    tool = AgentTool.objects.filter(agent=get_agent(company, agent_id), pk=tool_id).first()
+    if tool is None:
+        raise NotFound('tool not found')
+    return tool
+
+
+def _apply_tool_data(tool: AgentTool, data: dict) -> None:
+    if 'secret_headers' in data:
+        # valor vazio = mantém o segredo já salvo (o front nunca recebe o valor de volta)
+        current = json.loads(tool.secret_headers or '{}')
+        tool.secret_headers = json.dumps({
+            h['key'].strip(): h['value'] or current.get(h['key'].strip(), '')
+            for h in data.pop('secret_headers') if h['key'].strip()
+        })
+    for field, value in data.items():
+        setattr(tool, field, value)
+    if not TOOL_NAME_RE.match(tool.name):
+        raise ValidationError('nome da ferramenta: letras minúsculas, números e _, começando com letra')
+    if tool.name in RESERVED_TOOL_NAMES:
+        raise ValidationError(f'{tool.name} é o nome de uma ferramenta nativa')
+    names = [p['name'] for p in tool.parameters]
+    if any(not TOOL_NAME_RE.match(n) for n in names) or len(set(names)) != len(names):
+        raise ValidationError('parâmetros: nomes únicos com letras minúsculas, números e _')
+    if tool.method not in TOOL_METHODS:
+        raise ValidationError(f'método inválido: {tool.method}')
+    if not tool.url.startswith('https://'):
+        raise ValidationError('a URL precisa começar com https://')
+    if not tool.description.strip():
+        raise ValidationError('descreva quando a IA deve usar a ferramenta')
+
+
+def create_agent_tool(company: Company, agent_id: int, data: dict) -> AgentTool:
+    tool = AgentTool(agent=get_agent(company, agent_id))
+    _apply_tool_data(tool, data)
+    try:
+        with transaction.atomic():
+            tool.save()
+    except IntegrityError:
+        raise Conflict(f'já existe uma ferramenta {tool.name} nesse agente')
+    return tool
+
+
+def update_agent_tool(company: Company, agent_id: int, tool_id: int, data: dict) -> AgentTool:
+    tool = get_agent_tool(company, agent_id, tool_id)
+    _apply_tool_data(tool, data)
+    try:
+        with transaction.atomic():
+            tool.save()
+    except IntegrityError:
+        raise Conflict(f'já existe uma ferramenta {tool.name} nesse agente')
+    return tool
+
+
+def delete_agent_tool(company: Company, agent_id: int, tool_id: int) -> None:
+    get_agent_tool(company, agent_id, tool_id).delete()
+
+
+def run_agent_tool(tool: AgentTool, arguments: dict, variables: dict[str, str]) -> tuple[bool, str]:
+    """Executa a chamada com os argumentos da IA + dados do contato. Nunca levanta: a falha volta como texto pra IA."""
+    from apps.automations import outbound
+
+    values = {**variables, **{k: '' if v is None else str(v) for k, v in arguments.items()}}
+
+    def render(text: str, escape=lambda v: v) -> str:
+        return VAR_RE.sub(lambda m: escape(values[m.group(1)]) if m.group(1) in values else m.group(0), text or '')
+
+    headers = {h['key'].strip(): render(h.get('value', '')) for h in tool.headers if (h.get('key') or '').strip()}
+    headers |= json.loads(tool.secret_headers or '{}')
+    if tool.body and not any(k.lower() == 'content-type' for k in headers):
+        headers['Content-Type'] = 'application/json'
+    is_json = any(k.lower() == 'content-type' and 'json' in v.lower() for k, v in headers.items())
+    # dentro de JSON, aspas e quebras de linha do valor não podem quebrar o documento
+    body = render(tool.body, lambda v: json.dumps(v)[1:-1]) if is_json else render(tool.body)
+    try:
+        status, text = outbound.fetch(tool.method, render(tool.url, lambda v: quote(v, safe='')), headers, body)
+    except Exception as exc:  # URL recusada, timeout, DNS
+        return False, f'Falha ao chamar: {exc}'
+    return 200 <= status < 300, f'HTTP {status}\n{text}'

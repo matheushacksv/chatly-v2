@@ -3,8 +3,11 @@ from typing import Annotated, Literal
 
 from ninja import Field, ModelSchema, Schema
 
-from apps.agents.models import Agent, Credential, Document
+import json
 
+from apps.agents.models import Agent, AgentTool, Credential, Document
+
+NativeTool = Literal['handoff', 'followup', 'save_field', 'tag', 'pipedrive']
 Weekdays = Annotated[list[Annotated[int, Field(ge=0, le=6)]], Field(min_length=1)]  # 0 = segunda
 
 
@@ -35,6 +38,7 @@ class AgentInDTO(Schema):
     ai_hours_start: time | None = None
     ai_hours_end: time | None = None
     ai_days: Weekdays = [0, 1, 2, 3, 4, 5, 6]
+    native_tools: list[NativeTool] = ['handoff', 'pipedrive']
 
 
 class AgentOutDTO(ModelSchema):
@@ -42,7 +46,7 @@ class AgentOutDTO(ModelSchema):
         model = Agent
         fields = [
             'id', 'name', 'description', 'model', 'prompt', 'response_delay', 'split_messages', 'handoff_resume_hours',
-            'ai_hours_start', 'ai_hours_end', 'ai_days', 'created_at',
+            'ai_hours_start', 'ai_hours_end', 'ai_days', 'native_tools', 'created_at',
         ]
 
 
@@ -58,9 +62,69 @@ class AgentPatchDTO(Schema):
     ai_hours_start: time | None = None
     ai_hours_end: time | None = None
     ai_days: Weekdays | None = None
+    native_tools: list[NativeTool] | None = None
 
 
 class DocumentOutDTO(ModelSchema):
     class Meta:
         model = Document
         fields = ['id', 'name', 'status', 'created_at']
+
+
+class ToolParamDTO(Schema):
+    name: str
+    type: Literal['string', 'number', 'boolean'] = 'string'
+    description: str = ''
+    required: bool = True
+
+
+class ToolHeaderDTO(Schema):
+    key: str
+    value: str = ''
+
+
+class AgentToolInDTO(Schema):
+    name: str
+    description: str
+    url: str
+    method: Literal['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] = 'POST'
+    parameters: list[ToolParamDTO] = []
+    headers: list[ToolHeaderDTO] = []
+    secret_headers: list[ToolHeaderDTO] = []  # valor vazio = mantém o salvo
+    body: str = ''
+    requires_confirmation: bool = False
+    active: bool = True
+
+
+class AgentToolPatchDTO(Schema):
+    name: str | None = None
+    description: str | None = None
+    url: str | None = None
+    method: Literal['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] | None = None
+    parameters: list[ToolParamDTO] | None = None
+    headers: list[ToolHeaderDTO] | None = None
+    secret_headers: list[ToolHeaderDTO] | None = None
+    body: str | None = None
+    requires_confirmation: bool | None = None
+    active: bool | None = None
+
+
+class AgentToolOutDTO(ModelSchema):
+    secret_header_keys: list[str] = []  # só os nomes: o valor nunca sai do backend
+
+    class Meta:
+        model = AgentTool
+        fields = ['id', 'name', 'description', 'parameters', 'method', 'url', 'headers', 'body', 'requires_confirmation', 'active', 'created_at']
+
+    @staticmethod
+    def resolve_secret_header_keys(obj):
+        return list(json.loads(obj.secret_headers or '{}'))
+
+
+class AgentToolTestDTO(Schema):
+    arguments: dict[str, str | int | float | bool | None] = {}
+
+
+class AgentToolTestResultDTO(Schema):
+    ok: bool
+    result: str

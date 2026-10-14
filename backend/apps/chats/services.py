@@ -14,7 +14,7 @@ from django.utils.text import slugify
 
 from apps.agents.services import get_agent
 from apps.chats import events, whatsapp
-from apps.chats.models import Campaign, Contact, ContactField, Message, Sticker, Tag, TemplateHeaderMedia, WhatsAppAccount
+from apps.chats.models import Campaign, Contact, ContactField, FollowUp, Message, ToolCall, Sticker, Tag, TemplateHeaderMedia, WhatsAppAccount
 from apps.companies.models import Company, Membership
 from core.exceptions import Conflict, NotFound, ValidationError
 
@@ -931,3 +931,21 @@ def clear_contact_memory(company: Company, contact_id: int) -> None:
     contact = get_contact(company, contact_id)
     contact.memory = ''
     contact.save(update_fields=['memory'])
+
+
+# * ------ Ações da IA no contato ------
+
+
+def contact_ai_activity(company: Company, contact_id: int) -> dict:
+    contact = get_contact(company, contact_id)
+    return {
+        'tool_calls': list(ToolCall.objects.filter(contact=contact).order_by('-id')[:20]),
+        'followups': list(FollowUp.objects.filter(contact=contact).order_by('-id')[:5]),
+    }
+
+
+def cancel_followup(company: Company, contact_id: int, followup_id: int) -> FollowUp:
+    contact = get_contact(company, contact_id)
+    if not FollowUp.objects.filter(contact=contact, pk=followup_id, status=FollowUp.Status.PENDING).update(status=FollowUp.Status.CANCELED):
+        raise Conflict('retomada não está agendada')
+    return FollowUp.objects.get(pk=followup_id)

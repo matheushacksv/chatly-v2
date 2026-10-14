@@ -108,6 +108,7 @@ async function remove(contact: Contact) {
 
 // ---- import CSV: "numero,nome" por linha ou com cabeçalho e colunas de campos personalizados, parse no browser - backend revalida ----
 const csvInput = ref<HTMLInputElement | null>(null)
+const fieldsOpen = ref(false)
 const importNumbers = ref<CsvRecipient[]>([])
 const csvColumns = ref<{ matched: string[], ignored: string[] }>({ matched: [], ignored: [] })
 const { fields: contactFields, load: loadContactFields } = useContactFields()
@@ -172,6 +173,13 @@ const lastTalk = (iso: string | null) => (iso ? dateFmt.format(new Date(iso)) : 
             :items="accountItems"
             icon="i-lucide-phone"
             size="sm"
+          />
+          <UButton
+            label="Campos"
+            icon="i-lucide-list-plus"
+            size="sm"
+            variant="soft"
+            @click="() => { fieldsOpen = true }"
           />
           <UButton
             v-if="accountId"
@@ -302,4 +310,9 @@ const lastTalk = (iso: string | null) => (iso ? dateFmt.format(new Date(iso)) : 
       </UModal>
     </template>
   </UDashboardPanel>
+  <UModal v-model:open="fieldsOpen" title="Campos personalizados">
+    <template #body>
+      <ContactFieldsManager v-if="companyId" :company-id="companyId" />
+    </template>
+  </UModal>
 </template>

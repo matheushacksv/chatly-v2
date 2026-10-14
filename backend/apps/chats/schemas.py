@@ -6,7 +6,7 @@ from django.utils import timezone
 from pydantic import Field
 
 from apps.agents.services import next_ai_opening
-from apps.chats.models import Campaign, Contact, ContactField, Message, Sticker, Tag, WhatsAppAccount
+from apps.chats.models import Campaign, Contact, ContactField, FollowUp, ToolCall, Message, Sticker, Tag, WhatsAppAccount
 
 
 class WhatsAppAccountInDTO(Schema):
@@ -263,3 +263,20 @@ class TemplateDetailDTO(Schema):
     body_examples: list[str] = []
     footer_text: str = ''
     buttons: list[ButtonDTO] = []
+
+
+class ToolCallOutDTO(ModelSchema):
+    class Meta:
+        model = ToolCall
+        fields = ['id', 'name', 'arguments', 'result', 'ok', 'created_at']
+
+
+class FollowUpOutDTO(ModelSchema):
+    class Meta:
+        model = FollowUp
+        fields = ['id', 'send_at', 'text', 'status', 'error', 'created_at']
+
+
+class ContactAIActivityDTO(Schema):
+    tool_calls: list[ToolCallOutDTO]
+    followups: list[FollowUpOutDTO]

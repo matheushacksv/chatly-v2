@@ -4,7 +4,7 @@ from ninja import Router, Status
 from ninja.pagination import paginate
 
 from apps.chats import services
-from apps.chats.schemas import ContactCreateDTO, ContactImportDTO, ContactImportResultDTO, ContactOutDTO, ContactFieldInDTO, ContactFieldOutDTO, ContactPatchDTO, TagInDTO, TagOutDTO
+from apps.chats.schemas import ContactAIActivityDTO, FollowUpOutDTO, ContactCreateDTO, ContactImportDTO, ContactImportResultDTO, ContactOutDTO, ContactFieldInDTO, ContactFieldOutDTO, ContactPatchDTO, TagInDTO, TagOutDTO
 from apps.companies import services as companies_services
 
 router = Router(tags=['Contacts'])
@@ -99,3 +99,15 @@ def add_contact_tag_endpoint(request, company_id: int, contact_id: int, tag_id: 
 def remove_contact_tag_endpoint(request, company_id: int, contact_id: int, tag_id: int):
     company = companies_services.get_company(request.auth, company_id)
     return services.remove_contact_tag(company, contact_id, tag_id)
+
+
+@router.get('/{company_id}/contacts/{contact_id}/ai-activity', response=ContactAIActivityDTO)
+def contact_ai_activity_endpoint(request, company_id: int, contact_id: int):
+    company = companies_services.get_company(request.auth, company_id)
+    return services.contact_ai_activity(company, contact_id)
+
+
+@router.post('/{company_id}/contacts/{contact_id}/followups/{followup_id}/cancel', response=FollowUpOutDTO)
+def cancel_followup_endpoint(request, company_id: int, contact_id: int, followup_id: int):
+    company = companies_services.get_company(request.auth, company_id)
+    return services.cancel_followup(company, contact_id, followup_id)

@@ -28,6 +28,11 @@ def check_url(url: str) -> None:
 
 def request(method: str, url: str, headers: dict[str, str], body: str) -> int:
     """Faz a chamada e devolve o status HTTP. A resposta não é guardada."""
+    return fetch(method, url, headers, body)[0]
+
+
+def fetch(method: str, url: str, headers: dict[str, str], body: str, max_chars: int = 4000) -> tuple[int, str]:
+    """Faz a chamada e devolve (status, corpo cortado). Usado pelas ferramentas da IA, que precisam ler a resposta."""
     if method not in METHODS:
         raise ValidationError(f'método inválido: {method}')
     # ponytail: entre a checagem e a conexão o DNS pode mudar (rebinding); se virar risco, fixar o IP resolvido no transporte
@@ -40,4 +45,4 @@ def request(method: str, url: str, headers: dict[str, str], body: str) -> int:
         timeout=TIMEOUT,
         follow_redirects=False,
     )
-    return response.status_code
+    return response.status_code, response.text[:max_chars]

@@ -11,4 +11,5 @@ app.autodiscover_tasks()
 # beat roda embutido no worker (-B): uma réplica só, então não duplica
 app.conf.beat_schedule = {
     'dispatch-scheduled-campaigns': {'task': 'apps.chats.tasks.dispatch_scheduled_campaigns', 'schedule': 60.0},
+    'dispatch-followups': {'task': 'apps.chats.tasks.dispatch_followups', 'schedule': 60.0},
 }
