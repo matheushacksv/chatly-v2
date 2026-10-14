@@ -47,7 +47,7 @@ services:
     image: chatly-backend:${IMAGE_TAG:-latest}
     restart: unless-stopped
     mem_limit: 1g
-    command: celery -A core worker --loglevel=info --concurrency 2
+    command: celery -A core worker -B -s /tmp/celerybeat-schedule --loglevel=info --concurrency 2
     env_file: .env
     # a api roda as migrations no start: worker só sobe com o schema no lugar
     depends_on:

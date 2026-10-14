@@ -1,7 +1,7 @@
 import hashlib
 import hmac
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import httpx
 import phonenumbers
@@ -701,11 +701,16 @@ def create_campaign(
     flow_id: int | None = None,
     tag_groups: list[list[int]] | None = None,
     exclude_tag_ids: list[int] | None = None,
+    scheduled_at: datetime | None = None,
 ) -> Campaign:
     from apps.automations.models import Flow
     from apps.chats.tasks import run_campaign
 
     account = get_account(company, account_id)
+    if scheduled_at and timezone.is_naive(scheduled_at):
+        scheduled_at = timezone.make_aware(scheduled_at)  # sem fuso = horário de Brasília (TIME_ZONE)
+    if scheduled_at and scheduled_at <= timezone.now():
+        raise ValidationError('o horário agendado já passou')
     flow = None
     if flow_id is not None:
         flow = Flow.objects.filter(company=company, account=account, pk=flow_id, trigger=Flow.Trigger.CAMPAIGN).first()
@@ -751,9 +756,21 @@ def create_campaign(
         header_media_type=header_media_type,
         flow=flow,
         total=len(recipients),
+        # ponytail: público congelado na criação; quem ganhar etiqueta de exclusão até o disparo ainda recebe
+        recipient_ids=[c.pk for c in recipients],
+        scheduled_at=scheduled_at,
+        status=Campaign.Status.SCHEDULED if scheduled_at else Campaign.Status.SENDING,
     )
-    run_campaign.delay(campaign.pk, [c.pk for c in recipients])
+    if not scheduled_at:
+        run_campaign.delay(campaign.pk, campaign.recipient_ids)
     return campaign
+
+
+def cancel_campaign(company: Company, campaign_id: int) -> Campaign:
+    campaign = get_campaign(company, campaign_id)
+    if not Campaign.objects.filter(pk=campaign.pk, status=Campaign.Status.SCHEDULED).update(status=Campaign.Status.CANCELED):
+        raise Conflict('só dá pra cancelar campanha agendada que ainda não começou')
+    return get_campaign(company, campaign_id)
 
 
 def campaign_audience(account: WhatsAppAccount, tag_groups: list[list[int]], exclude_tag_ids: list[int] | None = None) -> QuerySet[Contact]:

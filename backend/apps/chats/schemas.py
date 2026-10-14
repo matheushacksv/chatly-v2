@@ -186,6 +186,7 @@ class CampaignInDTO(Schema):
     header_media_id: str = ''
     flow_id: int | None = None
     tag_groups: list[list[int]] = []  # só no modo todos: OU entre grupos, E dentro do grupo
+    scheduled_at: datetime | None = None  # vazio = dispara agora
     exclude_tag_ids: list[int] = []
 
 
@@ -206,7 +207,7 @@ class CampaignOutDTO(ModelSchema):
 
     class Meta:
         model = Campaign
-        fields = ['id', 'name', 'template_name', 'template_language', 'flow', 'status', 'total', 'sent', 'failed', 'created_at']
+        fields = ['id', 'name', 'template_name', 'template_language', 'flow', 'status', 'total', 'sent', 'failed', 'scheduled_at', 'created_at']
 
 
 class HeaderDTO(Schema):

@@ -30,11 +30,15 @@ watch(companyId, loadCampaigns, { immediate: true })
 
 // campanha enviando = contadores mudando no banco → re-busca até terminar
 const poll = setInterval(() => {
-  if (campaigns.value.some(c => c.status === 'sending')) loadCampaigns()
+  // agendada que venceu: o beat dispara em até 1 min, então segue buscando até virar "enviando"
+  const due = (c: Campaign) => c.status === 'scheduled' && !!c.scheduled_at && new Date(c.scheduled_at) <= new Date()
+  if (campaigns.value.some(c => c.status === 'sending' || due(c))) loadCampaigns()
 }, 5000)
 onUnmounted(() => clearInterval(poll))
 
-const statusBadge: Record<Campaign['status'], { label: string, color: 'warning' | 'success' | 'error' }> = {
+const statusBadge: Record<Campaign['status'], { label: string, color: 'warning' | 'success' | 'error' | 'info' | 'neutral' }> = {
+  scheduled: { label: 'Agendada', color: 'info' },
+  canceled: { label: 'Cancelada', color: 'neutral' },
   sending: { label: 'Enviando', color: 'warning' },
   done: { label: 'Concluída', color: 'success' },
   failed: { label: 'Falha', color: 'error' }
@@ -99,7 +103,31 @@ watch(createOpen, async (open) => {
   ])
 })
 
+// agendamento: "agora" ou data/hora futura (input nativo datetime-local)
+const when = ref<'now' | 'later'>('now')
+const whenItems = [{ label: 'Agora', value: 'now' }, { label: 'Agendar', value: 'later' }]
+const scheduledLocal = ref('')
+const toLocalInput = (d: Date) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+const minScheduleLocal = computed(() => (createOpen.value ? toLocalInput(new Date()) : ''))
+
+const canceling = ref(false)
+async function cancelScheduled() {
+  if (!detail.value || canceling.value) return
+  canceling.value = true
+  try {
+    detail.value = await api<Campaign>(`/companies/${companyId.value}/campaigns/${detail.value.id}/cancel`, { method: 'POST' })
+    campaigns.value = campaigns.value.map(c => c.id === detail.value!.id ? { ...c, status: detail.value!.status } : c)
+    toast.add({ title: 'Agendamento cancelado', icon: 'i-lucide-calendar-x' })
+  } catch (error) {
+    toast.add({ title: apiErrorDetail(error, 'Não foi possível cancelar'), color: 'error' })
+  } finally {
+    canceling.value = false
+  }
+}
+
 function openCreate() {
+  when.value = 'now'
+  scheduledLocal.value = ''
   flowId.value = undefined
   tagGroups.value = []
   audienceCount.value = null
@@ -167,6 +195,7 @@ const campaignMissingReasons = computed(() => {
   if (template.value && ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(template.value.header_format) && !template.value.has_header_media && !headerMediaId.value) {
     reasons.push('envie o arquivo do cabeçalho')
   }
+  if (when.value === 'later' && !(scheduledLocal.value && new Date(scheduledLocal.value) > new Date())) reasons.push('escolha uma data e hora futura')
   if (mode.value === 'select' && !selectedContactIds.value.length) reasons.push('selecione ao menos um contato')
   if (mode.value === 'csv' && !csvNumbers.value.length) reasons.push('importe um CSV com números')
   return reasons
@@ -185,7 +214,9 @@ async function create() {
       body_params: params.value,
       header_media_id: headerMediaId.value,
       flow_id: flowId.value ?? null,
-      exclude_tag_ids: excludeTagIds.value
+      exclude_tag_ids: excludeTagIds.value,
+      // datetime-local vem sem fuso: o Date do navegador interpreta no fuso local e o ISO leva o offset
+      scheduled_at: when.value === 'later' ? new Date(scheduledLocal.value).toISOString() : null
     }
     if (mode.value === 'all') body.tag_groups = tagGroups.value
     if (mode.value === 'select') body.contact_ids = selectedContactIds.value
@@ -196,7 +227,11 @@ async function create() {
     const created = await api<Campaign>(`/companies/${companyId.value}/campaigns`, { method: 'POST', body })
     campaigns.value.unshift(created)
     createOpen.value = false
-    toast.add({ title: 'Campanha disparada', icon: 'i-lucide-megaphone', color: 'success' })
+    toast.add({
+      title: created.status === 'scheduled' ? `Campanha agendada para ${dateFmt.format(new Date(created.scheduled_at!))}` : 'Campanha disparada',
+      icon: created.status === 'scheduled' ? 'i-lucide-calendar-clock' : 'i-lucide-megaphone',
+      color: 'success'
+    })
   } catch (error) {
     toast.add({ title: apiErrorDetail(error, 'Falha ao criar campanha'), color: 'error' })
   } finally {
@@ -247,7 +282,12 @@ async function create() {
             </div>
             <p class="text-xs text-muted truncate">
               <span class="font-mono">{{ campaign.template_name }}</span>
-              · {{ dateFmt.format(new Date(campaign.created_at)) }}
+              · <template v-if="campaign.scheduled_at && ['scheduled', 'canceled'].includes(campaign.status)">
+                agendada para {{ dateFmt.format(new Date(campaign.scheduled_at)) }}
+              </template>
+              <template v-else>
+                {{ dateFmt.format(new Date(campaign.created_at)) }}
+              </template>
             </p>
           </div>
           <div class="text-right shrink-0">
@@ -278,7 +318,17 @@ async function create() {
       <div v-if="!detail" class="flex justify-center py-8">
         <UIcon name="i-lucide-loader-circle" class="size-5 animate-spin text-muted" />
       </div>
-      <div v-else class="grid grid-cols-2 gap-3">
+      <UAlert
+        v-if="detail?.status === 'scheduled' && detail.scheduled_at"
+        icon="i-lucide-calendar-clock"
+        color="info"
+        variant="subtle"
+        class="mb-3"
+        :title="`Agendada para ${dateFmt.format(new Date(detail.scheduled_at))}`"
+        description="Dispara sozinha nesse horário (até 1 minuto depois)."
+        :actions="[{ label: 'Cancelar agendamento', color: 'error', variant: 'soft', loading: canceling, onClick: cancelScheduled }]"
+      />
+      <div v-if="detail" class="grid grid-cols-2 gap-3">
         <div class="rounded-lg ring-1 ring-default p-3">
           <p class="text-xs text-muted">Destinatários</p>
           <p class="text-xl font-semibold tabular-nums">{{ detail.total }}</p>
@@ -413,6 +463,13 @@ async function create() {
           @click="flowId = undefined"
         />
 
+        <UFormField label="Quando">
+          <URadioGroup v-model="when" :items="whenItems" orientation="horizontal" />
+        </UFormField>
+        <UFormField v-if="when === 'later'" label="Data e hora do disparo" required help="Horário de Brasília">
+          <UInput v-model="scheduledLocal" type="datetime-local" :min="minScheduleLocal" class="w-full" />
+        </UFormField>
+
         <p v-if="campaignMissingReasons.length" class="text-xs text-warning">
           Falta: {{ campaignMissingReasons.join(', ') }}
         </p>
@@ -421,7 +478,7 @@ async function create() {
           icon="i-lucide-send"
           :loading="saving"
           :disabled="!canSubmit"
-          label="Disparar campanha"
+          :label="when === 'later' ? 'Agendar campanha' : 'Disparar campanha'"
           @click="create()"
         />
       </div>

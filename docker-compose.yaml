@@ -59,7 +59,7 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       OPENWA_API_URL: http://openwa:2785
       MINIO_ENDPOINT_URL: http://minio:9000
-    command: celery -A core worker --loglevel=info
+    command: celery -A core worker -B -s /tmp/celerybeat-schedule --loglevel=info
     volumes:
       - ./backend:/app
       - /app/.venv

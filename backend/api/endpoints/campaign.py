@@ -31,6 +31,7 @@ def create_campaign_endpoint(request, company_id: int, payload: CampaignInDTO):
         payload.flow_id,
         payload.tag_groups,
         payload.exclude_tag_ids,
+        payload.scheduled_at,
     )
     return Status(201, campaign)
 
@@ -39,6 +40,12 @@ def create_campaign_endpoint(request, company_id: int, payload: CampaignInDTO):
 def preview_campaign_audience_endpoint(request, company_id: int, payload: CampaignAudienceInDTO):
     company = companies_services.get_company(request.auth, company_id)
     return services.preview_campaign_audience(company, payload.account_id, payload.tag_groups, payload.exclude_tag_ids)
+
+
+@router.post('/{company_id}/campaigns/{campaign_id}/cancel', response=CampaignOutDTO)
+def cancel_campaign_endpoint(request, company_id: int, campaign_id: int):
+    company = companies_services.get_company(request.auth, company_id)
+    return services.cancel_campaign(company, campaign_id)
 
 
 @router.get('/{company_id}/campaigns/{campaign_id}', response=CampaignOutDTO)

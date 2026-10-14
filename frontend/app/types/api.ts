@@ -180,10 +180,11 @@ export interface Campaign {
   template_name: string
   template_language: string
   flow: number | null
-  status: 'sending' | 'done' | 'failed'
+  status: 'scheduled' | 'sending' | 'done' | 'failed' | 'canceled'
   total: number
   sent: number
   failed: number
+  scheduled_at: string | null
   created_at: string
   delivered: number
   read: number

@@ -125,9 +125,11 @@ class Sticker(models.Model):
 
 class Campaign(models.Model):
     class Status(models.TextChoices):
+        SCHEDULED = 'scheduled', 'Agendada'
         SENDING = 'sending', 'Enviando'
         DONE = 'done', 'Concluída'
         FAILED = 'failed', 'Falha'
+        CANCELED = 'canceled', 'Cancelada'
 
     account = models.ForeignKey(WhatsAppAccount, on_delete=models.CASCADE, related_name='campaigns')
     name = models.CharField(max_length=255)
@@ -142,6 +144,10 @@ class Campaign(models.Model):
     total = models.PositiveIntegerField(default=0)
     sent = models.PositiveIntegerField(default=0)
     failed = models.PositiveIntegerField(default=0)
+    # agendada: dispara quando passar desse horário (dispatch_scheduled_campaigns, a cada minuto)
+    scheduled_at = models.DateTimeField(null=True, blank=True)
+    # destinatários calculados na criação; o envio agendado usa esta lista
+    recipient_ids = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

@@ -4250,3 +4250,49 @@ class ContactFieldTests(BaseChatsTestCase):
         self.contact.memory = 'Gosta de café.'
         self.contact.custom_fields = {'plano': 'Gold', 'apagado': 'x'}
         self.assertEqual(tasks._memory_with_fields(self.contact), 'Gosta de café.\n\nDados cadastrados:\nPlano: Gold')
+
+
+class ScheduledCampaignTests(BaseChatsTestCase):
+    url = CampaignTests.url
+    campaign_payload = CampaignTests.campaign_payload
+    post_campaign = CampaignTests.post_campaign
+
+    def setUp(self):
+        super().setUp()
+        for target, kwargs in (('apps.chats.whatsapp.list_templates', {'return_value': TEMPLATES_FIXTURE}),):
+            patcher = patch(target, **kwargs)
+            self.addCleanup(patcher.stop)
+            patcher.start()
+
+    @patch('apps.chats.tasks.run_campaign.delay')
+    def test_scheduled_campaign_waits_then_dispatches_once(self, mock_delay):
+        at = timezone.now() + timedelta(hours=2)
+        response = self.post_campaign(self.company.pk, scheduled_at=at.isoformat())
+        self.assertEqual(response.status_code, 201, response.json())
+        body = response.json()
+        self.assertEqual(body['status'], 'scheduled')
+        mock_delay.assert_not_called()
+
+        tasks.dispatch_scheduled_campaigns()  # ainda não venceu
+        mock_delay.assert_not_called()
+
+        Campaign.objects.filter(pk=body['id']).update(scheduled_at=timezone.now() - timedelta(seconds=1))
+        tasks.dispatch_scheduled_campaigns()
+        tasks.dispatch_scheduled_campaigns()  # próximo minuto do beat não repete
+        mock_delay.assert_called_once_with(body['id'], [self.contact.pk])
+        self.assertEqual(Campaign.objects.get(pk=body['id']).status, 'sending')
+
+    @patch('apps.chats.tasks.run_campaign.delay')
+    def test_past_schedule_is_rejected_and_cancel_only_scheduled(self, mock_delay):
+        response = self.post_campaign(self.company.pk, scheduled_at=(timezone.now() - timedelta(minutes=1)).isoformat())
+        self.assertEqual(response.status_code, 400)
+
+        scheduled = self.post_campaign(self.company.pk, scheduled_at=(timezone.now() + timedelta(days=1)).isoformat()).json()
+        cancel_url = f'{self.url(self.company.pk)}/{scheduled["id"]}/cancel'
+        response = self.client.post(cancel_url, headers=self.auth)
+        self.assertEqual(response.json()['status'], 'canceled')
+        self.assertEqual(self.client.post(cancel_url, headers=self.auth).status_code, 409)
+
+        Campaign.objects.filter(pk=scheduled['id']).update(scheduled_at=timezone.now() - timedelta(seconds=1))
+        tasks.dispatch_scheduled_campaigns()  # cancelada não dispara
+        mock_delay.assert_not_called()

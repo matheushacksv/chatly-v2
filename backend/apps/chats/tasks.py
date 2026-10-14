@@ -173,3 +173,12 @@ def run_campaign(campaign_id: int, contact_ids: list[int]):
         Campaign.objects.filter(pk=campaign_id).update(sent=F('sent') + 1)
         time.sleep(0.1)
     Campaign.objects.filter(pk=campaign_id).update(status='done')
+
+
+@shared_task
+def dispatch_scheduled_campaigns():
+    """Beat, a cada minuto: dispara as campanhas agendadas que venceram. O update condicional garante um disparo só."""
+    due = Campaign.objects.filter(status=Campaign.Status.SCHEDULED, scheduled_at__lte=timezone.now())
+    for campaign in due:
+        if Campaign.objects.filter(pk=campaign.pk, status=Campaign.Status.SCHEDULED).update(status=Campaign.Status.SENDING):
+            run_campaign.delay(campaign.pk, campaign.recipient_ids)
