@@ -199,6 +199,6 @@ def register_number(account: WhatsAppAccount, pin: str) -> None:
         f'{GRAPH_URL}/{account.phone_number_id}/register',
         headers={'Authorization': f'Bearer {account.access_token}'},
         json={'messaging_product': 'whatsapp', 'pin': pin},
-        timeout=10,
+        timeout=60,  # o registro na Meta leva ~10s; com 10 o painel desistia antes da resposta
     )
     _graph_error(response)
