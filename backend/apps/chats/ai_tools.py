@@ -153,9 +153,14 @@ def _pipedrive_tools(contact: Contact) -> list:
 
     def criar_negocio(titulo: str) -> str:
         """Cria negócio (deal) no CRM para este cliente. Use quando você concluir seu objetivo
-        O título deve ser o nome"""
+        O título deve ser o nome. Se o cliente já tiver negócio aberto, não cria outro."""
         try:
-            deal = crm_services.create_deal_for_contact(pd, contact, titulo)
+            deal, created = crm_services.get_or_create_open_deal(pd, contact, titulo)
+            if not created:
+                return _log(
+                    contact, 'criar_negocio', {'titulo': titulo},
+                    f'Já existe negócio aberto para este cliente (id {deal["id"]}, "{deal.get("title", "")}"). Nada foi criado.',
+                )
             return _log(contact, 'criar_negocio', {'titulo': titulo}, f'Negócio criado no CRM (id {deal["id"]})')
         except Exception as exc:
             return _log(contact, 'criar_negocio', {'titulo': titulo}, f'Falha ao criar negócio: {exc}', ok=False)

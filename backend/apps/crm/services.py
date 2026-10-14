@@ -183,6 +183,17 @@ def find_or_create_person(pd: PipedriveAccount, contact: Contact) -> int:
     return person_id
 
 
+def get_or_create_open_deal(pd: PipedriveAccount, contact: Contact, title: str) -> tuple[dict, bool]:
+    """Pra IA e fluxos: se a pessoa já tem negócio aberto, usa ele em vez de duplicar. Ganho/perdido não conta."""
+    if not pd.default_pipeline_id or not pd.default_stage_id:
+        raise ValidationError('default pipeline and stage not set')  # antes de tocar no Pipedrive
+    person_id = find_or_create_person(pd, contact)
+    open_deals = pipedrive.list_open_deals(pd.api_key, person_id)
+    if open_deals:
+        return open_deals[0], False
+    return create_deal_for_contact(pd, contact, title), True
+
+
 def create_deal_for_contact(
     pd: PipedriveAccount, contact: Contact, title: str, value: float | None = None, pipeline_id: int | None = None, stage_id: int | None = None
 ) -> dict:

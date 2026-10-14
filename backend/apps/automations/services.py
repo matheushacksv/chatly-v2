@@ -119,8 +119,8 @@ def _run_crm(node: dict, run: FlowRun) -> None:
     if action == 'person':
         crm_services.find_or_create_person(pd, contact)
     elif action == 'deal':
-        deal = crm_services.create_deal_for_contact(pd, contact, data.get('title') or (contact.name or contact.wa_id))
-        run.context['deal_id'] = deal['id']
+        deal, _ = crm_services.get_or_create_open_deal(pd, contact, data.get('title') or (contact.name or contact.wa_id))
+        run.context['deal_id'] = deal['id']  # negócio aberto existente: os blocos seguintes (etapa) mexem nele
     elif action == 'note':
         person_id = crm_services.find_or_create_person(pd, contact)
         text = _render(data.get('text', ''), run)

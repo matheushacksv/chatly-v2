@@ -3880,11 +3880,12 @@ class PipedriveToolsTests(BaseChatsTestCase):
             [t.__name__ for t in tools], ['transferir_para_atendente', 'criar_negocio', 'anotar_crm']
         )
 
+    @patch('apps.crm.pipedrive.list_open_deals', return_value=[])
     @patch('apps.crm.pipedrive.create_deal')
     @patch('apps.crm.pipedrive.search_persons')
     @patch('apps.chats.whatsapp.send_text')
     @patch('apps.ai.generate_reply')
-    def test_criar_negocio_finds_person_and_creates_deal(self, mock_generate, mock_send, mock_search, mock_create_deal):
+    def test_criar_negocio_finds_person_and_creates_deal(self, mock_generate, mock_send, mock_search, mock_create_deal, _mock_open):
         PipedriveAccount.objects.create(company=self.company, api_key='pd-key', default_pipeline_id=1, default_stage_id=2)
         mock_search.return_value = [{'id': 88, 'name': 'Cliente A'}]
         mock_create_deal.return_value = {'id': 7, 'title': 'Cliente A'}
@@ -3931,10 +3932,11 @@ class PipedriveToolsTests(BaseChatsTestCase):
         reply = mock_send.call_args.args[2]
         self.assertEqual(reply, 'Falha ao criar negócio: Pipedrive rate limit reached, try again soon')
 
+    @patch('apps.crm.pipedrive.list_open_deals', return_value=[])
     @patch('apps.crm.pipedrive.search_persons')
     @patch('apps.chats.whatsapp.send_text')
     @patch('apps.ai.generate_reply')
-    def test_criar_negocio_without_defaults_returns_error_string(self, mock_generate, mock_send, mock_search):
+    def test_criar_negocio_without_defaults_returns_error_string(self, mock_generate, mock_send, mock_search, _mock_open):
         PipedriveAccount.objects.create(company=self.company, api_key='pd-key')
         mock_search.return_value = [{'id': 88}]
         tools = self._run_task_and_get_tools(mock_generate, mock_send)
@@ -4401,3 +4403,21 @@ class AIToolsTests(BaseChatsTestCase):
         self.assertEqual(body['followups'][0]['status'], 'pending')
         self.assertEqual(self.client.post(f'{base}/followups/{followup.pk}/cancel', headers=self.auth).json()['status'], 'canceled')
         self.assertEqual(self.client.post(f'{base}/followups/{followup.pk}/cancel', headers=self.auth).status_code, 409)
+
+
+
+class PipedriveOpenDealTests(BaseChatsTestCase):
+    @patch('apps.crm.pipedrive.create_deal')
+    @patch('apps.crm.pipedrive.list_open_deals', return_value=[{'id': 5, 'title': 'Negócio antigo'}])
+    def test_existing_open_deal_is_reused_not_duplicated(self, mock_open, mock_create):
+        from apps.chats import ai_tools
+        from apps.crm.models import PipedriveAccount
+
+        PipedriveAccount.objects.create(company=self.company, api_key='pd-key', default_pipeline_id=1, default_stage_id=2)
+        Contact.objects.filter(pk=self.contact.pk).update(pipedrive_person_id=88)
+        self.contact.refresh_from_db()
+        tools, _ = ai_tools.build_tools(self.contact)
+        result = next(t for t in tools if t.__name__ == 'criar_negocio')(titulo='Cliente A')
+        self.assertIn('Já existe negócio aberto', result)
+        mock_create.assert_not_called()
+        mock_open.assert_called_once_with('pd-key', 88)

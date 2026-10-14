@@ -835,8 +835,11 @@ class DelayRuntimeTests(BaseAutomationsTestCase):
 class CrmRuntimeTests(BaseAutomationsTestCase):
     def setUp(self):
         super().setUp()
+        patcher = patch('apps.crm.pipedrive.list_open_deals', return_value=[])
+        self.mock_open_deals = patcher.start()
+        self.addCleanup(patcher.stop)
         from apps.crm.models import PipedriveAccount
-        PipedriveAccount.objects.create(company=self.company, api_key='x')
+        PipedriveAccount.objects.create(company=self.company, api_key='x', default_pipeline_id=1, default_stage_id=2)
 
     def _run(self, action, data=None, context=None):
         flow = self.make_flow(graph=_crm_graph(action, data), active=True, trigger=Flow.Trigger.FIRST_MESSAGE)
@@ -853,6 +856,12 @@ class CrmRuntimeTests(BaseAutomationsTestCase):
         run, _ = self._run('deal', {'title': 'Novo negócio'})
         mock_deal.assert_called_once()
         self.assertEqual(run.context.get('deal_id'), 77)
+
+    def test_deal_reuses_open_deal(self, mock_person, mock_deal, mock_note, mock_stage):
+        self.mock_open_deals.return_value = [{'id': 5, 'title': 'Aberto'}]
+        run, _ = self._run('deal', {'title': 'Novo negócio'})
+        mock_deal.assert_not_called()
+        self.assertEqual(run.context.get('deal_id'), 5)  # bloco de etapa seguinte move o negócio existente
 
     def test_note(self, mock_person, mock_deal, mock_note, mock_stage):
         self._run('note', {'text': 'anotação de {{nome}}'})
