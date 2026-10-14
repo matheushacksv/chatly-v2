@@ -4421,3 +4421,16 @@ class PipedriveOpenDealTests(BaseChatsTestCase):
         self.assertIn('Já existe negócio aberto', result)
         mock_create.assert_not_called()
         mock_open.assert_called_once_with('pd-key', 88)
+
+
+
+class PromptVariablesTests(BaseChatsTestCase):
+    def test_render_prompt_fills_contact_fields(self):
+        ContactField.objects.create(company=self.company, key='cad', label='CAD')
+        ContactField.objects.create(company=self.company, key='plano', label='Plano')
+        self.contact.custom_fields = {'cad': 'Civil 3D'}
+        prompt = 'Cliente {{nome}} usa {{ cad }} no plano {{plano}}. Template usa {{1}}.'
+        self.assertEqual(
+            ai.render_prompt(prompt, tasks._prompt_variables(self.contact)),
+            'Cliente Cliente A usa Civil 3D no plano não informado. Template usa {{1}}.',
+        )

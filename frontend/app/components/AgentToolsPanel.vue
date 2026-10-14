@@ -3,6 +3,8 @@
 import type { AgentTool, AgentToolParam, HttpMethod } from '~/types/api'
 
 const props = defineProps<{ companyId: number, agentId: number, isOwner: boolean }>()
+// lista mudou: o editor de prompt atualiza as referências de ferramentas
+const emit = defineEmits<{ changed: [] }>()
 
 const api = useApi()
 const toast = useToast()
@@ -73,6 +75,7 @@ async function save() {
       : await api<AgentTool>(base.value, { method: 'POST', body })
     tools.value = editing.value ? tools.value.map(t => t.id === saved.id ? saved : t) : [...tools.value, saved]
     editing.value = saved
+    emit('changed')
     toast.add({ title: 'Ferramenta salva', icon: 'i-lucide-check', color: 'success' })
   } catch (error) {
     toast.add({ title: apiErrorDetail(error, 'Não foi possível salvar'), color: 'error' })
@@ -85,6 +88,7 @@ async function toggleActive(tool: AgentTool, active: boolean) {
   try {
     const saved = await api<AgentTool>(`${base.value}/${tool.id}`, { method: 'PATCH', body: { active } })
     tools.value = tools.value.map(t => t.id === saved.id ? saved : t)
+    emit('changed')
   } catch (error) {
     toast.add({ title: apiErrorDetail(error), color: 'error' })
   }
@@ -96,6 +100,7 @@ async function remove(tool: AgentTool) {
   try {
     await api(`${base.value}/${tool.id}`, { method: 'DELETE' })
     tools.value = tools.value.filter(t => t.id !== tool.id)
+    emit('changed')
     formOpen.value = false
   } catch (error) {
     toast.add({ title: apiErrorDetail(error), color: 'error' })

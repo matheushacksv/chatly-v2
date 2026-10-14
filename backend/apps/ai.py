@@ -1,3 +1,5 @@
+import re
+
 import httpx
 from agno.agent import Agent as AgnoAgent
 from agno.media import Image
@@ -21,6 +23,7 @@ MEMORY_PROMPT = (
     '(nome, preferências, contexto de compra, decisões). Máximo 20 linhas. '
     'Não inclua opiniões nem transcrição da conversa. Responda apenas com as anotações. '
 )
+VAR_RE = re.compile(r'\{\{\s*(\w+)\s*\}\}')
 WEEKDAYS = ('segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado', 'domingo')
 
 SPLIT_PROMPT = (
@@ -70,10 +73,19 @@ def embed_text(texts: list[str]) -> list[list[float]]:
     return embeddings
 
 
-def generate_reply(agent: Agent, history: list[dict], text: str, image: bytes | None = None, mime_type: str = '', memory='', tools=None) -> str:
+def render_prompt(prompt: str, variables: dict[str, str]) -> str:
+    """Troca {{nome}}, {{telefone}} e {{campo}} pelos dados do contato. Campo vazio vira "não informado";
+    o que não é variável conhecida (ex.: {{1}} citado num exemplo) fica como está."""
+    return VAR_RE.sub(lambda m: (variables[m.group(1)] or 'não informado') if m.group(1) in variables else m.group(0), prompt)
+
+
+def generate_reply(
+    agent: Agent, history: list[dict], text: str, image: bytes | None = None, mime_type: str = '', memory='', tools=None, variables=None
+) -> str:
     now = timezone.localtime()
     # sem isso a IA não sabe que dia é hoje e erra "segunda que vem", "depois do dia 14"
-    system_message = agent.prompt + f'\n\nAgora: {WEEKDAYS[now.weekday()]}, {now:%d/%m/%Y %H:%M} (horário de Brasília).'
+    system_message = render_prompt(agent.prompt, variables or {})
+    system_message += f'\n\nAgora: {WEEKDAYS[now.weekday()]}, {now:%d/%m/%Y %H:%M} (horário de Brasília).'
     if memory:
         system_message += f'\n\nAnotações sobre este cliente:\n<memory>\n{memory}\n</memory>'
     context = _knowledge_context(agent, text)

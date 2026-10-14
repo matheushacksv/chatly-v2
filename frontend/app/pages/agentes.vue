@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { z } from 'zod'
-import type { Agent, AgentDocument, Credential, NativeTool } from '~/types/api'
+import type { Agent, AgentDocument, AgentTool, Credential, NativeTool } from '~/types/api'
 
 const api = useApi()
 const toast = useToast()
@@ -104,6 +104,141 @@ function hoursLabel(agent: Agent) {
 }
 
 const open = ref(false)
+const modalTab = ref('geral')
+const modalTabs = computed(() => [
+  { label: 'Geral', icon: 'i-lucide-settings', value: 'geral', slot: 'geral' as const },
+  { label: 'Prompt', icon: 'i-lucide-text', value: 'prompt', slot: 'prompt' as const },
+  { label: 'Ferramentas', icon: 'i-lucide-wrench', value: 'ferramentas', slot: 'ferramentas' as const },
+  ...(editing.value ? [{ label: 'Documentos', icon: 'i-lucide-file-text', value: 'documentos', slot: 'documentos' as const }] : [])
+])
+
+// erro de validação pode estar numa aba escondida: leva até ela
+function onFormError(event: { errors: { name?: string }[] }) {
+  const field = event.errors[0]?.name
+  modalTab.value = field === 'prompt' ? 'prompt' : 'geral'
+}
+
+// ---- referências no prompt: dados do contato e ferramentas ----
+const { variables: contactVariables, load: loadContactFields } = useContactFields()
+onMounted(loadContactFields)
+const customTools = ref<AgentTool[]>([])
+async function loadCustomTools() {
+  customTools.value = editing.value ? await api<AgentTool[]>(`/companies/${companyId.value}/agents/${editing.value.id}/tools`) : []
+}
+const NATIVE_TOOL_NAMES: Record<NativeTool, string[]> = {
+  handoff: ['transferir_para_atendente'],
+  followup: ['agendar_retomada'],
+  save_field: ['salvar_dado_contato'],
+  tag: ['etiquetar_contato'],
+  pipedrive: ['criar_negocio', 'anotar_crm']
+}
+const promptInput = useTemplateRef<{ textareaRef: HTMLTextAreaElement | null }>('promptInput')
+
+// insere no ponto do cursor (ou no fim) e devolve o foco logo depois do texto inserido
+function insertAtCursor(text: string) {
+  const el = promptInput.value?.textareaRef
+  const start = el?.selectionStart ?? state.prompt.length
+  const end = el?.selectionEnd ?? start
+  state.prompt = state.prompt.slice(0, start) + text + state.prompt.slice(end)
+  nextTick(() => {
+    el?.focus()
+    el?.setSelectionRange(start + text.length, start + text.length)
+  })
+}
+
+const insertItems = computed(() => [
+  [
+    { type: 'label' as const, label: 'Dados do contato' },
+    ...contactVariables.value.map(v => ({ label: v.label, suffix: `{{${v.key}}}`, onSelect: () => insertAtCursor(`{{${v.key}}}`) }))
+  ],
+  [
+    { type: 'label' as const, label: 'Ferramentas' },
+    ...state.native_tools.flatMap(t => NATIVE_TOOL_NAMES[t]).map(name => ({ label: name, icon: 'i-lucide-wrench', onSelect: () => insertAtCursor(name) })),
+    ...customTools.value.filter(t => t.active).map(t => ({ label: t.name, icon: 'i-lucide-plug', onSelect: () => insertAtCursor(t.name) }))
+  ]
+])
+
+// ---- autocomplete: "{{" ou "@" abre a lista de referências no ponto do cursor ----
+type PromptRef = { label: string, insert: string, icon: string, group: string }
+const allRefs = computed<PromptRef[]>(() => [
+  ...contactVariables.value.map(v => ({ label: v.label, insert: `{{${v.key}}}`, icon: 'i-lucide-user', group: 'Dados do contato' })),
+  ...state.native_tools.flatMap(t => NATIVE_TOOL_NAMES[t]).map(name => ({ label: name, insert: name, icon: 'i-lucide-wrench', group: 'Ferramenta' })),
+  ...customTools.value.filter(t => t.active).map(t => ({ label: t.name, insert: t.name, icon: 'i-lucide-plug', group: 'Ferramenta' }))
+])
+const mention = ref<{ start: number, query: string, top: number, left: number } | null>(null)
+const mentionIndex = ref(0)
+const mentionOptions = computed(() => {
+  if (!mention.value) return []
+  const q = mention.value.query.toLowerCase()
+  return allRefs.value.filter(r => `${r.label} ${r.insert}`.toLowerCase().includes(q)).slice(0, 8)
+})
+
+// posição do cursor em pixels: espelha o textarea numa div invisível com o mesmo estilo
+function caretCoords(el: HTMLTextAreaElement, pos: number) {
+  const mirror = document.createElement('div')
+  const style = getComputedStyle(el)
+  for (const prop of ['font', 'letterSpacing', 'lineHeight', 'padding', 'border', 'boxSizing', 'whiteSpace', 'wordWrap', 'width'] as const) {
+    mirror.style[prop] = style[prop]
+  }
+  Object.assign(mirror.style, { position: 'absolute', visibility: 'hidden', whiteSpace: 'pre-wrap', overflowWrap: 'break-word' })
+  mirror.textContent = el.value.slice(0, pos)
+  const marker = document.createElement('span')
+  marker.textContent = '\u200b'
+  mirror.appendChild(marker)
+  document.body.appendChild(mirror)
+  const coords = { top: marker.offsetTop - el.scrollTop + parseFloat(style.lineHeight || '20'), left: marker.offsetLeft }
+  mirror.remove()
+  return coords
+}
+
+function updateMention() {
+  const el = promptInput.value?.textareaRef
+  if (!el) return
+  const pos = el.selectionStart
+  const match = el.value.slice(0, pos).match(/(\{\{|@)(\w*)$/)
+  if (!match) {
+    mention.value = null
+    return
+  }
+  mention.value = { start: pos - match[0].length, query: match[2] ?? '', ...caretCoords(el, pos) }
+  mentionIndex.value = 0
+}
+
+function pickMention(option: PromptRef) {
+  const el = promptInput.value?.textareaRef
+  if (!el || !mention.value) return
+  const start = mention.value.start
+  state.prompt = state.prompt.slice(0, start) + option.insert + state.prompt.slice(el.selectionStart)
+  mention.value = null
+  nextTick(() => {
+    el.focus()
+    el.setSelectionRange(start + option.insert.length, start + option.insert.length)
+  })
+}
+
+// blur fecha a lista, mas depois do clique numa opção (mousedown.prevent já segura o foco)
+function closeMentionSoon() {
+  setTimeout(() => {
+    mention.value = null
+  }, 150)
+}
+
+function onPromptKeydown(event: KeyboardEvent) {
+  if (!mention.value || !mentionOptions.value.length) return
+  const total = mentionOptions.value.length
+  if (event.key === 'ArrowDown') mentionIndex.value = (mentionIndex.value + 1) % total
+  else if (event.key === 'ArrowUp') mentionIndex.value = (mentionIndex.value - 1 + total) % total
+  else if (event.key === 'Enter' || event.key === 'Tab') pickMention(mentionOptions.value[mentionIndex.value]!)
+  else if (event.key === 'Escape') mention.value = null
+  else return
+  event.preventDefault()
+}
+
+const unknownRefs = computed(() => {
+  const known = new Set(contactVariables.value.map(v => v.key))
+  return [...new Set([...state.prompt.matchAll(/\{\{\s*([a-z_][a-z0-9_]*)\s*\}\}/gi)].map(m => m[1]!))]
+    .filter(key => !known.has(key)).map(key => `{{${key}}}`)
+})
 const editing = ref<Agent | null>(null)
 const saving = ref(false)
 const state = reactive({
@@ -150,6 +285,8 @@ function openCreate() {
   editing.value = null
   Object.assign(state, { name: '', description: '', model: '', prompt: '', response_delay: 0, split_messages: false, handoff_resume_hours: 24, credential_id: null, ai_hours_on: false, ai_hours_start: '09:00', ai_hours_end: '18:00', ai_days: [...ALL_DAYS], native_tools: ['handoff', 'pipedrive'] })
   documents.value = []
+  customTools.value = []
+  modalTab.value = 'geral'
   open.value = true
 }
 
@@ -171,6 +308,8 @@ function openEdit(agent: Agent) {
     native_tools: [...agent.native_tools]
   })
   loadDocuments(agent.id)
+  loadCustomTools()
+  modalTab.value = 'geral'
   open.value = true
 }
 
@@ -346,112 +485,184 @@ const statusBadge: Record<AgentDocument['status'], { label: string, color: 'warn
     </template>
   </UDashboardPanel>
 
-  <USlideover
+  <UModal
     v-model:open="open"
-    :title="editing ? 'Editar agente' : 'Novo agente'"
-    :description="editing ? editing.name : 'A IA que vai responder seus clientes'"
-    :ui="{ content: 'max-w-xl' }"
+    :title="editing ? `Editar ${editing.name}` : 'Novo agente'"
+    description="A IA que vai responder seus clientes"
+    :ui="{ content: 'sm:max-w-5xl', body: 'sm:p-0' }"
   >
     <template #body>
-      <UForm :schema="schema" :state="state" class="space-y-5" @submit="save">
-        <UFormField name="name" label="Nome" required>
-          <UInput v-model="state.name" placeholder="Atendente da loja" class="w-full" />
-        </UFormField>
-
-        <UFormField name="description" label="Descrição">
-          <UInput v-model="state.description" placeholder="Responde dúvidas sobre produtos e pedidos" class="w-full" />
-        </UFormField>
-
-        <div class="grid grid-cols-2 gap-4">
-          <UFormField name="credential_id" label="Credencial" :required="!editing" :help="editing ? 'Vazio = manter atual' : undefined">
-            <USelect
-              v-model="state.credential_id"
-              :items="credentialItems"
-              :placeholder="editing ? 'Manter atual' : 'Escolha'"
-              class="w-full"
-            />
-          </UFormField>
-
-          <UFormField name="model" label="Modelo" required>
-            <USelect
-              v-model="state.model"
-              :items="modelItems"
-              :disabled="!state.credential_id && !editing"
-              :placeholder="!state.credential_id && !editing ? 'Escolha a credencial' : 'Escolha o modelo'"
-              class="w-full"
-            />
-          </UFormField>
-        </div>
-
-        <UFormField name="response_delay" label="Delay de resposta (segundos)" help="Espera antes de responder - agrupa mensagens seguidas do cliente">
-          <UInput v-model.number="state.response_delay" type="number" min="0" class="w-full" />
-        </UFormField>
-
-        <UFormField
-          name="handoff_resume_hours"
-          label="IA volta sozinha depois de (horas)"
-          help="Depois de um handoff ou de o atendente responder, a IA fica pausada por esse tempo. 0 = só volta manualmente"
-        >
-          <UInput v-model.number="state.handoff_resume_hours" type="number" min="0" max="720" class="w-full" />
-        </UFormField>
-
-        <UFormField name="ai_hours_on">
-          <USwitch
-            v-model="state.ai_hours_on"
-            label="Horário de atendimento da IA"
-            description="Fora do horário a IA fica calada e responde quando abrir, se ninguém tiver respondido antes"
-          />
-        </UFormField>
-
-        <template v-if="state.ai_hours_on">
-          <div class="grid grid-cols-2 gap-4">
-            <UFormField name="ai_hours_start" label="Início">
-              <UInput v-model="state.ai_hours_start" type="time" class="w-full" />
+      <UForm id="agent-form" :schema="schema" :state="state" @submit="save" @error="onFormError">
+        <UTabs v-model="modalTab" :items="modalTabs" variant="link" class="w-full" :ui="{ list: 'px-4 sm:px-6', content: 'px-4 sm:px-6 py-5' }">
+          <template #geral>
+            <div class="space-y-5">
+            <UFormField name="name" label="Nome" required>
+              <UInput v-model="state.name" placeholder="Atendente da loja" class="w-full" />
             </UFormField>
-            <UFormField name="ai_hours_end" label="Fim" help="Antes do início vira a meia-noite (18:00-09:00)">
-              <UInput v-model="state.ai_hours_end" type="time" class="w-full" />
-            </UFormField>
-          </div>
 
-          <UFormField name="ai_days" label="Dias" help="Dia em que o horário começa">
-            <div class="flex gap-1 flex-wrap">
-              <UButton
-                v-for="(label, day) in WEEKDAYS"
-                :key="day"
-                :label="label"
-                size="sm"
-                :variant="state.ai_days.includes(day) ? 'solid' : 'outline'"
-                :color="state.ai_days.includes(day) ? 'primary' : 'neutral'"
-                @click="toggleDay(day)"
+            <UFormField name="description" label="Descrição">
+              <UInput v-model="state.description" placeholder="Responde dúvidas sobre produtos e pedidos" class="w-full" />
+            </UFormField>
+
+            <div class="grid grid-cols-2 gap-4">
+              <UFormField name="credential_id" label="Credencial" :required="!editing" :help="editing ? 'Vazio = manter atual' : undefined">
+                <USelect
+                  v-model="state.credential_id"
+                  :items="credentialItems"
+                  :placeholder="editing ? 'Manter atual' : 'Escolha'"
+                  class="w-full"
+                />
+              </UFormField>
+
+              <UFormField name="model" label="Modelo" required>
+                <USelect
+                  v-model="state.model"
+                  :items="modelItems"
+                  :disabled="!state.credential_id && !editing"
+                  :placeholder="!state.credential_id && !editing ? 'Escolha a credencial' : 'Escolha o modelo'"
+                  class="w-full"
+                />
+              </UFormField>
+            </div>
+
+            <UFormField name="response_delay" label="Delay de resposta (segundos)" help="Espera antes de responder - agrupa mensagens seguidas do cliente">
+              <UInput v-model.number="state.response_delay" type="number" min="0" class="w-full" />
+            </UFormField>
+
+            <UFormField
+              name="handoff_resume_hours"
+              label="IA volta sozinha depois de (horas)"
+              help="Depois de um handoff ou de o atendente responder, a IA fica pausada por esse tempo. 0 = só volta manualmente"
+            >
+              <UInput v-model.number="state.handoff_resume_hours" type="number" min="0" max="720" class="w-full" />
+            </UFormField>
+
+            <UFormField name="ai_hours_on">
+              <USwitch
+                v-model="state.ai_hours_on"
+                label="Horário de atendimento da IA"
+                description="Fora do horário a IA fica calada e responde quando abrir, se ninguém tiver respondido antes"
+              />
+            </UFormField>
+
+            <template v-if="state.ai_hours_on">
+              <div class="grid grid-cols-2 gap-4">
+                <UFormField name="ai_hours_start" label="Início">
+                  <UInput v-model="state.ai_hours_start" type="time" class="w-full" />
+                </UFormField>
+                <UFormField name="ai_hours_end" label="Fim" help="Antes do início vira a meia-noite (18:00-09:00)">
+                  <UInput v-model="state.ai_hours_end" type="time" class="w-full" />
+                </UFormField>
+              </div>
+
+              <UFormField name="ai_days" label="Dias" help="Dia em que o horário começa">
+                <div class="flex gap-1 flex-wrap">
+                  <UButton
+                    v-for="(label, day) in WEEKDAYS"
+                    :key="day"
+                    :label="label"
+                    size="sm"
+                    :variant="state.ai_days.includes(day) ? 'solid' : 'outline'"
+                    :color="state.ai_days.includes(day) ? 'primary' : 'neutral'"
+                    @click="toggleDay(day)"
+                  />
+                </div>
+              </UFormField>
+            </template>
+
+            <UFormField name="split_messages">
+              <USwitch
+                v-model="state.split_messages"
+                label="Dividir resposta em várias mensagens"
+                description="A IA responde em blocos curtos em sequência, como uma pessoa digitando"
+              />
+            </UFormField>
+            </div>
+          </template>
+
+          <template #prompt>
+            <div class="space-y-3">
+              <div class="flex items-center justify-between gap-2">
+                <p class="text-sm text-muted">
+                  Instruções que definem como a IA se comporta. Referências entre chaves viram o dado do contato na hora de responder.
+                </p>
+                <UDropdownMenu :items="insertItems" :content="{ align: 'end' }" :ui="{ content: 'max-h-80 overflow-y-auto' }">
+                  <UButton label="Inserir" icon="i-lucide-braces" variant="soft" size="sm" trailing-icon="i-lucide-chevron-down" />
+                </UDropdownMenu>
+              </div>
+              <UFormField name="prompt" help="Digite {{ ou @ pra escolher um dado do contato ou uma ferramenta">
+                <div class="relative">
+                  <UTextarea
+                    ref="promptInput"
+                    v-model="state.prompt"
+                    :rows="22"
+                    class="w-full"
+                    :ui="{ base: 'font-mono text-sm' }"
+                    placeholder="Você é o atendente da... O cliente usa {{cad}}. Quando ele pedir um humano, use transferir_para_atendente."
+                    @input="updateMention"
+                    @click="updateMention"
+                    @keydown="onPromptKeydown"
+                    @keyup="(e: KeyboardEvent) => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) updateMention() }"
+                    @blur="closeMentionSoon"
+                  />
+                  <div
+                    v-if="mention && mentionOptions.length"
+                    class="absolute z-10 w-72 max-w-full rounded-md bg-default ring-1 ring-default shadow-lg py-1"
+                    :style="{ top: `${mention.top + 4}px`, left: `${Math.min(mention.left, 400)}px` }"
+                    role="listbox"
+                  >
+                    <button
+                      v-for="(option, i) in mentionOptions"
+                      :key="option.insert"
+                      type="button"
+                      role="option"
+                      :aria-selected="i === mentionIndex"
+                      class="w-full flex items-center gap-2 px-2.5 py-1.5 text-left text-sm"
+                      :class="i === mentionIndex ? 'bg-elevated' : ''"
+                      @mousedown.prevent="pickMention(option)"
+                    >
+                      <UIcon :name="option.icon" class="size-4 text-muted shrink-0" />
+                      <span class="truncate flex-1">{{ option.label }}</span>
+                      <span class="text-xs text-muted font-mono truncate">{{ option.group === 'Ferramenta' ? 'ferramenta' : option.insert }}</span>
+                    </button>
+                  </div>
+                </div>
+              </UFormField>
+              <UAlert
+                v-if="unknownRefs.length"
+                icon="i-lucide-triangle-alert"
+                color="warning"
+                variant="subtle"
+                :title="`Referência desconhecida: ${unknownRefs.join(', ')}`"
+                description="Não é dado do contato nem campo personalizado: vai pra IA do jeito que está escrito."
               />
             </div>
-          </UFormField>
-        </template>
+          </template>
 
-        <UFormField name="split_messages">
-          <USwitch
-            v-model="state.split_messages"
-            label="Dividir resposta em várias mensagens"
-            description="A IA responde em blocos curtos em sequência, como uma pessoa digitando"
-          />
-        </UFormField>
+          <template #ferramentas>
+            <div class="space-y-6">
+              <UFormField name="native_tools" label="Ferramentas nativas" help="O que a IA pode fazer sozinha">
+                <UCheckboxGroup v-model="state.native_tools" :items="NATIVE_TOOL_ITEMS" />
+              </UFormField>
+              <div>
+                <p class="text-sm font-medium mb-2">
+                  Ferramentas personalizadas
+                </p>
+                <AgentToolsPanel
+                  v-if="editing && companyId"
+                  :company-id="companyId"
+                  :agent-id="editing.id"
+                  :is-owner="isOwner"
+                  @changed="loadCustomTools"
+                />
+                <p v-else class="text-sm text-muted">
+                  Crie o agente primeiro; depois as ferramentas personalizadas aparecem aqui.
+                </p>
+              </div>
+            </div>
+          </template>
 
-        <UFormField name="native_tools" label="O que a IA pode fazer" help="Ferramentas nativas. As personalizadas (sistemas externos) ficam abaixo, depois de salvar">
-          <UCheckboxGroup v-model="state.native_tools" :items="NATIVE_TOOL_ITEMS" />
-        </UFormField>
-
-        <UFormField name="prompt" label="Prompt" required help="Instruções que definem como a IA se comporta">
-          <UTextarea v-model="state.prompt" :rows="10" class="w-full" placeholder="Você é o atendente da..." />
-        </UFormField>
-
-        <UButton type="submit" block :loading="saving">
-          {{ editing ? 'Salvar alterações' : 'Criar agente' }}
-        </UButton>
-      </UForm>
-
-      <template v-if="editing">
-        <USeparator class="my-6" label="Documentos (RAG)" />
-
+          <template #documentos>
         <div class="space-y-3">
           <p class="text-xs text-muted">
             PDF, TXT ou MD até 10MB. A IA usa esses documentos pra responder com base neles.
@@ -488,10 +699,15 @@ const statusBadge: Record<AgentDocument['status'], { label: string, color: 'warn
           </div>
           <p v-else class="text-sm text-muted">Nenhum documento ainda.</p>
         </div>
-
-        <USeparator class="my-6" label="Ferramentas personalizadas" />
-        <AgentToolsPanel v-if="companyId" :company-id="companyId" :agent-id="editing.id" :is-owner="isOwner" />
-      </template>
+          </template>
+        </UTabs>
+      </UForm>
     </template>
-  </USlideover>
+    <template #footer>
+      <div class="flex justify-end gap-2 w-full">
+        <UButton label="Cancelar" variant="ghost" color="neutral" @click="() => { open = false }" />
+        <UButton type="submit" form="agent-form" :loading="saving" :label="editing ? 'Salvar alterações' : 'Criar agente'" />
+      </div>
+    </template>
+  </UModal>
 </template>

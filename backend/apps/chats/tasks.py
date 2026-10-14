@@ -58,7 +58,7 @@ def process_incoming_message(self, message_id: int, deferred: bool = False, pend
             image, mime_type = whatsapp.download_media(account, message.media_id)
 
         tools, tool_state = ai_tools.build_tools(contact)
-        reply = ai.generate_reply(account.agent, history, message.content, image=image, mime_type=mime_type, memory=_memory_with_fields(contact), tools=tools)
+        reply = ai.generate_reply(account.agent, history, message.content, image=image, mime_type=mime_type, memory=_memory_with_fields(contact), tools=tools, variables=_prompt_variables(contact))
         parts = [p.strip() for p in reply.split('\n\n') if p.strip()] if account.agent.split_messages else [reply]
     except Exception as exc:
         raise self.retry(exc=exc, countdown=2**self.request.retries)
@@ -95,6 +95,12 @@ def update_contact_memory(self, contact_id: int):
     except Exception as exc:
         raise self.retry(exc=exc, countdown=2**self.request.retries)
     contact.save(update_fields=['memory'])
+
+
+def _prompt_variables(contact: Contact) -> dict[str, str]:
+    """Variáveis do prompt do agente: todo campo cadastrado entra (vazio = "não informado"), mais nome e telefone."""
+    keys = ContactField.objects.filter(company_id=contact.account.company_id).values_list('key', flat=True)
+    return {key: '' for key in keys} | services.contact_variables(contact)
 
 
 def _memory_with_fields(contact: Contact) -> str:
