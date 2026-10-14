@@ -201,18 +201,30 @@ def create_contact(company: Company, account_id: int, number: str, name: str = '
     return get_or_create_contact(account, normalize_number(number), name)
 
 
-def import_contacts(company: Company, account_id: int, numbers: list[dict]) -> dict:
+def import_contacts(company: Company, account_id: int, numbers: list[dict], tag_ids: list[int] | None = None) -> dict:
     account = get_account(company, account_id)
     if not numbers:
         raise ValidationError('no contacts to import')
     entries = [(normalize_number(e['number']), e.get('name', ''), e.get('fields') or {}) for e in numbers]
     known = _field_keys(company)
+    tags = _import_tags(company, tag_ids)
     created = 0
     for wa_id, name, fields in entries:
         if find_contact(account, wa_id) is None:
             created += 1
-        _merge_import_fields(get_or_create_contact(account, wa_id, name), fields, known)
+        contact = get_or_create_contact(account, wa_id, name)
+        _merge_import_fields(contact, fields, known)
+        if tags:
+            contact.tags.add(*tags)
     return {'created': created, 'existing': len(entries) - created}
+
+
+def _import_tags(company: Company, tag_ids: list[int] | None) -> list[Tag]:
+    """Etiquetas pra marcar todos os importados; id de outra empresa = 404."""
+    tags = list(Tag.objects.filter(company=company, pk__in=tag_ids or []))
+    if len(tags) != len(set(tag_ids or [])):
+        raise NotFound('tag not found')
+    return tags
 
 
 def _field_keys(company: Company) -> set[str]:
@@ -702,6 +714,7 @@ def create_campaign(
     tag_groups: list[list[int]] | None = None,
     exclude_tag_ids: list[int] | None = None,
     scheduled_at: datetime | None = None,
+    import_tag_ids: list[int] | None = None,
 ) -> Campaign:
     from apps.automations.models import Flow
     from apps.chats.tasks import run_campaign
@@ -735,9 +748,12 @@ def create_campaign(
     else:
         recipients = list(Contact.objects.filter(account=account, pk__in=contact_ids or []))
     known_keys = _field_keys(company)
+    import_tags = _import_tags(company, import_tag_ids) if numbers else []
     for entry in numbers or []:
         contact = get_or_create_contact(account, normalize_number(entry['number']), entry.get('name', ''))
         _merge_import_fields(contact, entry.get('fields') or {}, known_keys)
+        if import_tags:
+            contact.tags.add(*import_tags)
         recipients.append(contact)
     if exclude_tag_ids:
         # vale pra qualquer modo (CSV inclusive): quem tem a etiqueta, tipo "bloqueado", nunca recebe

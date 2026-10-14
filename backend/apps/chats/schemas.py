@@ -168,6 +168,7 @@ class CampaignRecipientDTO(Schema):
 
 class ContactImportDTO(Schema):
     numbers: list[CampaignRecipientDTO]
+    tag_ids: list[int] = []  # etiquetas aplicadas em todos os importados
 
 
 class ContactImportResultDTO(Schema):
@@ -187,6 +188,7 @@ class CampaignInDTO(Schema):
     flow_id: int | None = None
     tag_groups: list[list[int]] = []  # só no modo todos: OU entre grupos, E dentro do grupo
     scheduled_at: datetime | None = None  # vazio = dispara agora
+    import_tag_ids: list[int] = []  # etiquetas aplicadas nos contatos do CSV
     exclude_tag_ids: list[int] = []
 
 

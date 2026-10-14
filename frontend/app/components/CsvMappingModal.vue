@@ -1,11 +1,11 @@
 <script setup lang="ts">
 // Mapeia cada coluna do CSV pra telefone, nome, campo personalizado (existente ou novo) ou ignorar.
-import type { ContactField, CsvRecipient } from '~/types/api'
+import type { ContactField, CsvRecipient, Tag } from '~/types/api'
 import type { CsvTarget } from '~/composables/useContactFields'
 
 const props = defineProps<{ text: string, companyId: number, confirmLabel: string }>()
 const open = defineModel<boolean>('open', { default: false })
-const emit = defineEmits<{ confirm: [result: { rows: CsvRecipient[], invalid: string[] }] }>()
+const emit = defineEmits<{ confirm: [result: { rows: CsvRecipient[], invalid: string[], tagIds: number[] }] }>()
 
 const api = useApi()
 const toast = useToast()
@@ -17,9 +17,25 @@ const hasHeader = ref(false)
 const targets = ref<CsvTarget[]>([])
 const saving = ref(false)
 
+// etiquetas opcionais pra marcar todos os importados (ex.: lista_outubro)
+const tags = ref<Tag[]>([])
+const tagIds = ref<number[]>([])
+const tagItems = computed(() => tags.value.map(t => ({ label: t.name, value: t.id })))
+async function createTag(name: string) {
+  try {
+    const tag = await api<Tag>(`/companies/${props.companyId}/tags`, { method: 'POST', body: { name } })
+    if (!tags.value.some(t => t.id === tag.id)) tags.value = [...tags.value, tag]
+    if (!tagIds.value.includes(tag.id)) tagIds.value = [...tagIds.value, tag.id]
+  } catch (error) {
+    toast.add({ title: apiErrorDetail(error, 'Não foi possível criar a etiqueta'), color: 'error' })
+  }
+}
+
 watch(() => [open.value, props.text], async () => {
   if (!open.value) return
   await load()
+  tagIds.value = []
+  tags.value = await api<Tag[]>(`/companies/${props.companyId}/tags`)
   hasHeader.value = looksLikeHeader(rows.value[0])
   targets.value = suggestMapping(rows.value, hasHeader.value, fields.value)
 }, { immediate: true })
@@ -59,7 +75,7 @@ async function confirm() {
       if (!existing) fields.value = [...fields.value, field].sort((a, b) => a.label.localeCompare(b.label))
       newKeys[target] = field.key
     }
-    emit('confirm', applyMapping(rows.value, hasHeader.value, targets.value, newKeys))
+    emit('confirm', { ...applyMapping(rows.value, hasHeader.value, targets.value, newKeys), tagIds: tagIds.value })
     open.value = false
   } catch (error) {
     toast.add({ title: apiErrorDetail(error, 'Não foi possível criar o campo'), color: 'error' })
@@ -92,6 +108,21 @@ async function confirm() {
             <USelect v-model="targets[i]" :items="itemsFor(i)" class="w-full" :aria-label="`Destino da coluna ${columnName(i)}`" />
           </div>
         </div>
+
+        <UFormField label="Etiquetar todos os importados" help="Opcional. Digite pra criar uma etiqueta nova">
+          <USelectMenu
+            v-model="tagIds"
+            :items="tagItems"
+            value-key="value"
+            multiple
+            create-item
+            placeholder="Nenhuma"
+            icon="i-lucide-tag"
+            class="w-full"
+            :search-input="{ placeholder: 'Buscar ou criar...' }"
+            @create="createTag"
+          />
+        </UFormField>
 
         <UAlert
           v-if="phoneCount !== 1"

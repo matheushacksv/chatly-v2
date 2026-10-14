@@ -4225,6 +4225,24 @@ class ContactFieldTests(BaseChatsTestCase):
         self.assertEqual(r.status_code, 201, r.json())
         self.assertEqual(Contact.objects.get(wa_id='5511988887777').custom_fields, {'plano': 'Prata'})
 
+    @patch('apps.chats.tasks.run_campaign.delay')
+    @patch('apps.chats.whatsapp.list_templates', return_value=TEMPLATES_FIXTURE)
+    def test_import_tags_all_imported_contacts(self, mock_list, mock_delay, mock_pub):
+        lista = Tag.objects.create(company=self.company, name='lista_outubro')
+        r = self.post(f'/whatsapp-accounts/{self.account.pk}/contacts/import', {
+            'numbers': [{'number': self.contact.wa_id}, {'number': '5511977776666'}], 'tag_ids': [lista.pk],
+        })
+        self.assertEqual(r.status_code, 200, r.json())
+        self.assertEqual(Contact.objects.filter(tags=lista).count(), 2)
+
+        r = self.post_campaign(self.company.pk, contact_ids=[], numbers=[{'number': '5511955554444'}], import_tag_ids=[lista.pk])
+        self.assertEqual(r.status_code, 201, r.json())
+        self.assertTrue(Contact.objects.get(wa_id='5511955554444').tags.filter(pk=lista.pk).exists())
+
+        foreign = Tag.objects.create(company=self.other_company, name='alheia')
+        r = self.post(f'/whatsapp-accounts/{self.account.pk}/contacts/import', {'numbers': [{'number': '5511911110000'}], 'tag_ids': [foreign.pk]})
+        self.assertEqual(r.status_code, 404)
+
     def test_import_contacts_updates_fields_of_existing(self, mock_pub):
         r = self.post(f'/whatsapp-accounts/{self.account.pk}/contacts/import', {
             'numbers': [{'number': self.contact.wa_id, 'fields': {'plano': 'Gold'}}, {'number': '5511977776666', 'fields': {'plano': ''}}],

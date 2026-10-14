@@ -32,6 +32,7 @@ def create_campaign_endpoint(request, company_id: int, payload: CampaignInDTO):
         payload.tag_groups,
         payload.exclude_tag_ids,
         payload.scheduled_at,
+        payload.import_tag_ids,
     )
     return Status(201, campaign)
 

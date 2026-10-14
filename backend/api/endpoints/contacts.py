@@ -41,7 +41,7 @@ def update_contact_endpoint(request, company_id: int, contact_id: int, payload: 
 @router.post('/{company_id}/whatsapp-accounts/{account_id}/contacts/import', response=ContactImportResultDTO)
 def import_contacts_endpoint(request, company_id: int, account_id: int, payload: ContactImportDTO):
     company = companies_services.get_company(request.auth, company_id)
-    return services.import_contacts(company, account_id, [n.dict() for n in payload.numbers])
+    return services.import_contacts(company, account_id, [n.dict() for n in payload.numbers], payload.tag_ids)
 
 
 @router.delete('/{company_id}/contacts/{contact_id}', response={204: None})
