@@ -161,30 +161,35 @@ function toggleContact(id: number) {
     : [...selectedContactIds.value, id]
 }
 
-// CSV: "numero,nome" por linha ou com cabeçalho e colunas de campos personalizados, parse no browser - backend revalida os números
+// CSV: o modal de mapeamento diz o que é cada coluna; backend revalida os números
 const csvInput = ref<HTMLInputElement | null>(null)
 const csvNumbers = ref<CsvRecipient[]>([])
-const csvColumns = ref<{ matched: string[], ignored: string[] }>({ matched: [], ignored: [] })
-const { fields: contactFields, load: loadContactFields } = useContactFields()
-const csvColumnsText = computed(() => [
-  csvColumns.value.matched.length ? `Campos: ${csvColumns.value.matched.join(', ')}` : '',
-  csvColumns.value.ignored.length ? `Colunas ignoradas (não são campos): ${csvColumns.value.ignored.join(', ')}` : ''
-].filter(Boolean).join(' · ') || undefined)
-onMounted(loadContactFields)
 const csvInvalid = ref<string[]>([])
+const csvText = ref('')
+const mappingOpen = ref(false)
+const { fields: contactFields } = useContactFields()
+// resumo dos campos que o CSV vai preencher nos contatos
+const csvColumnsText = computed(() => {
+  const keys = new Set(csvNumbers.value.flatMap(r => Object.keys(r.fields)))
+  const labels = contactFields.value.filter(f => keys.has(f.key)).map(f => f.label)
+  return labels.length ? `Campos: ${labels.join(', ')}` : undefined
+})
 
 function onCsvPicked(event: Event) {
   const file = (event.target as HTMLInputElement).files?.[0]
   if (!file) return
   const reader = new FileReader()
   reader.onload = () => {
-    const parsed = parseContactsCsv(String(reader.result), contactFields.value)
-    csvNumbers.value = parsed.rows
-    csvInvalid.value = parsed.invalid
-    csvColumns.value = { matched: parsed.matched, ignored: parsed.ignored }
+    csvText.value = String(reader.result)
+    mappingOpen.value = true
   }
   reader.readAsText(file)
   ;(event.target as HTMLInputElement).value = ''
+}
+
+function onCsvMapped({ rows, invalid }: { rows: CsvRecipient[], invalid: string[] }) {
+  csvNumbers.value = rows
+  csvInvalid.value = invalid
 }
 
 const campaignMissingReasons = computed(() => {
@@ -420,9 +425,16 @@ async function create() {
           <input ref="csvInput" type="file" accept=".csv,.txt" class="hidden" @change="onCsvPicked">
           <UButton label="Escolher arquivo" icon="i-lucide-upload" variant="soft" @click="csvInput?.click()" />
           <p class="text-xs text-muted">
-            Uma linha por contato: <span class="font-mono">numero,nome</span>. Pra preencher campos, use cabeçalho:
-            <span class="font-mono">numero,nome,plano</span> (colunas com o nome do campo).
+            CSV com uma linha por contato. Depois de escolher, você diz o que é cada coluna (telefone, nome, campos).
           </p>
+          <CsvMappingModal
+            v-if="companyId"
+            v-model:open="mappingOpen"
+            :text="csvText"
+            :company-id="companyId"
+            confirm-label="Usar {n} contato(s)"
+            @confirm="onCsvMapped"
+          />
           <UAlert
             v-if="csvNumbers.length"
             icon="i-lucide-check"

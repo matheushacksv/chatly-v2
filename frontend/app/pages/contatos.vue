@@ -106,19 +106,11 @@ async function remove(contact: Contact) {
   }
 }
 
-// ---- import CSV: "numero,nome" por linha ou com cabeçalho e colunas de campos personalizados, parse no browser - backend revalida ----
+// ---- import CSV: o modal de mapeamento diz o que é cada coluna; backend revalida os números ----
 const csvInput = ref<HTMLInputElement | null>(null)
 const fieldsOpen = ref(false)
-const importNumbers = ref<CsvRecipient[]>([])
-const csvColumns = ref<{ matched: string[], ignored: string[] }>({ matched: [], ignored: [] })
-const { fields: contactFields, load: loadContactFields } = useContactFields()
-const csvColumnsText = computed(() => [
-  csvColumns.value.matched.length ? `Campos: ${csvColumns.value.matched.join(', ')}` : '',
-  csvColumns.value.ignored.length ? `Colunas ignoradas (não são campos): ${csvColumns.value.ignored.join(', ')}` : ''
-].filter(Boolean).join(' · ') || undefined)
-onMounted(loadContactFields)
-const importInvalid = ref<string[]>([])
-const importModalOpen = ref(false)
+const csvText = ref('')
+const mappingOpen = ref(false)
 const importing = ref(false)
 
 function onCsvPicked(event: Event) {
@@ -126,29 +118,25 @@ function onCsvPicked(event: Event) {
   if (!file) return
   const reader = new FileReader()
   reader.onload = () => {
-    const parsed = parseContactsCsv(String(reader.result), contactFields.value)
-    importNumbers.value = parsed.rows
-    importInvalid.value = parsed.invalid
-    csvColumns.value = { matched: parsed.matched, ignored: parsed.ignored }
-    importModalOpen.value = true
+    csvText.value = String(reader.result)
+    mappingOpen.value = true
   }
   reader.readAsText(file)
   ;(event.target as HTMLInputElement).value = ''
 }
 
-async function runImport() {
-  if (!importNumbers.value.length || importing.value) return
+async function runImport({ rows }: { rows: CsvRecipient[] }) {
+  if (!rows.length || importing.value) return
   importing.value = true
   try {
     const result = await api<{ created: number, existing: number }>(
       `/companies/${companyId.value}/whatsapp-accounts/${accountId.value}/contacts/import`,
-      { method: 'POST', body: { numbers: importNumbers.value } }
+      { method: 'POST', body: { numbers: rows } }
     )
     toast.add({
       title: `${result.created} contato(s) criado(s), ${result.existing} já existiam`,
       icon: 'i-lucide-users'
     })
-    importModalOpen.value = false
     loadContacts()
   } catch (error) {
     toast.add({ title: apiErrorDetail(error, 'Falha ao importar'), color: 'error' })
@@ -275,39 +263,14 @@ const lastTalk = (iso: string | null) => (iso ? dateFmt.format(new Date(iso)) : 
         </p>
       </div>
 
-      <UModal
-        v-model:open="importModalOpen"
-        title="Importar contatos"
-        description="Uma linha por contato: numero,nome. Com cabeçalho (numero,nome,plano...) as colunas preenchem os campos personalizados, inclusive de quem já existe."
-      >
-        <template #body>
-          <div class="space-y-4">
-            <UAlert
-              icon="i-lucide-users"
-              color="primary"
-              variant="subtle"
-              :title="`${importNumbers.length} número(s) válido(s)`"
-              :description="csvColumnsText"
-            />
-            <UAlert
-              v-if="importInvalid.length"
-              icon="i-lucide-triangle-alert"
-              color="warning"
-              variant="subtle"
-              :title="`${importInvalid.length} linha(s) ignorada(s) - número inválido`"
-              :description="importInvalid.slice(0, 3).join(' · ')"
-            />
-            <UButton
-              block
-              icon="i-lucide-upload"
-              :label="`Importar ${importNumbers.length} contato(s)`"
-              :loading="importing"
-              :disabled="!importNumbers.length"
-              @click="runImport()"
-            />
-          </div>
-        </template>
-      </UModal>
+      <CsvMappingModal
+        v-if="companyId"
+        v-model:open="mappingOpen"
+        :text="csvText"
+        :company-id="companyId"
+        confirm-label="Importar {n} contato(s)"
+        @confirm="runImport"
+      />
     </template>
   </UDashboardPanel>
   <UModal v-model:open="fieldsOpen" title="Campos personalizados">
