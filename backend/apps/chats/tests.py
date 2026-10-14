@@ -2225,7 +2225,7 @@ class ProcessIncomingMessageTests(BaseChatsTestCase):
         # histórico exclui a mensagem sendo respondida - sobra só a out antiga
         mock_generate.assert_called_once_with(
             self.agent, [{'role': 'assistant', 'content': 'Olá! Como posso ajudar?'}], 'Oi',
-            image=None, mime_type='', memory='', tools=ANY,
+            image=None, mime_type='', memory='', tools=ANY, variables=ANY,
         )
         mock_send.assert_called_once_with(self.account, '5511999999999', 'Resposta gerada')
         reply = Message.objects.get(wa_message_id='wamid.resposta')
@@ -2506,7 +2506,7 @@ class ProcessIncomingMessageTests(BaseChatsTestCase):
         mock_generate.assert_called_once_with(
             self.agent,
             [{'role': 'user', 'content': 'Oi'}, {'role': 'assistant', 'content': 'Olá! Como posso ajudar?'}],
-            '[imagem]', image=b'jpeg-bytes', mime_type='image/jpeg', memory='', tools=ANY,
+            '[imagem]', image=b'jpeg-bytes', mime_type='image/jpeg', memory='', tools=ANY, variables=ANY,
         )
         self.assertTrue(Message.objects.filter(wa_message_id='wamid.resp-img', direction='out').exists())
 
@@ -2533,7 +2533,7 @@ class ProcessIncomingMessageTests(BaseChatsTestCase):
         self.assertEqual(incoming.content, 'Quero comprar por áudio')
         # IA recebe transcript como texto puro, sem imagem
         self.assertEqual(mock_generate.call_args.args[2], 'Quero comprar por áudio')
-        self.assertEqual(mock_generate.call_args.kwargs, {'image': None, 'mime_type': '', 'memory': '', 'tools': ANY})
+        self.assertEqual(mock_generate.call_args.kwargs, {'image': None, 'mime_type': '', 'memory': '', 'tools': ANY, 'variables': ANY})
 
     @patch('apps.chats.whatsapp.send_text')
     @patch('apps.ai.transcribe_audio')
@@ -2611,7 +2611,7 @@ class ProcessIncomingMessageTests(BaseChatsTestCase):
                 {'role': 'assistant', 'content': 'Olá! Como posso ajudar?'},
                 {'role': 'user', 'content': 'oi'},
             ],
-            'tudo bem?', image=None, mime_type='', memory='', tools=ANY,
+            'tudo bem?', image=None, mime_type='', memory='', tools=ANY, variables=ANY,
         )
         self.assertTrue(Message.objects.filter(wa_message_id='wamid.resp-debounce', direction='out').exists())
 
