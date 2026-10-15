@@ -672,9 +672,9 @@ class LeadIdempotencyTests(BaseAutomationsTestCase):
 # * ------ Runtime (Marco 2: condition/wait/delay/crm + validate_graph) ------
 
 
-def _cond_graph(op, value):
+def _cond_graph(op, value, source='last_message'):
     return _graph(
-        [('start', 'start', {}), ('c', 'condition', {'source': 'last_message', 'op': op, 'value': value}),
+        [('start', 'start', {}), ('c', 'condition', {'source': source, 'op': op, 'value': value}),
          ('a', 'ai', {}), ('h', 'handoff', {})],
         [('start', 'c', None), ('c', 'a', 'sim'), ('c', 'h', 'nao')],
     )
@@ -727,6 +727,32 @@ class ConditionRuntimeTests(BaseAutomationsTestCase):
 
     def test_equals_is_case_insensitive(self, mock_pub):
         run, _ = self._route('equals', 'sim', 'SIM')
+        self.assertEqual(run.steps[-1]['type'], 'ai')
+
+    def test_contact_field_tag_and_filled(self, mock_pub):
+        from apps.chats.models import Tag
+
+        contact = Contact.objects.create(account=self.account, wa_id='5511999997777', custom_fields={'cad': 'Civil 3D'})
+        vip = Tag.objects.create(company=self.company, name='vip')
+        cases = [
+            (('equals', 'civil 3d', 'cad'), 'ai'),  # campo do contato
+            (('filled', '', 'cad'), 'ai'),
+            (('filled', '', 'plano'), 'handoff'),  # campo vazio
+            (('has_tag', str(vip.pk), ''), 'handoff'),
+        ]
+        for (op, value, source), expected in cases:
+            FlowRun.objects.filter(contact=contact).delete()
+            Contact.objects.filter(pk=contact.pk).update(ai_paused=False)
+            flow = self.make_flow(graph=_cond_graph(op, value, source), active=True, trigger=Flow.Trigger.FIRST_MESSAGE)
+            run = services.start_flow(flow, contact)
+            run.refresh_from_db()
+            self.assertEqual(run.steps[-1]['type'], expected, (op, source))
+            flow.delete()
+        contact.tags.add(vip)
+        FlowRun.objects.filter(contact=contact).delete()
+        flow = self.make_flow(graph=_cond_graph('has_tag', str(vip.pk)), active=True, trigger=Flow.Trigger.FIRST_MESSAGE)
+        run = services.start_flow(flow, contact)
+        run.refresh_from_db()
         self.assertEqual(run.steps[-1]['type'], 'ai')
 
     def test_regex_match(self, mock_pub):

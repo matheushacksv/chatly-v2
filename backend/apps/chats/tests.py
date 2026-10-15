@@ -2842,6 +2842,22 @@ class TemplateTests(BaseChatsTestCase):
         self.assertEqual(body[2]['status'], 'PENDING')
         self.assertEqual(body[3]['header_format'], 'IMAGE')
         self.assertFalse(body[3]['has_header_media'])
+        self.assertEqual(oferta['quick_replies'], [])
+
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_list_templates_exposes_quick_replies(self, mock_list):
+        mock_list.return_value = [{
+            'id': 't', 'name': 'consulta', 'status': 'APPROVED', 'language': 'pt_BR', 'category': 'UTILITY',
+            'components': [
+                {'type': 'BODY', 'text': 'Confirma?'},
+                {'type': 'BUTTONS', 'buttons': [
+                    {'type': 'QUICK_REPLY', 'text': 'Confirmar'}, {'type': 'URL', 'text': 'Site', 'url': 'https://x.com'},
+                    {'type': 'QUICK_REPLY', 'text': 'Bloquear'},
+                ]},
+            ],
+        }]
+        body = self.client.get(self.list_url(self.company.pk, self.account.pk), headers=self.auth).json()
+        self.assertEqual(body[0]['quick_replies'], ['Confirmar', 'Bloquear'])
 
     @patch('apps.chats.whatsapp.list_templates')
     def test_list_templates_reports_saved_media(self, mock_list):

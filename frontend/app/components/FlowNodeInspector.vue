@@ -7,6 +7,8 @@ const props = defineProps<{
   type: FlowNodeType
   companyId: number
   accountId: number
+  flowVars?: string[] // variáveis guardadas pelos blocos Aguardar deste fluxo
+  flowButtons?: string[] // textos dos blocos Botões deste fluxo
 }>()
 
 const data = defineModel<FlowNodeData>({ required: true })
@@ -29,6 +31,43 @@ watch([pickedParams, pickedHeaderMediaId], () => {
   data.value.body_params = [...pickedParams.value]
   data.value.header_media_id = pickedHeaderMediaId.value
 }, { deep: true })
+
+// ---- variáveis: escolher no menu em vez de digitar {{...}} ----
+const FLOW_EXTRA_VARS = [{ label: 'Botão clicado', key: 'botao' }, { label: 'Nome da campanha', key: 'campanha' }]
+
+function insertVar(field: 'text' | 'url' | 'body', token: string) {
+  const current = data.value[field] ?? ''
+  data.value[field] = current && !/\s$/.test(current) ? `${current} ${token}` : current + token
+}
+
+// ---- condição: o que comparar e com o quê ----
+const { variables: contactVariables, load: loadContactFields } = useContactFields()
+onMounted(loadContactFields)
+
+const sourceItems = computed(() => {
+  const items = [
+    { label: 'Resposta do cliente', value: 'last_message', icon: 'i-lucide-message-circle' },
+    { label: 'Botão clicado (campanha ou bloco Botões)', value: 'button', icon: 'i-lucide-mouse-pointer-click' },
+    ...(props.flowVars ?? []).filter(v => v !== 'last_message').map(v => ({ label: `Resposta guardada: ${v}`, value: v, icon: 'i-lucide-variable' })),
+    ...contactVariables.value.map(v => ({ label: `Contato: ${v.label}`, value: v.key, icon: 'i-lucide-user' }))
+  ]
+  // fluxo antigo com uma origem digitada que não está mais na lista: mantém visível
+  const current = data.value.source
+  if (current && !items.some(i => i.value === current)) items.push({ label: current, value: current, icon: 'i-lucide-variable' })
+  return items
+})
+
+const showSource = computed(() => !['window_open', 'has_tag'].includes(data.value.op ?? 'contains'))
+const showValue = computed(() => !['window_open', 'filled'].includes(data.value.op ?? 'contains'))
+
+// botões possíveis: dos blocos Botões do fluxo e dos templates aprovados da conta (resposta rápida)
+const templateButtons = ref<string[]>([])
+watch(() => [props.type, data.value.source], async () => {
+  if (props.type !== 'condition' || data.value.source !== 'button' || templateButtons.value.length) return
+  const templates = await api<Template[]>(`/companies/${props.companyId}/accounts/${props.accountId}/templates`)
+  templateButtons.value = templates.filter(t => t.status === 'APPROVED').flatMap(t => t.quick_replies ?? [])
+}, { immediate: true })
+const buttonValueItems = computed(() => [...new Set([...(props.flowButtons ?? []), ...templateButtons.value])])
 
 // ---- botões ----
 const buttons = computed(() => data.value.buttons ?? [])
@@ -58,8 +97,9 @@ function removeHeader(index: number) {
 const tagItems = ref<{ label: string, value: number }[]>([])
 const toast = useToast()
 
-watch(() => props.type, async (type) => {
-  if (type !== 'tag' || tagItems.value.length) return
+watch(() => [props.type, data.value.op], async () => {
+  const needsTags = props.type === 'tag' || (props.type === 'condition' && data.value.op === 'has_tag')
+  if (!needsTags || tagItems.value.length) return
   const tags = await api<Tag[]>(`/companies/${props.companyId}/tags`)
   tagItems.value = tags.map(t => ({ label: t.name, value: t.id }))
 }, { immediate: true })
@@ -134,6 +174,9 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
       label="Mensagem"
       required
     >
+      <template #hint>
+        <VarInsertMenu :flow-vars="flowVars" :extra="FLOW_EXTRA_VARS" @insert="insertVar('text', $event)" />
+      </template>
       <UTextarea
         v-model="data.text"
         :rows="3"
@@ -206,14 +249,15 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
 
     <template v-if="type === 'condition'">
       <UFormField
-        v-if="data.op !== 'window_open'"
+        v-if="showSource"
         label="Comparar"
-        help="last_message = última resposta, button = botão clicado na campanha, ou o nome de uma variável"
       >
-        <UInput
+        <USelectMenu
           v-model="data.source"
+          :items="sourceItems"
+          value-key="value"
           class="w-full"
-          placeholder="last_message"
+          placeholder="Escolha o que comparar"
         />
       </UFormField>
       <UFormField
@@ -227,11 +271,29 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
         />
       </UFormField>
       <UFormField
-        v-if="data.op !== 'window_open'"
-        label="Valor"
+        v-if="showValue"
+        :label="data.op === 'has_tag' ? 'Etiqueta' : 'Valor'"
         required
+        :help="data.op === 'regex' ? 'Expressão regular, ex.: \\d{5}-?\\d{3} pra CEP' : undefined"
       >
+        <USelectMenu
+          v-if="data.op === 'has_tag'"
+          :model-value="data.value ? Number(data.value) : undefined"
+          :items="tagItems"
+          value-key="value"
+          class="w-full"
+          placeholder="Escolha a etiqueta"
+          @update:model-value="(id: number) => { data.value = String(id) }"
+        />
+        <UInputMenu
+          v-else-if="data.source === 'button'"
+          v-model="data.value"
+          :items="buttonValueItems"
+          class="w-full"
+          placeholder="Escolha ou digite o texto do botão"
+        />
         <UInput
+          v-else
           v-model="data.value"
           class="w-full"
           placeholder="orçamento"
@@ -264,6 +326,7 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
           class="flex-1"
           placeholder="https://sistema.com/webhook"
         />
+        <VarInsertMenu :flow-vars="flowVars" :extra="FLOW_EXTRA_VARS" @insert="insertVar('url', $event)" />
       </div>
       <UFormField
         label="Headers"
@@ -307,6 +370,9 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
         label="Corpo"
         help="Sem Content-Type nos headers, vai como application/json"
       >
+        <template #hint>
+          <VarInsertMenu :flow-vars="flowVars" :extra="FLOW_EXTRA_VARS" @insert="insertVar('body', $event)" />
+        </template>
         <UTextarea
           v-model="data.body"
           :rows="6"
@@ -314,7 +380,7 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
         />
       </UFormField>
       <p class="text-xs text-muted">
-        Variáveis: <code v-pre>{{nome}}</code>, <code v-pre>{{telefone}}</code>, <code v-pre>{{botao}}</code>, <code v-pre>{{campanha}}</code>, os campos do contato (<code v-pre>{{plano}}</code>...) e as guardadas no fluxo (<code v-pre>{{resposta}}</code>...). Só https, endereço interno é recusado. Timeout de 10s.
+        Use o botão Variável pra inserir dados do contato e do fluxo. Só https, endereço interno é recusado. Timeout de 10s.
       </p>
     </template>
 

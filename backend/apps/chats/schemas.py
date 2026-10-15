@@ -147,6 +147,7 @@ class TemplateOutDTO(Schema):
     has_header_media: bool
     body_text: str
     param_count: int
+    quick_replies: list[str] = []
 
 
 class MediaUploadDTO(Schema):

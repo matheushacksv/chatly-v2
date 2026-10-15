@@ -113,6 +113,7 @@ export interface Template {
   has_header_media: boolean
   body_text: string
   param_count: number
+  quick_replies: string[]
 }
 
 export interface MediaUpload {
@@ -389,7 +390,7 @@ export interface FlowNodeData {
   var?: string
   timeout_minutes?: number
   source?: string
-  op?: 'contains' | 'equals' | 'regex' | 'window_open'
+  op?: 'contains' | 'equals' | 'regex' | 'window_open' | 'has_tag' | 'filled'
   value?: string
   minutes?: number
   action?: 'person' | 'deal' | 'note' | 'stage' | 'add' | 'remove'

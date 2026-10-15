@@ -243,6 +243,11 @@ async function toggleActive() {
     activating.value = false
   }
 }
+
+// opções dos dropdowns do inspetor: variáveis guardadas pelos blocos Aguardar e textos dos blocos Botões
+const flowVars = computed(() => [...new Set(nodes.value.filter(n => n.type === 'wait').map(n => (n.data as FlowNodeData).var || 'resposta'))])
+const flowButtons = computed(() => [...new Set(nodes.value.filter(n => n.type === 'buttons')
+  .flatMap(n => ((n.data as FlowNodeData).buttons ?? []).map(b => b.title)).filter(Boolean))])
 </script>
 
 <template>
@@ -348,6 +353,8 @@ async function toggleActive() {
         :type="selected.type as FlowNodeType"
         :company-id="companyId"
         :account-id="flow.account"
+        :flow-vars="flowVars"
+        :flow-buttons="flowButtons"
       />
       <UButton
         label="Remover bloco"

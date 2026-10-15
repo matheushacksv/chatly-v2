@@ -543,6 +543,12 @@ def list_templates(company: Company, account_id: int) -> list[dict]:
                 'has_header_media': (template['name'], template['language']) in saved_names,
                 'body_text': body,
                 'param_count': max((int(p) for p in params), default=0),
+                # textos dos botões de resposta rápida: viram opções no "botão clicado" das condições de fluxo
+                'quick_replies': [
+                    b.get('text', '')
+                    for c in template.get('components', []) if c.get('type') == 'BUTTONS'
+                    for b in c.get('buttons', []) if b.get('type') == 'QUICK_REPLY'
+                ],
             }
         )
     return templates

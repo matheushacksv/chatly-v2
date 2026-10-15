@@ -170,8 +170,16 @@ def _execute(node: dict, run: FlowRun, message: Message | None) -> str | None:
         # janela de 24h aberta: dá pra IA responder direto, sem template
         if data.get('op') == 'window_open':
             return 'sim' if chat_services.service_window_open(contact) else 'nao'
+        if data.get('op') == 'has_tag':
+            return 'sim' if contact.tags.filter(pk=data.get('value') or 0).exists() else 'nao'
         src = data.get('source', 'last_message')
-        subject = run.context.get('last_message', '') if src == 'last_message' else str(run.context.get(src, ''))
+        # variável do fluxo (resposta, botão, guardada no Aguardar) vem antes; senão dado do contato (nome, campos)
+        if src in run.context:
+            subject = str(run.context.get(src) or '')
+        else:
+            subject = chat_services.contact_variables(contact).get(src, '')
+        if data.get('op') == 'filled':
+            return 'sim' if subject.strip() else 'nao'
         return 'sim' if _match_condition(subject, data.get('op', 'contains'), data.get('value', '')) else 'nao'
     if t == 'delay':
         from apps.automations import tasks
