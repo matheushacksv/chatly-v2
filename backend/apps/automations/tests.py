@@ -9,7 +9,7 @@ from apps.accounts.models import User
 from apps.agents.models import Agent, Credential
 from apps.automations import services
 from apps.automations.models import Flow, FlowRun, LeadSource
-from apps.chats.models import Contact, Message, WhatsAppAccount
+from apps.chats.models import Contact, ContactField, Message, WhatsAppAccount
 from apps.companies.models import Company, Membership
 from apps.testing import auth_header
 from core.exceptions import ValidationError
@@ -425,7 +425,7 @@ class CreateLeadTests(BaseAutomationsTestCase):
     def test_normalizes_number_and_starts_flow(self, mock_template):
         self.make_flow(graph=_LEAD_FLOW, active=True, trigger=Flow.Trigger.LEAD)
         source = self.make_source()
-        contact, started = services.create_lead(source, {'telefone': '55 11 99999-8888', 'nome': 'Ana'})
+        contact, started, _ = services.create_lead(source, {'telefone': '55 11 99999-8888', 'nome': 'Ana'})
         self.assertTrue(started)
         self.assertEqual(contact.wa_id, '5511999998888')
         self.assertEqual(contact.name, 'Ana')
@@ -435,7 +435,7 @@ class CreateLeadTests(BaseAutomationsTestCase):
     def test_lead_data_goes_to_ai_memory(self, mock_template):
         source = self.make_source(name='Site')
         payload = {'telefone': '5511999998888', 'origem': 'google', 'email': 'ana@x.com', 'extras': {'produto': 'piscina', 'vazio': ''}}
-        contact, _ = services.create_lead(source, payload)
+        contact, _, _ = services.create_lead(source, payload)
         contact.refresh_from_db()
         self.assertIn('Chegou como lead pela fonte "Site"', contact.memory)
         self.assertIn('origem: google, email: ana@x.com, produto: piscina', contact.memory)
@@ -450,9 +450,17 @@ class CreateLeadTests(BaseAutomationsTestCase):
 
     def test_no_active_lead_flow_creates_contact_only(self, mock_template):
         source = self.make_source()
-        contact, started = services.create_lead(source, {'telefone': '5511999998888'})
+        contact, started, _ = services.create_lead(source, {'telefone': '5511999998888'})
         self.assertFalse(started)
         self.assertFalse(FlowRun.objects.filter(contact=contact).exists())
+
+    def test_campos_fill_known_custom_fields_only(self, mock_template):
+        ContactField.objects.create(company=self.company, key='plano', label='Plano')
+        source = self.make_source()
+        contact, _, ignored = services.create_lead(source, {'telefone': '5511999998888', 'campos': {'plano': ' Ouro ', 'cpf': '123', 'vazio': ''}})
+        contact.refresh_from_db()
+        self.assertEqual(contact.custom_fields, {'plano': 'Ouro'})
+        self.assertEqual(ignored, ['cpf', 'vazio'])
 
     def test_invalid_number_raises(self, mock_template):
         source = self.make_source()
@@ -661,8 +669,8 @@ class LeadIdempotencyTests(BaseAutomationsTestCase):
         )
         self.make_flow(graph=graph, active=True, trigger=Flow.Trigger.LEAD)
         source = self.make_source()
-        c1, s1 = services.create_lead(source, {'telefone': '5511999998888'})
-        c2, s2 = services.create_lead(source, {'telefone': '5511999998888'})
+        c1, s1, _ = services.create_lead(source, {'telefone': '5511999998888'})
+        c2, s2, _ = services.create_lead(source, {'telefone': '5511999998888'})
         self.assertTrue(s1)
         self.assertTrue(s2)
         self.assertEqual(c1.pk, c2.pk)

@@ -84,5 +84,5 @@ def delete_source_endpoint(request, company_id: int, source_id: int):
 
 @router.post('/leads/{token}', auth=None, response={200: LeadAcceptedDTO})
 def receive_lead_endpoint(request, token: str, payload: LeadInDTO):
-    contact, started = services.receive_lead(token, payload.dict())
-    return LeadAcceptedDTO(contact_id=contact.pk, flow_started=started)
+    contact, started, ignored = services.receive_lead(token, payload.dict())
+    return LeadAcceptedDTO(contact_id=contact.pk, flow_started=started, ignored_fields=ignored)

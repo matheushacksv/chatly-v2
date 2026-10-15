@@ -357,16 +357,21 @@ def _note_lead(contact: Contact, source: LeadSource, ctx: dict) -> None:
     contact.save(update_fields=['memory'])
 
 
-def create_lead(source: LeadSource, payload: dict) -> tuple[Contact, bool]:
+def create_lead(source: LeadSource, payload: dict) -> tuple[Contact, bool, list[str]]:
+    """Devolve (contato, fluxo iniciado, chaves de `campos` ignoradas por não serem campos cadastrados)."""
     wa_id = chat_services.normalize_number(payload.get('telefone', ''))
     contact = chat_services.get_or_create_contact(source.account, wa_id, payload.get('nome', ''))
+    campos = {str(k): str(v) for k, v in (payload.get('campos') or {}).items() if v is not None}
+    known = chat_services._field_keys(source.company)
+    chat_services._merge_import_fields(contact, campos, known)
+    ignored = sorted(set(campos) - known)
     ctx = {'origem': payload.get('origem', ''), 'email': payload.get('email', ''), **(payload.get('extras') or {})}
     _note_lead(contact, source, ctx)
     flow = Flow.objects.filter(account=source.account, trigger=Flow.Trigger.LEAD, active=True).order_by('-id').first()
     if not flow:
-        return contact, False
+        return contact, False, ignored
     start_flow(flow, contact, ctx)
-    return contact, True
+    return contact, True, ignored
 
 
 def _cancel_active_runs(contact: Contact, reason: str) -> None:
@@ -479,8 +484,8 @@ def _match_trigger(contact: Contact, message: Message) -> Flow | None:
     return None
 
 
-def receive_lead(token: str, payload: dict) -> tuple[Contact, bool]:
-    source = LeadSource.objects.filter(token=token, active=True).select_related('account').first()
+def receive_lead(token: str, payload: dict) -> tuple[Contact, bool, list[str]]:
+    source = LeadSource.objects.filter(token=token, active=True).select_related('account', 'company').first()
     if source is None:
         raise NotFound('fonte de lead não encontrada')
     return create_lead(source, payload)

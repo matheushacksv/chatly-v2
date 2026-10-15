@@ -231,11 +231,20 @@ async function removeSource(source: LeadSource) {
 
 const sourceUrl = (source: LeadSource) => `${config.public.apiBase}/automations/leads/${source.token}`
 
-const samplePayload = JSON.stringify(
-  { nome: 'Maria Silva', telefone: '5511999999999', email: 'maria@exemplo.com', origem: 'site' },
+// campos personalizados cadastrados entram no exemplo pela chave
+const { fields: contactFields, load: loadContactFields } = useContactFields()
+onMounted(loadContactFields)
+const samplePayload = computed(() => JSON.stringify(
+  {
+    nome: 'Maria Silva',
+    telefone: '5511999999999',
+    email: 'maria@exemplo.com',
+    origem: 'site',
+    ...(contactFields.value.length ? { campos: Object.fromEntries(contactFields.value.map(f => [f.key, '...'])) } : {})
+  },
   null,
   2
-)
+))
 
 // ---- link wa.me ----
 // o número real não fica no banco (a conta guarda só o phone_number_id), então vem daqui
@@ -462,6 +471,8 @@ const waLink = computed(() => {
               </p>
               <p class="text-xs text-muted">
                 Só <span class="font-mono">telefone</span> é obrigatório. O resto vira variável do fluxo.
+                Em <span class="font-mono">campos</span>, use a chave de um campo personalizado já cadastrado (Contatos, Campos): o valor fica salvo no contato.
+                Chave desconhecida é ignorada e volta em <span class="font-mono">ignored_fields</span> na resposta.
               </p>
               <pre class="rounded-lg bg-elevated ring-1 ring-default p-3 text-xs overflow-x-auto">{{ samplePayload }}</pre>
             </div>

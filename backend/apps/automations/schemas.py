@@ -26,6 +26,7 @@ class LeadInDTO(Schema):
     email: str = ''
     origem: str = ''
     extras: dict = {}
+    campos: dict = {}  # chave do campo personalizado -> valor (grava no contato)
 
 
 class FlowOutDTO(ModelSchema):
@@ -69,3 +70,4 @@ class LeadSourceOutDTO(ModelSchema):
 class LeadAcceptedDTO(Schema):
     contact_id: int
     flow_started: bool
+    ignored_fields: list[str] = []
