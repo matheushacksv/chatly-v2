@@ -125,13 +125,13 @@ function onCsvPicked(event: Event) {
   ;(event.target as HTMLInputElement).value = ''
 }
 
-async function runImport({ rows, tagIds }: { rows: CsvRecipient[], tagIds: number[] }) {
+async function runImport({ rows, tags }: { rows: CsvRecipient[], tags: Tag[] }) {
   if (!rows.length || importing.value) return
   importing.value = true
   try {
     const result = await api<{ created: number, existing: number }>(
       `/companies/${companyId.value}/whatsapp-accounts/${accountId.value}/contacts/import`,
-      { method: 'POST', body: { numbers: rows, tag_ids: tagIds } }
+      { method: 'POST', body: { numbers: rows, tag_ids: tags.map(t => t.id) } }
     )
     toast.add({
       title: `${result.created} contato(s) criado(s), ${result.existing} já existiam`,

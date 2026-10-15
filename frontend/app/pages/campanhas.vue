@@ -140,7 +140,7 @@ function openCreate() {
   selectedContactIds.value = []
   csvNumbers.value = []
   csvInvalid.value = []
-  csvTagIds.value = []
+  csvTags.value = []
   createOpen.value = true
 }
 
@@ -173,7 +173,7 @@ const { fields: contactFields } = useContactFields()
 const csvColumnsText = computed(() => {
   const keys = new Set(csvNumbers.value.flatMap(r => Object.keys(r.fields)))
   const labels = contactFields.value.filter(f => keys.has(f.key)).map(f => f.label)
-  const tagNames = tags.value.filter(t => csvTagIds.value.includes(t.id)).map(t => t.name)
+  const tagNames = csvTags.value.map(t => t.name)
   return [labels.length ? `Campos: ${labels.join(', ')}` : '', tagNames.length ? `Etiquetas: ${tagNames.join(', ')}` : '']
     .filter(Boolean).join(' · ') || undefined
 })
@@ -190,11 +190,11 @@ function onCsvPicked(event: Event) {
   ;(event.target as HTMLInputElement).value = ''
 }
 
-const csvTagIds = ref<number[]>([])
-function onCsvMapped({ rows, invalid, tagIds }: { rows: CsvRecipient[], invalid: string[], tagIds: number[] }) {
+const csvTags = ref<Tag[]>([])
+function onCsvMapped({ rows, invalid, tags: chosen }: { rows: CsvRecipient[], invalid: string[], tags: Tag[] }) {
   csvNumbers.value = rows
   csvInvalid.value = invalid
-  csvTagIds.value = tagIds
+  csvTags.value = chosen
 }
 
 const campaignMissingReasons = computed(() => {
@@ -233,7 +233,7 @@ async function create() {
     if (mode.value === 'csv') {
       body.contact_ids = []
       body.numbers = csvNumbers.value
-      body.import_tag_ids = csvTagIds.value
+      body.import_tag_ids = csvTags.value.map(t => t.id)
     }
     const created = await api<Campaign>(`/companies/${companyId.value}/campaigns`, { method: 'POST', body })
     campaigns.value.unshift(created)

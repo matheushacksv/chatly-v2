@@ -5,7 +5,8 @@ import type { CsvTarget } from '~/composables/useContactFields'
 
 const props = defineProps<{ text: string, companyId: number, confirmLabel: string }>()
 const open = defineModel<boolean>('open', { default: false })
-const emit = defineEmits<{ confirm: [result: { rows: CsvRecipient[], invalid: string[], tagIds: number[] }] }>()
+// devolve as etiquetas inteiras (não só ids): quem chama mostra o nome mesmo da etiqueta criada aqui
+const emit = defineEmits<{ confirm: [result: { rows: CsvRecipient[], invalid: string[], tags: Tag[] }] }>()
 
 const api = useApi()
 const toast = useToast()
@@ -75,7 +76,7 @@ async function confirm() {
       if (!existing) fields.value = [...fields.value, field].sort((a, b) => a.label.localeCompare(b.label))
       newKeys[target] = field.key
     }
-    emit('confirm', { ...applyMapping(rows.value, hasHeader.value, targets.value, newKeys), tagIds: tagIds.value })
+    emit('confirm', { ...applyMapping(rows.value, hasHeader.value, targets.value, newKeys), tags: tags.value.filter(t => tagIds.value.includes(t.id)) })
     open.value = false
   } catch (error) {
     toast.add({ title: apiErrorDetail(error, 'Não foi possível criar o campo'), color: 'error' })
