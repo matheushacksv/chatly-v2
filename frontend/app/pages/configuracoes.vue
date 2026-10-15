@@ -2,12 +2,14 @@
 import type { TabsItem } from '@nuxt/ui'
 import type { Agent, Credential, Invite, Member, PipedriveConfig, PipedrivePipeline, Tag, TagColor, WhatsAppAccount } from '~/types/api'
 
-const tab = ref('credenciais')
+// ?tab= abre direto numa aba (ex.: link "Gerenciar respostas rápidas" do chat)
+const tab = ref(String(useRoute().query.tab || 'credenciais'))
 const settingsTabs: TabsItem[] = [
   { label: 'Credenciais de IA', icon: 'i-lucide-key-round', value: 'credenciais', slot: 'credenciais' },
   { label: 'Pipedrive', icon: 'i-lucide-handshake', value: 'pipedrive', slot: 'pipedrive' },
   { label: 'WhatsApp', icon: 'i-lucide-phone', value: 'whatsapp', slot: 'whatsapp' },
   { label: 'Contatos', icon: 'i-lucide-tag', value: 'etiquetas', slot: 'etiquetas' },
+  { label: 'Respostas rápidas', icon: 'i-lucide-zap', value: 'respostas', slot: 'respostas' },
   { label: 'Membros', icon: 'i-lucide-users', value: 'membros', slot: 'membros' },
   { label: 'Empresa', icon: 'i-lucide-building-2', value: 'empresa', slot: 'empresa' }
 ]
@@ -632,6 +634,15 @@ async function disconnectPipedrive() {
               Campos personalizados
             </h2>
             <ContactFieldsManager v-if="companyId" :company-id="companyId" />
+          </section>
+          </template>
+
+          <template #respostas>
+          <section class="space-y-3 pt-4">
+            <h2 class="font-display font-semibold text-lg">
+              Respostas rápidas
+            </h2>
+            <QuickRepliesManager v-if="companyId" :company-id="companyId" />
           </section>
           </template>
 

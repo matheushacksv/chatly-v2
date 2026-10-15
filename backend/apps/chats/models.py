@@ -192,3 +192,18 @@ class FollowUp(models.Model):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     error = models.CharField(max_length=255, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
+
+
+class QuickReply(models.Model):
+    """Resposta pronta do atendente: digita /atalho no chat e o texto entra preenchido com os dados do contato."""
+
+    company = models.ForeignKey('companies.Company', on_delete=models.CASCADE, related_name='quick_replies')
+    shortcut = models.CharField(max_length=40)
+    text = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(Lower('shortcut'), 'company', name='unique_quick_reply_shortcut_per_company')]
+
+    def __str__(self):
+        return self.shortcut

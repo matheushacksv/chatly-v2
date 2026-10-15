@@ -4513,3 +4513,33 @@ class PlaygroundTests(BaseChatsTestCase):
         url = f'/api/companies/{self.company.pk}/agents/{self.other_agent.pk}/playground'
         response = self.client.post(url, data=json.dumps({'messages': [{'role': 'user', 'content': 'oi'}]}), content_type='application/json', headers=self.auth)
         self.assertEqual(response.status_code, 404)
+
+
+
+class QuickReplyTests(BaseChatsTestCase):
+    def url(self, reply_id=None, company_id=None):
+        base = f'/api/companies/{company_id or self.company.pk}/quick-replies'
+        return f'{base}/{reply_id}' if reply_id else base
+
+    def send(self, method, url, data):
+        return getattr(self.client, method)(url, data=json.dumps(data), content_type='application/json', headers=self.auth)
+
+    def test_crud_normalizes_and_rejects_duplicate(self):
+        r = self.send('post', self.url(), {'shortcut': '/BoasVindas', 'text': ' Olá {{nome}}! '})
+        self.assertEqual(r.status_code, 201, r.json())
+        self.assertEqual((r.json()['shortcut'], r.json()['text']), ('boasvindas', 'Olá {{nome}}!'))
+        self.assertEqual(self.send('post', self.url(), {'shortcut': 'boasvindas', 'text': 'x'}).status_code, 409)
+        self.assertEqual(self.send('post', self.url(), {'shortcut': 'com espaço', 'text': 'x'}).status_code, 400)
+
+        reply_id = r.json()['id']
+        r = self.send('put', self.url(reply_id), {'shortcut': 'boasvindas', 'text': 'Oi'})  # mesmo atalho, sem conflito consigo
+        self.assertEqual(r.json()['text'], 'Oi')
+        self.assertEqual([q['shortcut'] for q in self.client.get(self.url(), headers=self.auth).json()], ['boasvindas'])
+        self.assertEqual(self.client.delete(self.url(reply_id), headers=self.auth).status_code, 204)
+
+    def test_scoped_by_company(self):
+        from apps.chats.models import QuickReply
+
+        foreign = QuickReply.objects.create(company=self.other_company, shortcut='x', text='x')
+        self.assertEqual(self.client.delete(self.url(foreign.pk), headers=self.auth).status_code, 404)
+        self.assertEqual(self.client.get(self.url(company_id=self.other_company.pk), headers=self.auth).status_code, 404)

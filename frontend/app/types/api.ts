@@ -463,3 +463,10 @@ export interface LeadSource {
   active: boolean
   created_at: string
 }
+
+/** Resposta pronta do atendente: /atalho no chat; o texto aceita {{nome}}, {{telefone}} e campos */
+export interface QuickReply {
+  id: number
+  shortcut: string
+  text: string
+}

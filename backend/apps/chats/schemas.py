@@ -6,7 +6,7 @@ from django.utils import timezone
 from pydantic import Field
 
 from apps.agents.services import next_ai_opening
-from apps.chats.models import Campaign, Contact, ContactField, FollowUp, ToolCall, Message, Sticker, Tag, WhatsAppAccount
+from apps.chats.models import Campaign, Contact, ContactField, FollowUp, QuickReply, ToolCall, Message, Sticker, Tag, WhatsAppAccount
 
 
 class WhatsAppAccountInDTO(Schema):
@@ -283,3 +283,14 @@ class FollowUpOutDTO(ModelSchema):
 class ContactAIActivityDTO(Schema):
     tool_calls: list[ToolCallOutDTO]
     followups: list[FollowUpOutDTO]
+
+
+class QuickReplyInDTO(Schema):
+    shortcut: str = Field(min_length=1, max_length=41)
+    text: str = Field(min_length=1, max_length=4096)
+
+
+class QuickReplyOutDTO(ModelSchema):
+    class Meta:
+        model = QuickReply
+        fields = ['id', 'shortcut', 'text']

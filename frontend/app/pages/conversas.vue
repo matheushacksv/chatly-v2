@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Contact, Member, Message, Paginated, Sticker, Template, WhatsAppAccount } from '~/types/api'
+import type { Contact, Member, Message, Paginated, QuickReply, Sticker, Template, WhatsAppAccount } from '~/types/api'
 
 const api = useApi()
 const toast = useToast()
@@ -242,6 +242,54 @@ function onFilePicked(event: Event) {
 
 const formatSize = (bytes: number) =>
   bytes < 2 ** 20 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / 2 ** 20).toFixed(1)} MB`
+
+// ---- respostas rápidas: "/" no começo ou depois de espaço abre a lista ----
+const { replies: quickReplies, load: loadQuickReplies } = useQuickReplies()
+onMounted(loadQuickReplies)
+const draftInput = useTemplateRef<{ inputRef: HTMLInputElement | null }>('draftInput')
+const slashIndex = ref(0)
+// null = lista fechada; string = o que foi digitado depois da "/"
+const slashQuery = computed(() => {
+  const match = draft.value.match(/(?:^|\s)\/([\w-]*)$/)
+  return match && !slashDismissed.value ? match[1]! : null
+})
+const slashDismissed = ref(false)
+watch(draft, () => {
+  slashDismissed.value = false
+  slashIndex.value = 0
+})
+const slashOptions = computed(() => {
+  const q = (slashQuery.value ?? '').toLowerCase()
+  return quickReplies.value.filter(r => r.shortcut.includes(q) || r.text.toLowerCase().includes(q)).slice(0, 8)
+})
+
+function pickQuickReply(reply: QuickReply) {
+  if (!selected.value) return
+  // troca o "/atalho" digitado pelo texto já preenchido com os dados do contato
+  draft.value = draft.value.replace(/\/[\w-]*$/, fillContactVars(reply.text, selected.value))
+  slashDismissed.value = true
+  nextTick(() => draftInput.value?.inputRef?.focus())
+}
+
+function onDraftKeydown(event: KeyboardEvent) {
+  if (slashQuery.value === null || !slashOptions.value.length) {
+    if (event.key === 'Escape') slashDismissed.value = true
+    return
+  }
+  const total = slashOptions.value.length
+  if (event.key === 'ArrowDown') slashIndex.value = (slashIndex.value + 1) % total
+  else if (event.key === 'ArrowUp') slashIndex.value = (slashIndex.value - 1 + total) % total
+  else if (event.key === 'Enter' || event.key === 'Tab') pickQuickReply(slashOptions.value[slashIndex.value]!)
+  else if (event.key === 'Escape') slashDismissed.value = true
+  else return
+  event.preventDefault()
+}
+
+function closeSlashSoon() {
+  setTimeout(() => {
+    slashDismissed.value = true
+  }, 150)
+}
 
 async function send() {
   const content = draft.value.trim()
@@ -937,17 +985,56 @@ const accountItems = computed(() =>
             title="Enviar template"
             @click="templateModalOpen = true"
           />
-          <UInput
-            v-model="draft"
-            :placeholder="attachment
-              ? 'Legenda (opcional)...'
-              : (selected.ai_paused ? 'Responder como atendente...' : 'Responder assume a conversa e pausa a IA...')"
-            variant="soft"
-            size="lg"
-            class="flex-1"
-            :ui="{ base: 'rounded-full px-4' }"
-            autocomplete="off"
-          />
+          <div class="relative flex-1">
+            <UInput
+              ref="draftInput"
+              v-model="draft"
+              :placeholder="attachment
+                ? 'Legenda (opcional)...'
+                : (selected.ai_paused ? 'Responder como atendente... (/ pra respostas rápidas)' : 'Responder assume a conversa e pausa a IA...')"
+              variant="soft"
+              size="lg"
+              class="w-full"
+              :ui="{ base: 'rounded-full px-4' }"
+              autocomplete="off"
+              @keydown="onDraftKeydown"
+              @blur="closeSlashSoon"
+            />
+            <!-- lista de respostas rápidas: abre com "/" e filtra pelo que vem depois -->
+            <div
+              v-if="slashQuery !== null"
+              class="absolute bottom-full mb-2 left-0 w-full max-w-md rounded-lg bg-default ring-1 ring-default shadow-lg py-1 z-20"
+              role="listbox"
+            >
+              <button
+                v-for="(reply, i) in slashOptions"
+                :key="reply.id"
+                type="button"
+                role="option"
+                :aria-selected="i === slashIndex"
+                class="w-full text-left px-3 py-1.5"
+                :class="i === slashIndex ? 'bg-elevated' : ''"
+                @mousedown.prevent="pickQuickReply(reply)"
+              >
+                <p class="text-sm font-mono">
+                  /{{ reply.shortcut }}
+                </p>
+                <p class="text-xs text-muted truncate">
+                  {{ fillContactVars(reply.text, selected) }}
+                </p>
+              </button>
+              <p v-if="!slashOptions.length" class="px-3 py-2 text-sm text-muted">
+                {{ quickReplies.length ? 'Nenhuma resposta com esse atalho.' : 'Nenhuma resposta rápida ainda.' }}
+              </p>
+              <button
+                type="button"
+                class="block w-full text-left px-3 py-1.5 text-xs text-primary border-t border-default"
+                @mousedown.prevent="navigateTo('/configuracoes?tab=respostas')"
+              >
+                Gerenciar respostas rápidas
+              </button>
+            </div>
+          </div>
           <UButton
             type="submit"
             icon="i-lucide-arrow-up"

@@ -14,7 +14,7 @@ from django.utils.text import slugify
 
 from apps.agents.services import get_agent
 from apps.chats import events, whatsapp
-from apps.chats.models import Campaign, Contact, ContactField, FollowUp, Message, ToolCall, Sticker, Tag, TemplateHeaderMedia, WhatsAppAccount
+from apps.chats.models import Campaign, Contact, ContactField, FollowUp, Message, QuickReply, ToolCall, Sticker, Tag, TemplateHeaderMedia, WhatsAppAccount
 from apps.companies.models import Company, Membership
 from core.exceptions import Conflict, NotFound, ValidationError
 
@@ -971,3 +971,38 @@ def cancel_followup(company: Company, contact_id: int, followup_id: int) -> Foll
     if not FollowUp.objects.filter(contact=contact, pk=followup_id, status=FollowUp.Status.PENDING).update(status=FollowUp.Status.CANCELED):
         raise Conflict('retomada não está agendada')
     return FollowUp.objects.get(pk=followup_id)
+
+
+# * ------ Respostas rápidas ------
+
+SHORTCUT_RE = re.compile(r'^[a-z0-9_-]{1,40}$')
+
+
+def list_quick_replies(company: Company) -> QuerySet[QuickReply]:
+    return QuickReply.objects.filter(company=company).order_by('shortcut')
+
+
+def get_quick_reply(company: Company, reply_id: int) -> QuickReply:
+    reply = QuickReply.objects.filter(company=company, pk=reply_id).first()
+    if reply is None:
+        raise NotFound('quick reply not found')
+    return reply
+
+
+def save_quick_reply(company: Company, shortcut: str, text: str, reply: QuickReply | None = None) -> QuickReply:
+    shortcut = shortcut.strip().lstrip('/').lower()
+    if not SHORTCUT_RE.match(shortcut):
+        raise ValidationError('atalho: até 40 letras minúsculas, números, _ ou -, sem espaço')
+    if not text.strip():
+        raise ValidationError('texto vazio')
+    duplicate = QuickReply.objects.filter(company=company, shortcut__iexact=shortcut).exclude(pk=getattr(reply, 'pk', None))
+    if duplicate.exists():
+        raise Conflict(f'já existe a resposta /{shortcut}')
+    reply = reply or QuickReply(company=company)
+    reply.shortcut, reply.text = shortcut, text.strip()
+    reply.save()
+    return reply
+
+
+def delete_quick_reply(company: Company, reply_id: int) -> None:
+    get_quick_reply(company, reply_id).delete()

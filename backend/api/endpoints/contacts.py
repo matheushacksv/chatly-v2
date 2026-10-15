@@ -4,7 +4,7 @@ from ninja import Router, Status
 from ninja.pagination import paginate
 
 from apps.chats import services
-from apps.chats.schemas import ContactAIActivityDTO, FollowUpOutDTO, ContactCreateDTO, ContactImportDTO, ContactImportResultDTO, ContactOutDTO, ContactFieldInDTO, ContactFieldOutDTO, ContactPatchDTO, TagInDTO, TagOutDTO
+from apps.chats.schemas import QuickReplyInDTO, QuickReplyOutDTO, ContactAIActivityDTO, FollowUpOutDTO, ContactCreateDTO, ContactImportDTO, ContactImportResultDTO, ContactOutDTO, ContactFieldInDTO, ContactFieldOutDTO, ContactPatchDTO, TagInDTO, TagOutDTO
 from apps.companies import services as companies_services
 
 router = Router(tags=['Contacts'])
@@ -111,3 +111,32 @@ def contact_ai_activity_endpoint(request, company_id: int, contact_id: int):
 def cancel_followup_endpoint(request, company_id: int, contact_id: int, followup_id: int):
     company = companies_services.get_company(request.auth, company_id)
     return services.cancel_followup(company, contact_id, followup_id)
+
+
+# respostas rápidas: qualquer membro gerencia (é ferramenta do atendente no dia a dia)
+
+
+@router.get('/{company_id}/quick-replies', response=list[QuickReplyOutDTO])
+def list_quick_replies_endpoint(request, company_id: int):
+    company = companies_services.get_company(request.auth, company_id)
+    return services.list_quick_replies(company)
+
+
+@router.post('/{company_id}/quick-replies', response={201: QuickReplyOutDTO})
+def create_quick_reply_endpoint(request, company_id: int, payload: QuickReplyInDTO):
+    company = companies_services.get_company(request.auth, company_id)
+    return Status(201, services.save_quick_reply(company, payload.shortcut, payload.text))
+
+
+@router.put('/{company_id}/quick-replies/{reply_id}', response=QuickReplyOutDTO)
+def update_quick_reply_endpoint(request, company_id: int, reply_id: int, payload: QuickReplyInDTO):
+    company = companies_services.get_company(request.auth, company_id)
+    reply = services.get_quick_reply(company, reply_id)
+    return services.save_quick_reply(company, payload.shortcut, payload.text, reply)
+
+
+@router.delete('/{company_id}/quick-replies/{reply_id}', response={204: None})
+def delete_quick_reply_endpoint(request, company_id: int, reply_id: int):
+    company = companies_services.get_company(request.auth, company_id)
+    services.delete_quick_reply(company, reply_id)
+    return Status(204, None)

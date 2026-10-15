@@ -11,11 +11,14 @@ const items = computed(() => [
     { type: 'label' as const, label: 'Contato' },
     ...variables.value.map(v => ({ label: v.label, suffix: `{{${v.key}}}`, onSelect: () => emit('insert', `{{${v.key}}}`) }))
   ],
-  [
-    { type: 'label' as const, label: 'Fluxo' },
-    ...(props.extra ?? []).map(v => ({ label: v.label, suffix: `{{${v.key}}}`, onSelect: () => emit('insert', `{{${v.key}}}`) })),
-    ...(props.flowVars ?? []).map(key => ({ label: `Resposta guardada: ${key}`, suffix: `{{${key}}}`, onSelect: () => emit('insert', `{{${key}}}`) }))
-  ]
+  // grupo "Fluxo" só existe no editor de fluxos (respostas rápidas não têm variáveis de fluxo)
+  ...(props.extra?.length || props.flowVars?.length
+    ? [[
+        { type: 'label' as const, label: 'Fluxo' },
+        ...(props.extra ?? []).map(v => ({ label: v.label, suffix: `{{${v.key}}}`, onSelect: () => emit('insert', `{{${v.key}}}`) })),
+        ...(props.flowVars ?? []).map(key => ({ label: `Resposta guardada: ${key}`, suffix: `{{${key}}}`, onSelect: () => emit('insert', `{{${key}}}`) }))
+      ]]
+    : [])
 ])
 </script>
 
