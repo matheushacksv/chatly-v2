@@ -460,7 +460,7 @@ async function disconnectPipedrive() {
     </template>
 
     <template #body>
-      <div class="max-w-3xl space-y-8">
+      <div class="max-w-5xl space-y-8">
         <!-- member acessando por URL direta: backend devolve 404 nas rotas de admin -->
         <UAlert
           v-if="!isOwner"
@@ -471,7 +471,7 @@ async function disconnectPipedrive() {
           color="neutral"
         />
 
-        <!-- 7 abas não cabem em max-w-3xl: aba não encolhe (sem "Pipe..."), a barra rola na horizontal -->
+        <!-- aba não encolhe (sem "Pipe..."); a rolagem só aparece em tela estreita (celular) -->
         <UTabs
           v-else
           v-model="tab"
