@@ -10,6 +10,8 @@ from apps.agents.schemas import (
     AgentToolPatchDTO,
     AgentToolTestDTO,
     AgentToolTestResultDTO,
+    PlaygroundInDTO,
+    PlaygroundOutDTO,
 )
 from apps.companies import services as companies_services
 
@@ -98,3 +100,19 @@ def test_agent_tool_endpoint(request, company_id: int, agent_id: int, tool_id: i
     tool = services.get_agent_tool(company, agent_id, tool_id)
     ok, result = services.run_agent_tool(tool, payload.arguments, {'nome': 'Contato de teste', 'telefone': '5511999999999'})
     return {'ok': ok, 'result': result}
+
+
+@router.post('/{company_id}/agents/{agent_id}/playground', response=PlaygroundOutDTO)
+def playground_endpoint(request, company_id: int, agent_id: int, payload: PlaygroundInDTO):
+    from apps.chats import ai_tools
+
+    company = companies_services.get_company(request.auth, company_id)
+    agent = services.get_agent(company, agent_id)
+    # alterações do formulário valem só neste teste: o agente não é salvo
+    if payload.prompt is not None:
+        agent.prompt = payload.prompt
+    if payload.native_tools is not None:
+        agent.native_tools = payload.native_tools
+    return ai_tools.run_playground(
+        agent, [m.dict() for m in payload.messages], payload.name, payload.phone, payload.fields, payload.memory
+    )

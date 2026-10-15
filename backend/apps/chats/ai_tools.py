@@ -24,9 +24,11 @@ def _log(contact: Contact, name: str, arguments: dict, result: str, ok: bool = T
     return result
 
 
-def build_tools(contact: Contact) -> tuple[list, dict]:
-    """Devolve (tools, state). state['handed_off'] vira True quando a IA transfere a conversa."""
-    agent = contact.account.agent
+def build_tools(contact: Contact, agent=None) -> tuple[list, dict]:
+    """Devolve (tools, state). state['handed_off'] vira True quando a IA transfere a conversa.
+    agent explícito = teste no painel (contato fictício, sem conta): só a montagem roda, ver dry_run."""
+    agent = agent or contact.account.agent
+    company_id = agent.company_id
     enabled = set(agent.native_tools)
     state = {'handed_off': False}
     tools: list = []
@@ -71,7 +73,7 @@ def build_tools(contact: Contact) -> tuple[list, dict]:
 
         tools.append(agendar_retomada)
 
-    fields = dict(ContactField.objects.filter(company_id=contact.account.company_id).values_list('key', 'label'))
+    fields = dict(ContactField.objects.filter(company_id=company_id).values_list('key', 'label'))
     if 'save_field' in enabled and fields:
 
         def salvar_dado_contato(campo: str, valor: str) -> str:
@@ -102,7 +104,7 @@ def build_tools(contact: Contact) -> tuple[list, dict]:
             skip_entrypoint_processing=True,
         ))
 
-    tags = dict(Tag.objects.filter(company_id=contact.account.company_id).values_list('name', 'pk'))
+    tags = dict(Tag.objects.filter(company_id=company_id).values_list('name', 'pk'))
     if 'tag' in enabled and tags:
 
         def etiquetar_contato(etiqueta: str, acao: str = 'adicionar') -> str:
@@ -133,7 +135,7 @@ def build_tools(contact: Contact) -> tuple[list, dict]:
         ))
 
     if 'pipedrive' in enabled:
-        tools += _pipedrive_tools(contact)
+        tools += _pipedrive_tools(contact, company_id)
 
     variables = services.contact_variables(contact)
     for tool in agent.tools.filter(active=True):
@@ -142,12 +144,12 @@ def build_tools(contact: Contact) -> tuple[list, dict]:
     return tools, state
 
 
-def _pipedrive_tools(contact: Contact) -> list:
+def _pipedrive_tools(contact: Contact, company_id: int) -> list:
     from apps.crm import pipedrive
     from apps.crm import services as crm_services
     from apps.crm.models import PipedriveAccount
 
-    pd = PipedriveAccount.objects.filter(company_id=contact.account.company_id).first()
+    pd = PipedriveAccount.objects.filter(company_id=company_id).first()
     if pd is None:
         return []
 
@@ -202,3 +204,52 @@ def _custom_tool(contact: Contact, tool, variables: dict[str, str]) -> Function:
         entrypoint=run,
         skip_entrypoint_processing=True,
     )
+
+
+def dry_run(tools: list, calls: list[dict], fields: dict[str, str]) -> list[Function]:
+    """Mesmas ferramentas (nome, descrição, parâmetros) que a IA vê em produção, mas nada é executado:
+    cada chamada vai pra `calls`. salvar_dado_contato só altera `fields`, o contato fictício do teste."""
+    simulated = []
+    for tool in tools:
+        spec = tool if isinstance(tool, Function) else Function.from_callable(tool)
+
+        def fake(_name=spec.name, **arguments) -> str:
+            calls.append({'name': _name, 'arguments': arguments})
+            if _name == 'salvar_dado_contato':
+                fields[arguments.get('campo', '')] = str(arguments.get('valor', ''))
+            return 'Executado (teste: nenhuma ação real foi feita).'
+
+        simulated.append(Function(
+            name=spec.name, description=spec.description, parameters=spec.parameters, entrypoint=fake, skip_entrypoint_processing=True
+        ))
+    return simulated
+
+
+def run_playground(agent, messages: list[dict], name: str, phone: str, fields: dict[str, str], memory: str = '') -> dict:
+    """Teste do agente no painel: conversa fictícia, ferramentas simuladas, nada é salvo nem enviado."""
+    from apps import ai
+    from core.exceptions import GatewayError, ValidationError
+
+    if not messages or messages[-1]['role'] != 'user':
+        raise ValidationError('a última mensagem do teste precisa ser do cliente')
+    fields = {k: v for k, v in fields.items() if v is not None}
+    contact = Contact(wa_id=phone or '5511999999999', name=name, custom_fields=dict(fields))
+    calls: list[dict] = []
+    tools, _ = build_tools(contact, agent=agent)
+    keys = ContactField.objects.filter(company_id=agent.company_id).values_list('key', flat=True)
+    variables = {key: '' for key in keys} | services.contact_variables(contact)
+    labels = dict(ContactField.objects.filter(company_id=agent.company_id).values_list('key', 'label'))
+    filled = '\n'.join(f'{labels[k]}: {v}' for k, v in fields.items() if k in labels and v)
+    try:
+        reply = ai.generate_reply(
+            agent,
+            messages[:-1][-40:],
+            messages[-1]['content'],
+            memory='\n\n'.join(filter(None, [memory, filled and f'Dados cadastrados:\n{filled}'])),
+            tools=dry_run(tools, calls, contact.custom_fields),
+            variables=variables,
+        )
+    except Exception as exc:  # provider fora, chave inválida, modelo inexistente
+        raise GatewayError(f'a IA não respondeu: {exc}')
+    parts = [p.strip() for p in reply.split('\n\n') if p.strip()] if agent.split_messages else [reply]
+    return {'parts': parts, 'tool_calls': calls, 'fields': contact.custom_fields}

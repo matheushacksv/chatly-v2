@@ -4468,3 +4468,48 @@ class PromptVariablesTests(BaseChatsTestCase):
             ai.render_prompt(prompt, tasks._prompt_variables(self.contact)),
             'Cliente Cliente A usa Civil 3D no plano não informado. Template usa {{1}}.',
         )
+
+
+
+class PlaygroundTests(BaseChatsTestCase):
+    def url(self):
+        return f'/api/companies/{self.company.pk}/agents/{self.agent.pk}/playground'
+
+    def post(self, **body):
+        data = {'messages': [{'role': 'user', 'content': 'uso civil 3d, me chama segunda'}], **body}
+        return self.client.post(self.url(), data=json.dumps(data), content_type='application/json', headers=self.auth)
+
+    @patch('apps.ai.generate_reply')
+    def test_tools_are_simulated_and_nothing_is_saved(self, mock_generate):
+        ContactField.objects.create(company=self.company, key='cad', label='CAD')
+
+        def fake_reply(agent, history, text, **kwargs):
+            tools = {t.name: t for t in kwargs['tools']}
+            tools['salvar_dado_contato'].entrypoint(campo='cad', valor='Civil 3D')
+            tools['agendar_retomada'].entrypoint(data_hora='2030-01-01T10:00', mensagem='Oi')
+            tools['transferir_para_atendente'].entrypoint(motivo='teste')
+            self.assertEqual(kwargs['variables']['nome'], 'Ana')
+            return 'Anotado!\n\nTe chamo segunda.'
+
+        mock_generate.side_effect = fake_reply
+        Agent.objects.filter(pk=self.agent.pk).update(split_messages=True)
+        contacts_before = Contact.objects.count()
+        response = self.post(name='Ana', native_tools=['handoff', 'followup', 'save_field'], prompt='Prompt não salvo')
+        self.assertEqual(response.status_code, 200, response.json())
+        body = response.json()
+        self.assertEqual(body['parts'], ['Anotado!', 'Te chamo segunda.'])
+        self.assertEqual([c['name'] for c in body['tool_calls']], ['salvar_dado_contato', 'agendar_retomada', 'transferir_para_atendente'])
+        self.assertEqual(body['fields'], {'cad': 'Civil 3D'})
+        self.assertEqual(mock_generate.call_args.args[0].prompt, 'Prompt não salvo')
+        self.assertEqual((Contact.objects.count(), FollowUp.objects.count(), ToolCall.objects.count()), (contacts_before, 0, 0))
+        self.agent.refresh_from_db()
+        self.assertEqual(self.agent.prompt, 'Você vende.')  # prompt do teste não foi salvo
+
+    def test_last_message_must_be_from_client(self):
+        response = self.post(messages=[{'role': 'assistant', 'content': 'oi'}])
+        self.assertEqual(response.status_code, 400)
+
+    def test_foreign_agent_is_404(self):
+        url = f'/api/companies/{self.company.pk}/agents/{self.other_agent.pk}/playground'
+        response = self.client.post(url, data=json.dumps({'messages': [{'role': 'user', 'content': 'oi'}]}), content_type='application/json', headers=self.auth)
+        self.assertEqual(response.status_code, 404)

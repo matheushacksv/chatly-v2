@@ -109,7 +109,12 @@ const modalTabs = computed(() => [
   { label: 'Geral', icon: 'i-lucide-settings', value: 'geral', slot: 'geral' as const },
   { label: 'Prompt', icon: 'i-lucide-text', value: 'prompt', slot: 'prompt' as const },
   { label: 'Ferramentas', icon: 'i-lucide-wrench', value: 'ferramentas', slot: 'ferramentas' as const },
-  ...(editing.value ? [{ label: 'Documentos', icon: 'i-lucide-file-text', value: 'documentos', slot: 'documentos' as const }] : [])
+  ...(editing.value
+    ? [
+        { label: 'Documentos', icon: 'i-lucide-file-text', value: 'documentos', slot: 'documentos' as const },
+        { label: 'Testar', icon: 'i-lucide-flask-conical', value: 'testar', slot: 'testar' as const }
+      ]
+    : [])
 ])
 
 // erro de validação pode estar numa aba escondida: leva até ela
@@ -660,6 +665,16 @@ const statusBadge: Record<AgentDocument['status'], { label: string, color: 'warn
                 </p>
               </div>
             </div>
+          </template>
+
+          <template #testar>
+            <AgentPlayground
+              v-if="editing && companyId"
+              :company-id="companyId"
+              :agent-id="editing.id"
+              :prompt="state.prompt"
+              :native-tools="state.native_tools"
+            />
           </template>
 
           <template #documentos>

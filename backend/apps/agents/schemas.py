@@ -128,3 +128,30 @@ class AgentToolTestDTO(Schema):
 class AgentToolTestResultDTO(Schema):
     ok: bool
     result: str
+
+
+class PlaygroundMessageDTO(Schema):
+    role: Literal['user', 'assistant']
+    content: str
+
+
+class PlaygroundInDTO(Schema):
+    messages: list[PlaygroundMessageDTO]
+    name: str = 'Cliente de teste'
+    phone: str = '5511999999999'
+    fields: dict[str, str] = {}
+    memory: str = ''
+    # versão ainda não salva do formulário: testa antes de salvar
+    prompt: str | None = None
+    native_tools: list[NativeTool] | None = None
+
+
+class PlaygroundToolCallDTO(Schema):
+    name: str
+    arguments: dict
+
+
+class PlaygroundOutDTO(Schema):
+    parts: list[str]
+    tool_calls: list[PlaygroundToolCallDTO]
+    fields: dict[str, str]
