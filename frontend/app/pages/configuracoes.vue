@@ -471,7 +471,15 @@ async function disconnectPipedrive() {
           color="neutral"
         />
 
-        <UTabs v-else v-model="tab" :items="settingsTabs" variant="link" class="w-full">
+        <!-- 7 abas não cabem em max-w-3xl: aba não encolhe (sem "Pipe..."), a barra rola na horizontal -->
+        <UTabs
+          v-else
+          v-model="tab"
+          :items="settingsTabs"
+          variant="link"
+          class="w-full"
+          :ui="{ list: 'overflow-x-auto overflow-y-hidden', trigger: 'shrink-0', label: 'overflow-visible text-clip' }"
+        >
           <template #credenciais>
           <!-- Credenciais -->
           <section class="space-y-3 pt-4">
