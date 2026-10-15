@@ -233,7 +233,7 @@ const sourceUrl = (source: LeadSource) => `${config.public.apiBase}/automations/
 
 // campos personalizados cadastrados entram no exemplo pela chave
 const { fields: contactFields, load: loadContactFields } = useContactFields()
-onMounted(loadContactFields)
+watch(companyId, loadContactFields, { immediate: true })  // no F5 a empresa ativa chega depois do mount
 const samplePayload = computed(() => JSON.stringify(
   {
     nome: 'Maria Silva',
