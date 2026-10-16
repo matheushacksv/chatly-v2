@@ -205,9 +205,8 @@ export interface Agent {
   response_delay: number
   split_messages: boolean
   handoff_resume_hours: number
-  ai_hours_start: string | null // 'HH:MM:SS'; null = IA sempre atende
-  ai_hours_end: string | null
-  ai_days: number[] // 0 = segunda
+  // faixas por dia (0 = segunda), ['HH:MM', 'HH:MM'] com fim '00:00' = meia-noite; null = IA sempre atende
+  ai_schedule: [string, string][][] | null
   native_tools: NativeTool[]
   created_at: string
 }

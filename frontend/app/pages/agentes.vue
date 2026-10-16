@@ -68,39 +68,43 @@ const schema = z.object({
   handoff_resume_hours: z.coerce.number().int().min(0, 'Não pode ser negativo').max(720, 'Máximo de 720 horas'),
   credential_id: z.number().nullable(),
   ai_hours_on: z.boolean(),
-  ai_hours_start: z.string(),
-  ai_hours_end: z.string(),
-  ai_days: z.array(z.number()),
+  ai_schedule: z.array(z.array(z.tuple([z.string(), z.string()]))),
   native_tools: z.array(z.string())
 }).refine(data => editing.value !== null || data.credential_id !== null, {
   message: 'Escolha uma credencial',
   path: ['credential_id']
-}).refine(data => !data.ai_hours_on || (data.ai_hours_start && data.ai_hours_end), {
-  message: 'Informe início e fim',
-  path: ['ai_hours_end']
-}).refine(data => !data.ai_hours_on || data.ai_days.length > 0, {
-  message: 'Escolha ao menos um dia',
-  path: ['ai_days']
+}).refine(data => !data.ai_hours_on || data.ai_schedule.flat().every(([start, end]) => start && end && (end > start || end === '00:00')), {
+  message: 'Cada faixa precisa de início e fim, com o fim depois do início (00:00 = meia-noite)',
+  path: ['ai_schedule']
+}).refine(data => !data.ai_hours_on || data.ai_schedule.some(day => day.length), {
+  message: 'Coloque ao menos uma faixa',
+  path: ['ai_schedule']
 })
 
 const WEEKDAYS = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom']
-const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6]
+type DayRanges = [string, string][]
+const WHOLE_DAY: [string, string] = ['00:00', '00:00']
+const NIGHT: DayRanges = [['00:00', '09:00'], ['18:00', '00:00']]
+// atalhos que preenchem a semana; depois cada dia ajusta à vontade
+const SCHEDULE_PRESETS: { label: string, days: DayRanges[] }[] = [
+  { label: 'Comercial (seg-sex 9h-18h)', days: [...Array(5).fill([['09:00', '18:00']]), [], []] },
+  { label: 'Fora do comercial', days: [...Array(5).fill(NIGHT), [WHOLE_DAY], [WHOLE_DAY]] }
+]
+const cloneSchedule = (days: DayRanges[]) => days.map(day => day.map(([start, end]) => [start, end] as [string, string]))
 
-function toggleDay(day: number) {
-  state.ai_days = state.ai_days.includes(day) ? state.ai_days.filter(d => d !== day) : [...state.ai_days, day].sort((a, b) => a - b)
+function copyDayToAll(day: number) {
+  state.ai_schedule = state.ai_schedule.map(() => cloneSchedule([state.ai_schedule[day]!])[0]!)
 }
 
-// desligado = null nos dois: IA sempre atende
+// desligado = null: IA sempre atende
 function aiHoursBody() {
-  return {
-    ai_hours_start: state.ai_hours_on ? state.ai_hours_start : null,
-    ai_hours_end: state.ai_hours_on ? state.ai_hours_end : null,
-    ai_days: state.ai_hours_on ? state.ai_days : ALL_DAYS
-  }
+  return { ai_schedule: state.ai_hours_on ? state.ai_schedule : null }
 }
 
+const rangesLabel = (day: DayRanges) => day.map(([start, end]) => start === end ? 'dia inteiro' : `${start}-${end}`).join(', ')
 function hoursLabel(agent: Agent) {
-  return `${agent.ai_hours_start?.slice(0, 5)}-${agent.ai_hours_end?.slice(0, 5)}`
+  const days = (agent.ai_schedule ?? []).filter(day => day.length)
+  return new Set(days.map(rangesLabel)).size === 1 ? `${days.length}d · ${rangesLabel(days[0]!)}` : 'Horário por dia'
 }
 
 const open = ref(false)
@@ -256,9 +260,7 @@ const state = reactive({
   handoff_resume_hours: 24,
   credential_id: null as number | null,
   ai_hours_on: false,
-  ai_hours_start: '09:00',
-  ai_hours_end: '18:00',
-  ai_days: [...ALL_DAYS],
+  ai_schedule: cloneSchedule(SCHEDULE_PRESETS[0]!.days),
   native_tools: ['handoff', 'pipedrive'] as NativeTool[]
 })
 
@@ -288,7 +290,7 @@ watch(() => state.credential_id, (id) => {
 
 function openCreate() {
   editing.value = null
-  Object.assign(state, { name: '', description: '', model: '', prompt: '', response_delay: 0, split_messages: false, handoff_resume_hours: 24, credential_id: null, ai_hours_on: false, ai_hours_start: '09:00', ai_hours_end: '18:00', ai_days: [...ALL_DAYS], native_tools: ['handoff', 'pipedrive'] })
+  Object.assign(state, { name: '', description: '', model: '', prompt: '', response_delay: 0, split_messages: false, handoff_resume_hours: 24, credential_id: null, ai_hours_on: false, ai_schedule: cloneSchedule(SCHEDULE_PRESETS[0]!.days), native_tools: ['handoff', 'pipedrive'] })
   documents.value = []
   customTools.value = []
   modalTab.value = 'geral'
@@ -306,10 +308,8 @@ function openEdit(agent: Agent) {
     split_messages: agent.split_messages,
     handoff_resume_hours: agent.handoff_resume_hours,
     credential_id: null, // API não expõe a credencial atual; null = manter
-    ai_hours_on: agent.ai_hours_start !== null,
-    ai_hours_start: agent.ai_hours_start?.slice(0, 5) ?? '09:00',
-    ai_hours_end: agent.ai_hours_end?.slice(0, 5) ?? '18:00',
-    ai_days: [...agent.ai_days],
+    ai_hours_on: agent.ai_schedule !== null,
+    ai_schedule: cloneSchedule(agent.ai_schedule ?? SCHEDULE_PRESETS[0]!.days),
     native_tools: [...agent.native_tools]
   })
   loadDocuments(agent.id)
@@ -473,7 +473,7 @@ const statusBadge: Record<AgentDocument['status'], { label: string, color: 'warn
             <UBadge v-if="agent.response_delay" variant="subtle" color="neutral" size="sm" icon="i-lucide-timer">
               {{ agent.response_delay }}s
             </UBadge>
-            <UBadge v-if="agent.ai_hours_start" variant="subtle" color="neutral" size="sm" icon="i-lucide-clock">
+            <UBadge v-if="agent.ai_schedule" variant="subtle" color="neutral" size="sm" icon="i-lucide-clock">
               {{ hoursLabel(agent) }}
             </UBadge>
           </div>
@@ -550,30 +550,79 @@ const statusBadge: Record<AgentDocument['status'], { label: string, color: 'warn
               />
             </UFormField>
 
-            <template v-if="state.ai_hours_on">
-              <div class="grid grid-cols-2 gap-4">
-                <UFormField name="ai_hours_start" label="Início">
-                  <UInput v-model="state.ai_hours_start" type="time" class="w-full" />
-                </UFormField>
-                <UFormField name="ai_hours_end" label="Fim" help="Antes do início vira a meia-noite (18:00-09:00)">
-                  <UInput v-model="state.ai_hours_end" type="time" class="w-full" />
-                </UFormField>
-              </div>
-
-              <UFormField name="ai_days" label="Dias" help="Dia em que o horário começa">
+            <UFormField
+              v-if="state.ai_hours_on"
+              name="ai_schedule"
+              help="Fim 00:00 = meia-noite. Pra virar a noite, use uma faixa até 00:00 e outra a partir de 00:00 no dia seguinte"
+            >
+              <div class="space-y-2">
                 <div class="flex gap-1 flex-wrap">
                   <UButton
-                    v-for="(label, day) in WEEKDAYS"
-                    :key="day"
-                    :label="label"
-                    size="sm"
-                    :variant="state.ai_days.includes(day) ? 'solid' : 'outline'"
-                    :color="state.ai_days.includes(day) ? 'primary' : 'neutral'"
-                    @click="toggleDay(day)"
+                    v-for="preset in SCHEDULE_PRESETS"
+                    :key="preset.label"
+                    :label="preset.label"
+                    size="xs"
+                    variant="soft"
+                    color="neutral"
+                    @click="() => { state.ai_schedule = cloneSchedule(preset.days) }"
                   />
                 </div>
-              </UFormField>
-            </template>
+                <div class="rounded-lg ring-1 ring-default divide-y divide-default">
+                  <div v-for="(label, day) in WEEKDAYS" :key="day" class="flex items-start gap-3 px-3 py-2">
+                    <span class="w-9 pt-1.5 text-sm font-medium">{{ label }}</span>
+                    <div class="flex-1 space-y-1.5">
+                      <p v-if="!state.ai_schedule[day]!.length" class="pt-1.5 text-sm text-muted">
+                        IA não atende
+                      </p>
+                      <div v-for="(range, i) in state.ai_schedule[day]" :key="i" class="flex items-center gap-1.5">
+                        <UInput v-model="range[0]" type="time" size="sm" class="w-28" :aria-label="`${label}: início`" />
+                        <span class="text-muted">-</span>
+                        <UInput v-model="range[1]" type="time" size="sm" class="w-28" :aria-label="`${label}: fim`" />
+                        <UBadge v-if="range[0] === '00:00' && range[1] === '00:00'" label="dia inteiro" variant="subtle" size="sm" />
+                        <UButton
+                          icon="i-lucide-x"
+                          variant="ghost"
+                          color="neutral"
+                          size="xs"
+                          :aria-label="`Remover faixa de ${label}`"
+                          @click="() => { state.ai_schedule[day]!.splice(i, 1) }"
+                        />
+                      </div>
+                    </div>
+                    <div class="flex gap-0.5 shrink-0">
+                      <UTooltip text="Adicionar faixa">
+                        <UButton
+                          icon="i-lucide-plus"
+                          variant="ghost"
+                          size="xs"
+                          :aria-label="`Adicionar faixa em ${label}`"
+                          @click="() => { state.ai_schedule[day]!.push(['18:00', '00:00']) }"
+                        />
+                      </UTooltip>
+                      <UTooltip text="Dia inteiro">
+                        <UButton
+                          icon="i-lucide-sun-moon"
+                          variant="ghost"
+                          size="xs"
+                          :aria-label="`${label} o dia inteiro`"
+                          @click="() => { state.ai_schedule[day] = [[...WHOLE_DAY]] }"
+                        />
+                      </UTooltip>
+                      <UTooltip text="Copiar pra todos os dias">
+                        <UButton
+                          icon="i-lucide-copy"
+                          variant="ghost"
+                          color="neutral"
+                          size="xs"
+                          :aria-label="`Copiar ${label} pra todos os dias`"
+                          @click="copyDayToAll(day)"
+                        />
+                      </UTooltip>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </UFormField>
 
             <UFormField name="split_messages">
               <USwitch

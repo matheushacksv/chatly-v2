@@ -1,4 +1,4 @@
-from datetime import datetime, time
+from datetime import datetime
 from io import BytesIO
 from zoneinfo import ZoneInfo
 from unittest.mock import patch
@@ -364,62 +364,42 @@ class AgentTests(BaseAgentsTestCase):
         self.agent.refresh_from_db()
         self.assertEqual(self.agent.response_delay, 15)
 
-    def test_create_agent_ai_hours(self):
+    def test_create_agent_ai_schedule(self):
         response = self.client.post(
             self.url(self.company.pk), data=self.agent_payload(), content_type='application/json', headers=self.auth,
         )
-        # padrão: sempre atende, todos os dias
-        self.assertEqual(response.json()['ai_hours_start'], None)
-        self.assertEqual(response.json()['ai_days'], [0, 1, 2, 3, 4, 5, 6])
+        self.assertIsNone(response.json()['ai_schedule'])  # padrão: sempre atende
 
+        night = [['00:00', '09:00'], ['18:00', '00:00']]
+        schedule = [night, [['00:00', '09:00'], ['21:00', '00:00']], night, night, night, [['00:00', '00:00']], [['00:00', '00:00']]]
         response = self.client.post(
-            self.url(self.company.pk),
-            data=self.agent_payload(name='Noturno', ai_hours_start='18:00', ai_hours_end='09:00', ai_days=[0, 1, 2, 3, 4]),
+            self.url(self.company.pk), data=self.agent_payload(name='Noturno', ai_schedule=schedule),
             content_type='application/json', headers=self.auth,
         )
         self.assertEqual(response.status_code, 201, response.json())
-        agent = Agent.objects.get(company=self.company, name='Noturno')
-        self.assertEqual((agent.ai_hours_start, agent.ai_hours_end, agent.ai_days), (time(18), time(9), [0, 1, 2, 3, 4]))
+        self.assertEqual(response.json()['ai_schedule'], schedule)
 
-    def test_ai_hours_need_start_and_end(self):
-        response = self.client.post(
-            self.url(self.company.pk), data=self.agent_payload(ai_hours_start='09:00'),
-            content_type='application/json', headers=self.auth,
-        )
-        self.assertEqual(response.status_code, 400)
-        self.assertFalse(Agent.objects.filter(company=self.company, name='Suporte').exists())
-
-        # patch parcial também: o fim que falta é o do banco
-        response = self.client.patch(
-            self.url(self.company.pk, self.agent.pk), data={'ai_hours_end': '18:00'},
-            content_type='application/json', headers=self.auth,
-        )
-        self.assertEqual(response.status_code, 400)
-        self.agent.refresh_from_db()
-        self.assertIsNone(self.agent.ai_hours_end)
-
-    def test_ai_days_invalid_returns_422(self):
-        for days in ([], [7], [-1]):
-            response = self.client.patch(
-                self.url(self.company.pk, self.agent.pk), data={'ai_days': days},
-                content_type='application/json', headers=self.auth,
-            )
-            self.assertEqual(response.status_code, 422, days)
-
-    def test_update_agent_ai_hours_and_clear(self):
+    def test_ai_schedule_invalid(self):
         url = self.url(self.company.pk, self.agent.pk)
-        response = self.client.patch(
-            url, data={'ai_hours_start': '09:00', 'ai_hours_end': '18:00'}, content_type='application/json', headers=self.auth,
-        )
-        self.assertEqual(response.status_code, 200, response.json())
-        self.assertEqual(response.json()['ai_hours_start'], '09:00:00')
+        empty = [[] for _ in range(7)]
+        backwards = [[['18:00', '09:00']]] + empty[1:]  # vira a meia-noite: precisa ser 2 faixas
+        for schedule, status in ((empty[:6], 422), ([[['9h', '18:00']]] + empty[1:], 422), (empty, 400), (backwards, 400)):
+            response = self.client.patch(url, data={'ai_schedule': schedule}, content_type='application/json', headers=self.auth)
+            self.assertEqual(response.status_code, status, schedule)
+        self.agent.refresh_from_db()
+        self.assertIsNone(self.agent.ai_schedule)
 
-        response = self.client.patch(
-            url, data={'ai_hours_start': None, 'ai_hours_end': None}, content_type='application/json', headers=self.auth,
-        )
+    def test_update_agent_ai_schedule_and_clear(self):
+        url = self.url(self.company.pk, self.agent.pk)
+        schedule = [[['09:00:00', '18:00']]] * 5 + [[], []]
+        response = self.client.patch(url, data={'ai_schedule': schedule}, content_type='application/json', headers=self.auth)
+        self.assertEqual(response.status_code, 200, response.json())
+        self.assertEqual(response.json()['ai_schedule'][0], [['09:00', '18:00']])
+
+        response = self.client.patch(url, data={'ai_schedule': None}, content_type='application/json', headers=self.auth)
         self.assertEqual(response.status_code, 200)
         self.agent.refresh_from_db()
-        self.assertIsNone(self.agent.ai_hours_start)
+        self.assertIsNone(self.agent.ai_schedule)
 
     def test_update_agent_split_messages_toggle(self):
         for value in (True, False):
@@ -466,14 +446,17 @@ def at(day: int, hour: int, minute: int = 0) -> datetime:
 
 
 class NextAiOpeningTests(TestCase):
-    def agent(self, start, end, days=(0, 1, 2, 3, 4, 5, 6)) -> Agent:
-        return Agent(ai_hours_start=start, ai_hours_end=end, ai_days=list(days))
+    NIGHT = [['00:00', '09:00'], ['18:00', '00:00']]
+    WHOLE_DAY = [['00:00', '00:00']]
 
-    def test_without_hours_always_open(self):
-        self.assertIsNone(services.next_ai_opening(self.agent(None, None), at(0, 3)))
+    def agent(self, *days) -> Agent:
+        return Agent(ai_schedule=list(days))
+
+    def test_without_schedule_always_open(self):
+        self.assertIsNone(services.next_ai_opening(Agent(ai_schedule=None), at(0, 3)))
 
     def test_daytime_window(self):
-        agent = self.agent(time(9), time(18))
+        agent = self.agent(*[[['09:00', '18:00']]] * 7)
         # gatilho 23h: atende às 09h do dia seguinte
         self.assertEqual(services.next_ai_opening(agent, at(0, 23)), at(1, 9))
         self.assertEqual(services.next_ai_opening(agent, at(1, 3)), at(1, 9))
@@ -481,32 +464,28 @@ class NextAiOpeningTests(TestCase):
         self.assertIsNone(services.next_ai_opening(agent, at(1, 17, 59)))
         self.assertEqual(services.next_ai_opening(agent, at(1, 18)), at(2, 9))
 
-    def test_overnight_window(self):
-        agent = self.agent(time(18), time(9))
-        # gatilho 14h, IA a partir das 18h
+    def test_after_hours_with_whole_weekend_and_late_tuesday(self):
+        # fora do comercial: noites de seg a sex, terça só a partir das 21h, fim de semana inteiro
+        agent = self.agent(self.NIGHT, [['00:00', '09:00'], ['21:00', '00:00']], self.NIGHT, self.NIGHT, self.NIGHT, self.WHOLE_DAY, self.WHOLE_DAY)
         self.assertEqual(services.next_ai_opening(agent, at(0, 14)), at(0, 18))
-        self.assertIsNone(services.next_ai_opening(agent, at(0, 23)))
-        self.assertIsNone(services.next_ai_opening(agent, at(1, 8, 59)))
-        self.assertEqual(services.next_ai_opening(agent, at(1, 9)), at(1, 18))
+        self.assertIsNone(services.next_ai_opening(agent, at(0, 23, 59)))
+        self.assertIsNone(services.next_ai_opening(agent, at(1, 3)))   # madrugada de terça
+        self.assertEqual(services.next_ai_opening(agent, at(1, 9)), at(1, 21))
+        self.assertEqual(services.next_ai_opening(agent, at(1, 19)), at(1, 21))
+        self.assertIsNone(services.next_ai_opening(agent, at(4, 20)))  # sexta à noite
+        self.assertIsNone(services.next_ai_opening(agent, at(5, 14)))  # sábado à tarde
+        self.assertIsNone(services.next_ai_opening(agent, at(6, 14)))  # domingo à tarde
+        self.assertIsNone(services.next_ai_opening(agent, at(7, 8)))   # segunda de madrugada
+        self.assertEqual(services.next_ai_opening(agent, at(7, 9)), at(7, 18))
 
-    def test_days(self):
-        weekdays = self.agent(time(9), time(18), days=range(5))
+    def test_days_without_ranges_are_skipped(self):
+        weekdays = self.agent(*[[['09:00', '18:00']]] * 5, [], [])
         # sexta 19h e sábado: só segunda 09h
         self.assertEqual(services.next_ai_opening(weekdays, at(4, 19)), at(7, 9))
         self.assertEqual(services.next_ai_opening(weekdays, at(5, 12)), at(7, 9))
 
-        # janela de sexta que vira a meia-noite vale até sábado 09h, mesmo sábado fora dos dias
-        overnight = self.agent(time(18), time(9), days=range(5))
-        self.assertIsNone(services.next_ai_opening(overnight, at(5, 8)))
-        self.assertEqual(services.next_ai_opening(overnight, at(5, 10)), at(7, 18))
-
-    def test_same_start_and_end_is_whole_day(self):
-        agent = self.agent(time(0), time(0), days=[0])
-        self.assertIsNone(services.next_ai_opening(agent, at(0, 23, 59)))
-        self.assertEqual(services.next_ai_opening(agent, at(1, 0)), at(7, 0))
-
     def test_converts_utc_to_local_time(self):
-        agent = self.agent(time(9), time(18))
+        agent = self.agent(*[[['09:00', '18:00']]] * 7)
         # 11h UTC = 08h em São Paulo: ainda fechado
         self.assertEqual(services.next_ai_opening(agent, at(0, 8).astimezone(ZoneInfo('UTC'))), at(0, 9))
 

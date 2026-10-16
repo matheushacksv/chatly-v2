@@ -98,9 +98,7 @@ def create_agent(
     response_delay: int = 0,
     split_messages: bool = False,
     handoff_resume_hours: int = 24,
-    ai_hours_start: time | None = None,
-    ai_hours_end: time | None = None,
-    ai_days: list[int] | None = None,
+    ai_schedule: list | None = None,
     native_tools: list[str] | None = None,
 ) -> Agent:
     credential = get_credential(company, credential_id)
@@ -114,39 +112,47 @@ def create_agent(
         response_delay=response_delay,
         split_messages=split_messages,
         handoff_resume_hours=handoff_resume_hours,
-        ai_hours_start=ai_hours_start,
-        ai_hours_end=ai_hours_end,
-        ai_days=list(range(7)) if ai_days is None else ai_days,
+        ai_schedule=_clean_schedule(ai_schedule),
         native_tools=['handoff', 'pipedrive'] if native_tools is None else list(dict.fromkeys(native_tools)),
     )
-    _check_ai_hours(agent)
     agent.save()
     return agent
 
 
-def _check_ai_hours(agent: Agent) -> None:
-    if (agent.ai_hours_start is None) != (agent.ai_hours_end is None):
-        raise ValidationError('ai hours need both start and end')
-    if not agent.ai_days:
-        raise ValidationError('ai days cannot be empty')
+def _clean_schedule(schedule: list | None) -> list | None:
+    """Normaliza pra [[["HH:MM", "HH:MM"], ...] x 7]. Faixa não vira a meia-noite: fim "00:00" = fim do dia."""
+    if schedule is None:
+        return None
+    if len(schedule) != 7:
+        raise ValidationError('ai schedule needs 7 days')
+    clean = []
+    for ranges in schedule:
+        day = []
+        for start, end in ranges:
+            start, end = time.fromisoformat(str(start)), time.fromisoformat(str(end))
+            if end <= start and end != time(0):
+                raise ValidationError('ai hours end must be after start (use 00:00 for midnight)')
+            day.append([f'{start:%H:%M}', f'{end:%H:%M}'])
+        clean.append(sorted(day))
+    if not any(clean):
+        raise ValidationError('ai schedule needs at least one range')
+    return clean
 
 
 def next_ai_opening(agent: Agent, now: datetime) -> datetime | None:
-    # None = IA atende agora. A janela é do dia em que começa: sexta 18h-09h vai até sábado 09h
-    start, end = agent.ai_hours_start, agent.ai_hours_end
-    if start is None or end is None:
+    # None = IA atende agora; senão, quando abre a próxima faixa
+    if not agent.ai_schedule:
         return None
     now = timezone.localtime(now)
-    for offset in range(-1, 8):  # ontem cobre a janela que virou a meia-noite
+    for offset in range(8):
         day = now.date() + timedelta(days=offset)
-        if day.weekday() not in agent.ai_days:
-            continue
-        opens = datetime.combine(day, start, tzinfo=now.tzinfo)
-        closes = datetime.combine(day + timedelta(days=1 if end <= start else 0), end, tzinfo=now.tzinfo)
-        if now < opens:
-            return opens
-        if now < closes:
-            return None
+        for start, end in agent.ai_schedule[day.weekday()]:
+            opens = datetime.combine(day, time.fromisoformat(start), tzinfo=now.tzinfo)
+            closes = datetime.combine(day + timedelta(days=1 if end == '00:00' else 0), time.fromisoformat(end), tzinfo=now.tzinfo)
+            if now < opens:
+                return opens
+            if now < closes:
+                return None
     return None
 
 
@@ -169,9 +175,10 @@ def update_agent(company: Company, agent_id: int, data: dict) -> Agent:
 
     if data.get('native_tools') is not None:
         data['native_tools'] = list(dict.fromkeys(data['native_tools']))
+    if 'ai_schedule' in data:
+        data['ai_schedule'] = _clean_schedule(data['ai_schedule'])
     for field, value in data.items():
         setattr(agent, field, value)
-    _check_ai_hours(agent)
     agent.save()
     return agent
 

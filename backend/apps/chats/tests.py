@@ -2,7 +2,7 @@ import hashlib
 import hmac
 import json
 import tempfile
-from datetime import datetime, time, timedelta
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from unittest.mock import ANY, MagicMock, call, patch
 
@@ -388,9 +388,9 @@ class ContactTests(BaseChatsTestCase):
 
         now = timezone.localtime()
         opens = (now + timedelta(hours=2)).replace(second=0, microsecond=0)
-        Agent.objects.filter(pk=self.agent.pk).update(
-            ai_hours_start=opens.time(), ai_hours_end=(opens + timedelta(hours=1)).time(), ai_days=[opens.weekday()]
-        )
+        schedule = [[] for _ in range(7)]
+        schedule[opens.weekday()] = [[f'{opens:%H:%M}', '00:00']]
+        Agent.objects.filter(pk=self.agent.pk).update(ai_schedule=schedule)
         item = self.client.get(self.url(self.company.pk, self.account.pk), headers=self.auth).json()['items'][0]
         self.assertEqual(datetime.fromisoformat(item['ai_opens_at']), opens)
 
@@ -2238,7 +2238,7 @@ class ProcessIncomingMessageTests(BaseChatsTestCase):
     @patch('apps.chats.whatsapp.send_text')
     @patch('apps.ai.generate_reply')
     def test_outside_ai_hours_defers_to_opening(self, mock_generate, mock_send, mock_enqueue):
-        Agent.objects.filter(pk=self.agent.pk).update(ai_hours_start=time(9), ai_hours_end=time(18))
+        Agent.objects.filter(pk=self.agent.pk).update(ai_schedule=[[['09:00', '18:00']]] * 7)
         incoming = Message.objects.create(contact=self.contact, direction='in', content='Oi?', wa_message_id='wamid.noite')
 
         with patch('apps.chats.tasks.timezone.now', return_value=datetime(2026, 10, 5, 23, tzinfo=SP)):

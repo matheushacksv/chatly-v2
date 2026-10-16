@@ -22,7 +22,7 @@ class Credential(models.Model):
         return f'{self.company} - {self.provider}'
 
 
-def all_days() -> list[int]:
+def all_days() -> list[int]:  # usado só pela migration 0007
     return list(range(7))
 
 
@@ -45,10 +45,9 @@ class Agent(models.Model):
     split_messages = models.BooleanField(default=False)
     # IA pausada (handoff ou atendente) volta sozinha depois disso; 0 = só volta manualmente
     handoff_resume_hours = models.PositiveSmallIntegerField(default=24)
-    # horário em que a IA atende; sem início/fim = sempre. Fim <= início vira a meia-noite (18h-09h)
-    ai_hours_start = models.TimeField(null=True, blank=True)
-    ai_hours_end = models.TimeField(null=True, blank=True)
-    ai_days = ArrayField(models.PositiveSmallIntegerField(), default=all_days)  # 0 = segunda
+    # faixas em que a IA atende, por dia (índice 0 = segunda): [[["00:00", "09:00"], ["18:00", "00:00"]], [], ...]
+    # fim "00:00" = meia-noite; None = sempre atende
+    ai_schedule = models.JSONField(null=True, blank=True)
     native_tools = ArrayField(models.CharField(max_length=30), default=default_native_tools)
     created_at = models.DateTimeField(auto_now_add=True)
 

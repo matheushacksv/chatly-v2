@@ -8,7 +8,8 @@ import json
 from apps.agents.models import Agent, AgentTool, Credential, Document
 
 NativeTool = Literal['handoff', 'followup', 'save_field', 'tag', 'pipedrive']
-Weekdays = Annotated[list[Annotated[int, Field(ge=0, le=6)]], Field(min_length=1)]  # 0 = segunda
+# 7 dias (0 = segunda), cada um com suas faixas [início, fim]
+AiSchedule = Annotated[list[list[tuple[time, time]]], Field(min_length=7, max_length=7)]
 
 
 class CredentialInDTO(Schema):
@@ -35,9 +36,7 @@ class AgentInDTO(Schema):
     response_delay: int = Field(0, ge=0)
     split_messages: bool = False
     handoff_resume_hours: int = Field(24, ge=0, le=720)
-    ai_hours_start: time | None = None
-    ai_hours_end: time | None = None
-    ai_days: Weekdays = [0, 1, 2, 3, 4, 5, 6]
+    ai_schedule: AiSchedule | None = None
     native_tools: list[NativeTool] = ['handoff', 'pipedrive']
 
 
@@ -46,7 +45,7 @@ class AgentOutDTO(ModelSchema):
         model = Agent
         fields = [
             'id', 'name', 'description', 'model', 'prompt', 'response_delay', 'split_messages', 'handoff_resume_hours',
-            'ai_hours_start', 'ai_hours_end', 'ai_days', 'native_tools', 'created_at',
+            'ai_schedule', 'native_tools', 'created_at',
         ]
 
 
@@ -59,9 +58,7 @@ class AgentPatchDTO(Schema):
     response_delay: int | None = Field(None, ge=0)
     split_messages: bool | None = None
     handoff_resume_hours: int | None = Field(None, ge=0, le=720)
-    ai_hours_start: time | None = None
-    ai_hours_end: time | None = None
-    ai_days: Weekdays | None = None
+    ai_schedule: AiSchedule | None = None
     native_tools: list[NativeTool] | None = None
 
 
