@@ -46,9 +46,9 @@ async function remove(field: ContactField) {
 
 <template>
   <div class="space-y-3">
-    <p class="text-sm text-muted">
-      Dados extras do contato (plano, CPF, aniversário...). Viram variáveis em templates, campanhas e fluxos,
-      entram como coluna na importação de CSV e a IA enxerga e preenche.
+    <p class="text-sm text-muted flex items-center gap-1.5">
+      Dados extras do contato (plano, CPF, aniversário...)
+      <AppTip text="Viram variáveis em templates, campanhas e fluxos, entram como coluna na importação de CSV e a IA enxerga e preenche" />
     </p>
     <form v-if="isOwner" class="flex gap-2" @submit.prevent="create">
       <UInput v-model="newLabel" placeholder="Novo campo, ex.: Plano" maxlength="60" class="flex-1" aria-label="Nome do novo campo" />

@@ -53,18 +53,19 @@ async function remove(reply: QuickReply) {
 
 <template>
   <div class="space-y-4">
-    <p class="text-sm text-muted">
-      No chat, digite <span class="font-mono">/</span> e o atalho pra colocar o texto na mensagem, já com os dados do contato. Você revisa antes de enviar.
+    <p class="text-sm text-muted flex items-center gap-1.5">
+      No chat, digite <span class="font-mono">/</span> e o atalho
+      <AppTip text="O texto entra na mensagem já com os dados do contato. Você revisa antes de enviar" />
     </p>
 
     <form class="space-y-3 rounded-lg ring-1 ring-default p-3" @submit.prevent="save">
-      <UFormField label="Atalho" required help="Sem espaço, ex.: boasvindas, pix, horario">
+      <AppField label="Atalho" required tip="Sem espaço, ex.: boasvindas, pix, horario">
         <UInput v-model="form.shortcut" class="w-full" placeholder="boasvindas">
           <template #leading>
             <span class="text-muted font-mono">/</span>
           </template>
         </UInput>
-      </UFormField>
+      </AppField>
       <UFormField label="Texto" required>
         <template #hint>
           <VarInsertMenu @insert="insertVar" />

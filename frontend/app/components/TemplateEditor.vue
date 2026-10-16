@@ -404,9 +404,9 @@ async function submit() {
           />
 
         <div class="grid grid-cols-2 gap-4">
-          <UFormField label="Nome" required help="minúsculas, números e _">
+          <AppField label="Nome" required tip="minúsculas, números e _">
             <UInput v-model="state.name" :disabled="editing" placeholder="boas_vindas" class="w-full" />
-          </UFormField>
+          </AppField>
           <UFormField label="Idioma" required>
             <USelectMenu
               v-model="state.language"
@@ -440,9 +440,9 @@ async function submit() {
           />
         </UFormField>
         <template v-if="state.headerFormat === 'TEXT'">
-          <UFormField label="Texto do cabeçalho" required help="aceita no máximo uma variável {{1}}">
+          <AppField label="Texto do cabeçalho" required tip="aceita no máximo uma variável {{1}}">
             <UInput v-model="state.headerText" placeholder="Olá {{1}}!" class="w-full" />
-          </UFormField>
+          </AppField>
           <UFormField v-if="headerHasParam" label="Exemplo de {{1}}" required>
             <UInput v-model="state.headerExample" placeholder="Cliente" class="w-full" />
           </UFormField>
@@ -477,9 +477,9 @@ async function submit() {
         </template>
 
         <USeparator label="Corpo" />
-        <UFormField label="Mensagem" required help="use {{1}}, {{2}}... pra variáveis">
+        <AppField label="Mensagem" required tip="use {{1}}, {{2}}... pra variáveis">
           <UTextarea v-model="state.bodyText" :rows="5" class="w-full" placeholder="Oi {{1}}, temos uma oferta pra você." />
-        </UFormField>
+        </AppField>
         <UFormField
           v-for="i in bodyParamCount"
           :key="i"

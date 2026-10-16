@@ -542,6 +542,24 @@ async function deleteConversation(contact: Contact) {
 
 // ---- painel de detalhes ----
 const detailOpen = ref(false)
+// seções recolhidas: abre só o que precisa; o estado fica entre um contato e outro
+const detailSections = ref<string[]>(['fields'])
+const pipedriveConnected = ref(false)
+watch(companyId, async (id) => {
+  pipedriveConnected.value = !!id && await api(`/companies/${id}/pipedrive`).then(() => true, () => false)
+}, { immediate: true })
+const detailItems = computed(() => [
+  { label: 'Campos', icon: 'i-lucide-list', value: 'fields', slot: 'fields' as const },
+  { label: 'Ações da IA', icon: 'i-lucide-wrench', value: 'activity', slot: 'activity' as const },
+  { label: 'Memória da IA', icon: 'i-lucide-brain', value: 'memory', slot: 'memory' as const },
+  ...(pipedriveConnected.value ? [{ label: 'Pipedrive', icon: 'i-lucide-handshake', value: 'crm', slot: 'crm' as const }] : [])
+])
+
+// ações menos usadas do topo da conversa ficam no menu "..."
+const headerMenu = computed(() => [
+  ...(personalConnected.value ? [{ label: 'Falar pelo meu WhatsApp', icon: 'i-lucide-smartphone', onSelect: openInPersonal }] : []),
+  ...(isOwner.value && selected.value ? [{ label: 'Apagar conversa', icon: 'i-lucide-trash-2', color: 'error' as const, onSelect: () => deleteConversation(selected.value!) }] : [])
+])
 
 // ---- abrir no meu WhatsApp (canal pessoal) ----
 // reusa o estado global do usePersonalChat: startConversation seta o selecionado,
@@ -758,25 +776,12 @@ const accountItems = computed(() =>
         </template>
         <template #right>
           <template v-if="selected">
-            <UButton
-              v-if="personalConnected"
-              icon="i-lucide-smartphone"
-              color="neutral"
-              variant="ghost"
-              size="sm"
-              :loading="openingPersonal"
-              aria-label="Falar pelo meu WhatsApp"
-              title="Falar pelo meu WhatsApp"
-              @click="openInPersonal"
-            />
-            <UBadge
-              :color="selected.ai_paused ? 'warning' : aiOpensText ? 'neutral' : 'success'"
-              variant="subtle"
-              :icon="selected.ai_paused ? 'i-lucide-user' : aiOpensText ? 'i-lucide-clock' : 'i-lucide-bot'"
-              :title="resumeText ?? undefined"
-            >
-              {{ selected.ai_paused ? 'Atendimento humano' : aiOpensText ?? 'IA respondendo' }}
-            </UBadge>
+            <!-- o botão já diz o estado (Assumir = IA ativa, Reativar = pausada); o detalhe fica no tooltip -->
+            <UTooltip v-if="aiOpensText" :text="`Fora do horário: ${aiOpensText}, se ninguém responder antes`">
+              <UBadge color="neutral" variant="subtle" icon="i-lucide-clock">
+                {{ aiOpensText.replace('IA responde ', '') }}
+              </UBadge>
+            </UTooltip>
             <USelect
               :model-value="selected.assigned_to ?? 0"
               :items="assigneeItems"
@@ -787,24 +792,19 @@ const accountItems = computed(() =>
               aria-label="Responsável"
               @update:model-value="assign(Number($event))"
             />
-            <UButton
-              :label="selected.ai_paused ? 'Reativar IA' : 'Assumir conversa'"
-              :color="selected.ai_paused ? 'success' : 'warning'"
-              :icon="selected.ai_paused ? 'i-lucide-play' : 'i-lucide-pause'"
-              variant="soft"
-              size="sm"
-              @click="setPaused(!selected.ai_paused)"
-            />
-            <UButton
-              v-if="isOwner"
-              icon="i-lucide-trash-2"
-              color="error"
-              variant="ghost"
-              size="sm"
-              aria-label="Apagar conversa"
-              title="Apagar conversa"
-              @click="deleteConversation(selected)"
-            />
+            <UTooltip :text="selected.ai_paused ? `IA pausada: ${resumeText ?? 'só volta se reativar'}` : 'IA respondendo. Assumir pausa a IA'">
+              <UButton
+                :label="selected.ai_paused ? 'Reativar IA' : 'Assumir conversa'"
+                :color="selected.ai_paused ? 'success' : 'warning'"
+                :icon="selected.ai_paused ? 'i-lucide-play' : 'i-lucide-pause'"
+                variant="soft"
+                size="sm"
+                @click="setPaused(!selected.ai_paused)"
+              />
+            </UTooltip>
+            <UDropdownMenu v-if="headerMenu.length" :items="headerMenu" :content="{ align: 'end' }">
+              <UButton icon="i-lucide-ellipsis-vertical" color="neutral" variant="ghost" size="sm" aria-label="Mais ações" :loading="openingPersonal" />
+            </UDropdownMenu>
             <UButton
               :icon="detailOpen ? 'i-lucide-panel-right-close' : 'i-lucide-panel-right-open'"
               color="neutral"
@@ -1084,63 +1084,61 @@ const accountItems = computed(() =>
     </template>
 
     <template #body>
-      <div class="space-y-6">
-        <div class="flex flex-col items-center text-center gap-2 py-2">
-          <UAvatar :alt="selected.name || selected.wa_id" size="3xl" />
-          <div>
-            <p class="font-display font-semibold text-lg">{{ selected.name || 'Sem nome' }}</p>
+      <div class="space-y-4">
+        <div class="flex items-center gap-3">
+          <UAvatar :alt="selected.name || selected.wa_id" size="lg" />
+          <div class="min-w-0">
+            <p class="font-display font-semibold truncate">{{ selected.name || 'Sem nome' }}</p>
             <p class="text-xs text-muted font-mono">{{ selected.wa_id }}</p>
           </div>
         </div>
 
-        <div>
-          <p class="text-xs font-semibold text-muted uppercase mb-2">Atendimento</p>
+        <div class="flex items-center gap-2">
           <USwitch
             :model-value="!selected.ai_paused"
             :label="selected.ai_paused ? 'IA pausada' : 'IA ativa'"
-            :description="selected.ai_paused
+            @update:model-value="setPaused(!$event)"
+          />
+          <AppTip
+            :text="selected.ai_paused
               ? (resumeText ? `A IA não responde. ${resumeText}.` : 'A IA não responde até ser reativada.')
               : aiOpensText
                 ? `Fora do horário: ${aiOpensText}, se ninguém responder antes.`
                 : 'Responder pelo chat também pausa a IA.'"
-            @update:model-value="setPaused(!$event)"
           />
         </div>
 
-        <div v-if="companyId">
-          <p class="text-xs font-semibold text-muted uppercase mb-2">
-            Campos
-          </p>
-          <AppContactFields :contact="selected" :company-id="companyId" @updated="mergeContact" />
-        </div>
-
-        <div v-if="companyId">
-          <p class="text-xs font-semibold text-muted uppercase mb-2">
-            Ações da IA
-          </p>
-          <AppAIActivity :contact-id="selected.id" :company-id="companyId" :refresh-key="activityKey" />
-        </div>
-
-        <div>
-          <div class="flex items-center justify-between mb-2">
-            <p class="text-xs font-semibold text-muted uppercase">Memória da IA</p>
+        <UAccordion
+          v-if="companyId"
+          v-model="detailSections"
+          type="multiple"
+          :items="detailItems"
+          :ui="{ trigger: 'text-xs font-semibold uppercase text-muted py-2.5', body: 'pb-3' }"
+        >
+          <template #fields>
+            <AppContactFields :contact="selected" :company-id="companyId" @updated="mergeContact" />
+          </template>
+          <template #activity>
+            <AppAIActivity :contact-id="selected.id" :company-id="companyId" :refresh-key="activityKey" />
+          </template>
+          <template #memory>
+            <pre v-if="selected.memory" class="text-xs bg-elevated rounded-lg p-3 whitespace-pre-wrap break-words font-sans">{{ selected.memory }}</pre>
+            <p v-else class="text-sm text-muted">Nada anotado ainda.</p>
             <UButton
               v-if="selected.memory"
-              label="Limpar"
+              label="Limpar memória"
               icon="i-lucide-eraser"
               color="error"
               variant="ghost"
               size="xs"
+              class="mt-1"
               @click="clearMemory"
             />
-          </div>
-          <pre v-if="selected.memory" class="text-xs bg-elevated rounded-lg p-3 whitespace-pre-wrap break-words font-sans">{{ selected.memory }}</pre>
-          <p v-else class="text-sm text-muted">Nada anotado ainda.</p>
-        </div>
-
-        <USeparator v-if="companyId" icon="i-lucide-handshake" />
-
-        <PipedrivePanel v-if="companyId" :company-id="companyId" :contact="selected" />
+          </template>
+          <template #crm>
+            <PipedrivePanel :company-id="companyId" :contact="selected" />
+          </template>
+        </UAccordion>
       </div>
     </template>
   </UDashboardPanel>

@@ -368,9 +368,9 @@ async function create() {
   <USlideover v-model:open="createOpen" title="Nova campanha" description="Dispara um template aprovado pra vários contatos" :ui="{ content: 'max-w-xl' }">
     <template #body>
       <div class="space-y-5">
-        <UFormField label="Nome" required help="Só pra você identificar depois">
+        <AppField label="Nome" required tip="Só pra você identificar depois">
           <UInput v-model="name" placeholder="Promo de julho" class="w-full" />
-        </UFormField>
+        </AppField>
 
         <TemplatePicker
           v-if="accountId"
@@ -407,9 +407,9 @@ async function create() {
           @applied="audienceCount = $event"
         />
 
-        <UFormField v-if="mode !== 'all'" label="Nunca enviar pra quem tem" help="Vale pra qualquer modo, inclusive CSV (ex.: bloqueado)">
+        <AppField v-if="mode !== 'all'" label="Nunca enviar pra quem tem" tip="Vale pra qualquer modo, inclusive CSV (ex.: bloqueado)">
           <USelectMenu v-model="excludeTagIds" :items="tagItems" value-key="value" multiple placeholder="Nenhuma" class="w-full" />
-        </UFormField>
+        </AppField>
 
         <div v-if="mode === 'select'" class="rounded-lg ring-1 ring-default max-h-56 overflow-y-auto divide-y divide-default">
           <p v-if="!contacts.length" class="p-3 text-sm text-muted">Nenhum contato nessa conta.</p>
@@ -429,10 +429,9 @@ async function create() {
 
         <div v-if="mode === 'csv'" class="space-y-2">
           <input ref="csvInput" type="file" accept=".csv,.txt" class="hidden" @change="onCsvPicked">
-          <UButton label="Escolher arquivo" icon="i-lucide-upload" variant="soft" @click="csvInput?.click()" />
-          <p class="text-xs text-muted">
-            CSV com uma linha por contato. Depois de escolher, você diz o que é cada coluna (telefone, nome, campos).
-          </p>
+          <UTooltip text="CSV com uma linha por contato. Depois de escolher, você diz o que é cada coluna (telefone, nome, campos)">
+            <UButton label="Escolher arquivo" icon="i-lucide-upload" variant="soft" @click="csvInput?.click()" />
+          </UTooltip>
           <CsvMappingModal
             v-if="companyId"
             v-model:open="mappingOpen"
@@ -459,9 +458,9 @@ async function create() {
           />
         </div>
 
-        <UFormField
+        <AppField
           label="Fluxo ao clicar"
-          help="Opcional. Roda quando o contato clica num botão de resposta rápida do template (gatilho 'Clique em botão de campanha' em Automações)"
+          tip="Opcional. Roda quando o contato clica num botão de resposta rápida do template (gatilho 'Clique em botão de campanha' em Automações)"
         >
           <USelect
             v-model="flowId"
@@ -470,7 +469,7 @@ async function create() {
             :disabled="!flowItems.length"
             class="w-full"
           />
-        </UFormField>
+        </AppField>
         <UButton
           v-if="flowId"
           label="Não usar fluxo"
@@ -484,9 +483,9 @@ async function create() {
         <UFormField label="Quando">
           <URadioGroup v-model="when" :items="whenItems" orientation="horizontal" />
         </UFormField>
-        <UFormField v-if="when === 'later'" label="Data e hora do disparo" required help="Horário de Brasília">
+        <AppField v-if="when === 'later'" label="Data e hora do disparo" required tip="Horário de Brasília">
           <UInput v-model="scheduledLocal" type="datetime-local" :min="minScheduleLocal" class="w-full" />
-        </UFormField>
+        </AppField>
 
         <p v-if="campaignMissingReasons.length" class="text-xs text-warning">
           Falta: {{ campaignMissingReasons.join(', ') }}

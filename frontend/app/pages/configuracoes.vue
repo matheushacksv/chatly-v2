@@ -523,8 +523,10 @@ async function disconnectPipedrive() {
           <!-- Credenciais -->
           <section class="space-y-3 pt-4">
             <div>
-              <h2 class="font-display font-semibold text-lg">Credenciais de IA</h2>
-              <p class="text-sm text-muted">Chaves de API usadas pelos seus agentes. A chave nunca é exibida depois de salva.</p>
+              <h2 class="font-display font-semibold text-lg flex items-center gap-1.5">
+                Credenciais de IA
+                <AppTip text="Chaves de API usadas pelos seus agentes. A chave nunca é exibida depois de salva." />
+              </h2>
             </div>
 
             <div v-if="credentials.length" class="space-y-2">
@@ -559,8 +561,10 @@ async function disconnectPipedrive() {
           <section class="space-y-3 pt-4">
             <div class="flex items-start justify-between gap-4">
               <div>
-                <h2 class="font-display font-semibold text-lg">Pipedrive</h2>
-                <p class="text-sm text-muted">CRM integrado: a IA e os atendentes criam negócios e anotações. A chave nunca é exibida depois de salva.</p>
+                <h2 class="font-display font-semibold text-lg flex items-center gap-1.5">
+                  Pipedrive
+                  <AppTip text="CRM integrado: a IA e os atendentes criam negócios e anotações. A chave nunca é exibida depois de salva." />
+                </h2>
               </div>
               <div v-if="pipedrive" class="flex items-center gap-2">
                 <UBadge color="success" variant="subtle">Conectado</UBadge>
@@ -581,22 +585,21 @@ async function disconnectPipedrive() {
 
             <template v-else>
               <div class="flex gap-2 items-start">
-                <UFormField label="Funil padrão" class="flex-1">
+                <AppField label="Funil padrão" tip="Usados quando a IA cria um negócio" class="flex-1">
                   <USelect v-model="pipelineId" :items="pipelineItems" placeholder="Escolha" class="w-full" @update:model-value="stageId = undefined" />
-                </UFormField>
+                </AppField>
                 <UFormField label="Etapa inicial" class="flex-1">
                   <USelect v-model="stageId" :items="stageItems" placeholder="Escolha" class="w-full" :disabled="!pipelineId" />
                 </UFormField>
               </div>
-              <UFormField
+              <AppField
                 v-if="accounts.length > 1"
                 label="Número que recebe leads do Pipedrive"
-                help="Negócios novos ou movidos no Pipedrive viram/atualizam contatos neste número."
+                tip="Negócios novos ou movidos no Pipedrive viram/atualizam contatos neste número"
               >
                 <USelect v-model="leadAccountId" :items="accountItems" placeholder="Escolha o número" class="w-full" />
-              </UFormField>
-              <div class="flex items-center justify-between gap-4">
-                <p class="text-xs text-muted">Usados quando a IA cria um negócio.</p>
+              </AppField>
+              <div class="flex items-center justify-end gap-4">
                 <div class="flex items-center gap-2">
                   <UButton label="Desconectar" color="error" variant="ghost" size="xs" @click="disconnectPipedrive()" />
                   <UButton label="Salvar" :loading="savingDefaults" :disabled="!pipelineId || !stageId" @click="savePipedriveDefaults()" />
@@ -604,27 +607,23 @@ async function disconnectPipedrive() {
               </div>
 
               <div class="rounded-lg ring-1 ring-default p-4 space-y-3">
-                <div>
-                  <h3 class="font-semibold">
-                    IA atende negócios novos
-                  </h3>
-                  <p class="text-sm text-muted">
-                    Quando um negócio é criado ou movido para uma dessas etapas, o lead recebe o template de abertura e a IA cuida das respostas. Uma vez por negócio.
-                  </p>
-                </div>
-                <UFormField label="Etapas" help="Vazio = desligado">
+                <h3 class="font-semibold flex items-center gap-1.5">
+                  IA atende negócios novos
+                  <AppTip text="Quando um negócio é criado ou movido para uma dessas etapas, o lead recebe o template de abertura e a IA cuida das respostas. Uma vez por negócio. Se um fluxo de automação usa a mesma etapa, o lead recebe as duas mensagens" />
+                </h3>
+                <UFormField label="Etapas">
                   <USelectMenu
                     v-model="autoStageIds"
                     :items="allStageItems"
                     value-key="value"
                     multiple
-                    placeholder="Nenhuma"
+                    placeholder="Nenhuma (desligado)"
                     icon="i-lucide-kanban"
                     class="w-full"
                   />
                 </UFormField>
                 <template v-if="autoStageIds.length && pipedrive.lead_account_id">
-                  <UFormField label="Template de abertura" help="A Meta só deixa iniciar conversa com template aprovado">
+                  <AppField label="Template de abertura" tip="A Meta só deixa iniciar conversa com template aprovado">
                     <p v-if="autoTemplate.template_name" class="text-xs text-muted mb-2">
                       Atual: <span class="font-mono">{{ autoTemplate.template_name }} ({{ autoTemplate.language }})</span>
                     </p>
@@ -635,15 +634,11 @@ async function disconnectPipedrive() {
                       :company-id="companyId!"
                       :account-id="pipedrive.lead_account_id"
                     />
-                  </UFormField>
-                  <USwitch
-                    v-model="autoOnlyInHours"
-                    label="Só no horário da IA"
-                    description="Negócio que entra fora do horário do agente fica de fora: não recebe nada, nem depois"
-                  />
-                  <p class="text-xs text-muted">
-                    Tem fluxo de automação com gatilho do Pipedrive na mesma etapa? O lead recebe as duas mensagens.
-                  </p>
+                  </AppField>
+                  <div class="flex items-center gap-2">
+                    <USwitch v-model="autoOnlyInHours" label="Só no horário da IA" />
+                    <AppTip text="Negócio que entra fora do horário do agente fica de fora: não recebe nada, nem depois" />
+                  </div>
                 </template>
                 <UAlert
                   v-else-if="autoStageIds.length"
@@ -670,8 +665,10 @@ async function disconnectPipedrive() {
           <section class="space-y-3 pt-4">
             <div class="flex items-start justify-between gap-4">
               <div>
-                <h2 class="font-display font-semibold text-lg">Contas WhatsApp</h2>
-                <p class="text-sm text-muted">Números conectados via Meta Cloud API. Tokens nunca são exibidos depois de salvos.</p>
+                <h2 class="font-display font-semibold text-lg flex items-center gap-1.5">
+                  Contas WhatsApp
+                  <AppTip text="Números conectados via Meta Cloud API. Tokens nunca são exibidos depois de salvos." />
+                </h2>
               </div>
               <UButton label="Conectar número" icon="i-lucide-plus" variant="soft" :disabled="!agents.length" @click="openAccountCreate()" />
             </div>
@@ -709,8 +706,10 @@ async function disconnectPipedrive() {
           <template #etiquetas>
           <section class="space-y-3 pt-4">
             <div>
-              <h2 class="font-display font-semibold text-lg">Etiquetas</h2>
-              <p class="text-sm text-muted">Marcam contatos no painel e nos fluxos. Use em campanhas pra incluir ou excluir (ex.: bloqueado).</p>
+              <h2 class="font-display font-semibold text-lg flex items-center gap-1.5">
+                Etiquetas
+                <AppTip text="Marcam contatos no painel e nos fluxos. Use em campanhas pra incluir ou excluir (ex.: bloqueado)." />
+              </h2>
             </div>
             <form class="flex gap-2" @submit.prevent="createTag">
               <UInput v-model="newTag.name" placeholder="Nova etiqueta" maxlength="40" class="flex-1" />
@@ -757,8 +756,10 @@ async function disconnectPipedrive() {
           <section class="space-y-3 pt-4">
             <div class="flex items-start justify-between gap-4">
               <div>
-                <h2 class="font-display font-semibold text-lg">Membros</h2>
-                <p class="text-sm text-muted">Quem tem acesso a esta empresa. Membros operam conversas, contatos, campanhas e agentes - só o dono mexe aqui.</p>
+                <h2 class="font-display font-semibold text-lg flex items-center gap-1.5">
+                  Membros
+                  <AppTip text="Quem tem acesso a esta empresa. Membros operam conversas, contatos, campanhas e agentes - só o dono mexe aqui." />
+                </h2>
               </div>
               <UButton
                 label="Gerar link de convite"
@@ -816,7 +817,6 @@ async function disconnectPipedrive() {
           <section class="space-y-3 pt-4">
             <div>
               <h2 class="font-display font-semibold text-lg">Empresa</h2>
-              <p class="text-sm text-muted">Dados da empresa ativa.</p>
             </div>
 
             <form class="flex gap-2" @submit.prevent="renameCompany">
@@ -845,11 +845,11 @@ async function disconnectPipedrive() {
   >
     <template #body>
       <form class="space-y-5" @submit.prevent="saveAccount">
-        <UFormField label="Agente" required help="Quem responde as mensagens desse número">
+        <AppField label="Agente" required tip="Quem responde as mensagens desse número">
           <USelect v-model="accountState.agent_id" :items="agentItems" placeholder="Escolha" class="w-full" />
-        </UFormField>
+        </AppField>
 
-        <UFormField label="Phone Number ID" :required="!editingAccount" :help="editingAccount ? 'Não editável' : undefined">
+        <UFormField label="Phone Number ID" :required="!editingAccount">
           <UInput v-model="accountState.phone_number_id" :disabled="!!editingAccount" class="w-full font-mono" />
         </UFormField>
 
@@ -857,32 +857,32 @@ async function disconnectPipedrive() {
           <UInput v-model="accountState.waba_id" class="w-full font-mono" />
         </UFormField>
 
-        <UFormField label="App ID" help="ID do app da Meta - só necessário pra cabeçalho de imagem/vídeo/PDF em templates">
+        <AppField label="App ID" tip="ID do app da Meta: só necessário pra cabeçalho de imagem/vídeo/PDF em templates">
           <UInput v-model="accountState.app_id" class="w-full font-mono" />
+        </AppField>
+
+        <AppField label="Access Token" :required="!editingAccount" tip="Token permanente do System User">
+          <UInput v-model="accountState.access_token" type="password" class="w-full font-mono" autocomplete="off" :placeholder="editingAccount ? 'Manter o atual' : undefined" />
+        </AppField>
+
+        <UFormField label="App Secret" :required="!editingAccount">
+          <UInput v-model="accountState.app_secret" type="password" class="w-full font-mono" autocomplete="off" :placeholder="editingAccount ? 'Manter o atual' : undefined" />
         </UFormField>
 
-        <UFormField label="Access Token" :required="!editingAccount" :help="editingAccount ? 'Vazio = manter o atual' : 'Token permanente do System User'">
-          <UInput v-model="accountState.access_token" type="password" class="w-full font-mono" autocomplete="off" />
-        </UFormField>
-
-        <UFormField label="App Secret" :required="!editingAccount" :help="editingAccount ? 'Vazio = manter o atual' : undefined">
-          <UInput v-model="accountState.app_secret" type="password" class="w-full font-mono" autocomplete="off" />
-        </UFormField>
-
-        <UFormField label="Verify Token" required help="Invente um valor e use o mesmo no webhook da Meta">
+        <AppField label="Verify Token" required tip="Invente um valor e use o mesmo no webhook da Meta">
           <UInput v-model="accountState.verify_token" class="w-full font-mono" />
-        </UFormField>
+        </AppField>
 
-        <UFormField
+        <AppField
           label="URL de callback"
-          help="Cole no app da Meta em WhatsApp → Configuração → Webhook, com o Verify Token acima, e assine o campo messages"
+          tip="Cole no app da Meta em WhatsApp → Configuração → Webhook, com o Verify Token acima, e assine o campo messages"
         >
           <UInput :model-value="webhookUrl" readonly class="w-full font-mono" @focus="($event.target as HTMLInputElement).select()">
             <template #trailing>
               <UButton icon="i-lucide-copy" variant="link" color="neutral" size="sm" aria-label="Copiar URL de callback" @click="copyWebhookUrl" />
             </template>
           </UInput>
-        </UFormField>
+        </AppField>
 
         <UButton type="submit" block :loading="savingAccount" :disabled="!accountFormValid">
           {{ editingAccount ? 'Salvar alterações' : 'Conectar' }}

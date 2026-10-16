@@ -466,13 +466,10 @@ const statusBadge: Record<AgentDocument['status'], { label: string, color: 'warn
             </div>
           </div>
 
-          <p class="text-sm text-muted line-clamp-2 min-h-10">{{ agent.description || 'Sem descrição.' }}</p>
+          <p v-if="agent.description" class="text-sm text-muted line-clamp-2">{{ agent.description }}</p>
 
           <div class="flex items-center gap-2 flex-wrap">
             <UBadge variant="subtle" color="neutral" size="sm" class="font-mono">{{ agent.model }}</UBadge>
-            <UBadge v-if="agent.response_delay" variant="subtle" color="neutral" size="sm" icon="i-lucide-timer">
-              {{ agent.response_delay }}s
-            </UBadge>
             <UBadge v-if="agent.ai_schedule" variant="subtle" color="neutral" size="sm" icon="i-lucide-clock">
               {{ hoursLabel(agent) }}
             </UBadge>
@@ -510,7 +507,7 @@ const statusBadge: Record<AgentDocument['status'], { label: string, color: 'warn
             </UFormField>
 
             <div class="grid grid-cols-2 gap-4">
-              <UFormField name="credential_id" label="Credencial" :required="!editing" :help="editing ? 'Vazio = manter atual' : undefined">
+              <UFormField name="credential_id" label="Credencial" :required="!editing">
                 <USelect
                   v-model="state.credential_id"
                   :items="credentialItems"
@@ -530,31 +527,14 @@ const statusBadge: Record<AgentDocument['status'], { label: string, color: 'warn
               </UFormField>
             </div>
 
-            <UFormField name="response_delay" label="Delay de resposta (segundos)" help="Espera antes de responder - agrupa mensagens seguidas do cliente">
-              <UInput v-model.number="state.response_delay" type="number" min="0" class="w-full" />
-            </UFormField>
-
-            <UFormField
-              name="handoff_resume_hours"
-              label="IA volta sozinha depois de (horas)"
-              help="Depois de um handoff ou de o atendente responder, a IA fica pausada por esse tempo. 0 = só volta manualmente"
-            >
-              <UInput v-model.number="state.handoff_resume_hours" type="number" min="0" max="720" class="w-full" />
-            </UFormField>
-
             <UFormField name="ai_hours_on">
-              <USwitch
-                v-model="state.ai_hours_on"
-                label="Horário de atendimento da IA"
-                description="Fora do horário a IA fica calada e responde quando abrir, se ninguém tiver respondido antes"
-              />
+              <div class="flex items-center gap-2">
+                <USwitch v-model="state.ai_hours_on" label="Horário de atendimento da IA" />
+                <AppTip text="Fora do horário a IA fica calada e responde quando abrir, se ninguém tiver respondido antes. Fim 00:00 = meia-noite: pra virar a noite, use uma faixa até 00:00 e outra a partir de 00:00 no dia seguinte" />
+              </div>
             </UFormField>
 
-            <UFormField
-              v-if="state.ai_hours_on"
-              name="ai_schedule"
-              help="Fim 00:00 = meia-noite. Pra virar a noite, use uma faixa até 00:00 e outra a partir de 00:00 no dia seguinte"
-            >
+            <UFormField v-if="state.ai_hours_on" name="ai_schedule">
               <div class="space-y-2">
                 <div class="flex gap-1 flex-wrap">
                   <UButton
@@ -624,27 +604,44 @@ const statusBadge: Record<AgentDocument['status'], { label: string, color: 'warn
               </div>
             </UFormField>
 
-            <UFormField name="split_messages">
-              <USwitch
-                v-model="state.split_messages"
-                label="Dividir resposta em várias mensagens"
-                description="A IA responde em blocos curtos em sequência, como uma pessoa digitando"
-              />
-            </UFormField>
+            <UCollapsible class="flex flex-col gap-4">
+              <UButton label="Avançado" variant="link" color="neutral" size="sm" trailing-icon="i-lucide-chevron-down" class="self-start px-0" />
+              <template #content>
+                <div class="space-y-4">
+                  <AppField name="response_delay" label="Delay de resposta (segundos)" tip="Espera antes de responder: agrupa mensagens seguidas do cliente">
+                    <UInput v-model.number="state.response_delay" type="number" min="0" class="w-full" />
+                  </AppField>
+                  <AppField
+                    name="handoff_resume_hours"
+                    label="IA volta sozinha depois de (horas)"
+                    tip="Depois de um handoff ou de o atendente responder, a IA fica pausada por esse tempo. 0 = só volta manualmente"
+                  >
+                    <UInput v-model.number="state.handoff_resume_hours" type="number" min="0" max="720" class="w-full" />
+                  </AppField>
+                  <UFormField name="split_messages">
+                    <div class="flex items-center gap-2">
+                      <USwitch v-model="state.split_messages" label="Dividir resposta em várias mensagens" />
+                      <AppTip text="A IA responde em blocos curtos em sequência, como uma pessoa digitando" />
+                    </div>
+                  </UFormField>
+                </div>
+              </template>
+            </UCollapsible>
             </div>
           </template>
 
           <template #prompt>
             <div class="space-y-3">
               <div class="flex items-center justify-between gap-2">
-                <p class="text-sm text-muted">
-                  Instruções que definem como a IA se comporta. Referências entre chaves viram o dado do contato na hora de responder.
+                <p class="text-sm text-muted flex items-center gap-1.5">
+                  Como a IA se comporta
+                  <AppTip text="Referências entre chaves viram o dado do contato na hora de responder. Digite {{ ou @ pra escolher um dado do contato ou uma ferramenta" />
                 </p>
                 <UDropdownMenu :items="insertItems" :content="{ align: 'end' }" :ui="{ content: 'max-h-80 overflow-y-auto' }">
                   <UButton label="Inserir" icon="i-lucide-braces" variant="soft" size="sm" trailing-icon="i-lucide-chevron-down" />
                 </UDropdownMenu>
               </div>
-              <UFormField name="prompt" help="Digite {{ ou @ pra escolher um dado do contato ou uma ferramenta">
+              <UFormField name="prompt">
                 <div class="relative">
                   <UTextarea
                     ref="promptInput"
@@ -695,12 +692,13 @@ const statusBadge: Record<AgentDocument['status'], { label: string, color: 'warn
 
           <template #ferramentas>
             <div class="space-y-6">
-              <UFormField name="native_tools" label="Ferramentas nativas" help="O que a IA pode fazer sozinha">
+              <UFormField name="native_tools" label="Ferramentas nativas">
                 <UCheckboxGroup v-model="state.native_tools" :items="NATIVE_TOOL_ITEMS" />
               </UFormField>
               <div>
-                <p class="text-sm font-medium mb-2">
+                <p class="text-sm font-medium mb-2 flex items-center gap-1.5">
                   Ferramentas personalizadas
+                  <AppTip text="Chamadas HTTP pra sistemas externos (pagamento, agenda, licença...). A IA decide quando usar pela descrição e preenche os parâmetros com o que o cliente disse" />
                 </p>
                 <AgentToolsPanel
                   v-if="editing && companyId"
@@ -728,11 +726,9 @@ const statusBadge: Record<AgentDocument['status'], { label: string, color: 'warn
 
           <template #documentos>
         <div class="space-y-3">
-          <p class="text-xs text-muted">
-            PDF, TXT ou MD até 10MB. A IA usa esses documentos pra responder com base neles.
-          </p>
 
           <input ref="fileInput" type="file" accept=".pdf,.txt,.md" class="hidden" @change="onFilePicked">
+          <UTooltip text="PDF, TXT ou MD até 10MB. A IA responde com base nesses documentos">
           <UButton
             label="Enviar documento"
             icon="i-lucide-upload"
@@ -740,6 +736,7 @@ const statusBadge: Record<AgentDocument['status'], { label: string, color: 'warn
             :loading="uploading"
             @click="fileInput?.click()"
           />
+          </UTooltip>
 
           <div v-if="documents.length" class="space-y-2">
             <div

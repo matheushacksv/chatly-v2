@@ -186,9 +186,9 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
     </UFormField>
 
     <template v-if="type === 'buttons'">
-      <UFormField
+      <AppField
         label="Botões"
-        help="Até 3, com no máximo 20 caracteres cada"
+        tip="Até 3, com no máximo 20 caracteres cada"
       >
         <div class="space-y-2">
           <div
@@ -220,23 +220,23 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
             @click="addButton()"
           />
         </div>
-      </UFormField>
+      </AppField>
     </template>
 
     <template v-if="type === 'wait'">
-      <UFormField
+      <AppField
         label="Guardar resposta em"
-        help="Use depois numa condição"
+        tip="Use depois numa condição"
       >
         <UInput
           v-model="data.var"
           class="w-full"
           placeholder="resposta"
         />
-      </UFormField>
-      <UFormField
+      </AppField>
+      <AppField
         label="Desistir depois de (minutos)"
-        help="0 = espera pra sempre"
+        tip="0 = espera pra sempre"
       >
         <UInput
           v-model.number="data.timeout_minutes"
@@ -244,7 +244,7 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
           min="0"
           class="w-full"
         />
-      </UFormField>
+      </AppField>
     </template>
 
     <template v-if="type === 'condition'">
@@ -328,9 +328,9 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
         />
         <VarInsertMenu :flow-vars="flowVars" :extra="FLOW_EXTRA_VARS" @insert="insertVar('url', $event)" />
       </div>
-      <UFormField
+      <AppField
         label="Headers"
-        help="Ex.: Authorization: Bearer seu-token"
+        tip="Ex.: Authorization: Bearer seu-token"
       >
         <div class="space-y-2">
           <div
@@ -364,11 +364,11 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
             @click="addHeader"
           />
         </div>
-      </UFormField>
-      <UFormField
+      </AppField>
+      <AppField
         v-if="data.method !== 'GET'"
         label="Corpo"
-        help="Sem Content-Type nos headers, vai como application/json"
+        tip="Sem Content-Type nos headers, vai como application/json"
       >
         <template #hint>
           <VarInsertMenu :flow-vars="flowVars" :extra="FLOW_EXTRA_VARS" @insert="insertVar('body', $event)" />
@@ -378,7 +378,7 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
           :rows="6"
           class="w-full font-mono text-xs"
         />
-      </UFormField>
+      </AppField>
       <p class="text-xs text-muted">
         Use o botão Variável pra inserir dados do contato e do fluxo. Só https, endereço interno é recusado. Timeout de 10s.
       </p>
@@ -392,10 +392,10 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
           class="w-full"
         />
       </UFormField>
-      <UFormField
+      <AppField
         label="Etiqueta"
         required
-        help="Digite pra buscar ou criar uma nova"
+        tip="Digite pra buscar ou criar uma nova"
       >
         <USelectMenu
           v-model="data.tag_id"
@@ -406,10 +406,10 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
           class="w-full"
           @create="name => createTag(name)"
         />
-      </UFormField>
-      <UFormField
+      </AppField>
+      <AppField
         label="Nova etiqueta"
-        help="Cria e já seleciona neste bloco"
+        tip="Cria e já seleciona neste bloco"
       >
         <form
           class="flex gap-2"
@@ -435,7 +435,7 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
             :disabled="!newTag.name.trim()"
           />
         </form>
-      </UFormField>
+      </AppField>
     </template>
 
     <template v-if="type === 'crm'">

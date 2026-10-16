@@ -127,9 +127,6 @@ async function runTest() {
 
 <template>
   <div class="space-y-3">
-    <p class="text-xs text-muted">
-      Chamadas HTTP pra sistemas externos (pagamento, agenda, licença...). A IA decide quando usar pela descrição e preenche os parâmetros com o que o cliente disse.
-    </p>
     <UButton
       v-if="isOwner"
       label="Nova ferramenta"
@@ -167,11 +164,11 @@ async function runTest() {
           <UFormField label="Nome" required :help="form.name ? `A IA vê como ${toKey(form.name)}` : 'Ex.: consultar pagamento'">
             <UInput v-model="form.name" class="w-full" placeholder="consultar_pagamento" />
           </UFormField>
-          <UFormField label="Quando a IA deve usar" required help="Seja específico: é por esse texto que a IA decide chamar">
+          <AppField label="Quando a IA deve usar" required tip="Seja específico: é por esse texto que a IA decide chamar">
             <UTextarea v-model="form.description" :rows="3" class="w-full" placeholder="Use quando o cliente disser que pagou, para conferir se o pagamento foi aprovado." />
-          </UFormField>
+          </AppField>
 
-          <UFormField label="Parâmetros que a IA preenche" help="Viram variáveis na URL, cabeçalhos e corpo">
+          <AppField label="Parâmetros que a IA preenche" tip="Viram variáveis na URL, cabeçalhos e corpo">
             <div class="space-y-2">
               <div v-for="(param, i) in form.parameters" :key="i" class="flex flex-wrap items-start gap-2 rounded-md ring-1 ring-default p-2">
                 <UInput v-model="param.name" placeholder="email" class="w-32" aria-label="Nome do parâmetro" />
@@ -188,7 +185,7 @@ async function runTest() {
                 @click="() => { form.parameters.push({ name: '', type: 'string', description: '', required: true }) }"
               />
             </div>
-          </UFormField>
+          </AppField>
 
           <div class="flex gap-2">
             <UFormField label="Método" class="w-28">
@@ -210,7 +207,7 @@ async function runTest() {
             </div>
           </UFormField>
 
-          <UFormField label="Cabeçalhos secretos" help="Tokens de API. Ficam criptografados e não aparecem de novo; deixe vazio pra manter o salvo">
+          <AppField label="Cabeçalhos secretos" tip="Tokens de API. Ficam criptografados e não aparecem de novo; deixe vazio pra manter o salvo">
             <div class="space-y-2">
               <div v-for="(header, i) in form.secret_headers" :key="i" class="flex gap-2">
                 <UInput v-model="header.key" placeholder="Authorization" class="w-40" aria-label="Nome do cabeçalho secreto" />
@@ -231,7 +228,7 @@ async function runTest() {
                 @click="() => { form.secret_headers.push({ key: 'Authorization', value: '' }) }"
               />
             </div>
-          </UFormField>
+          </AppField>
 
           <UFormField v-if="form.method !== 'GET'" label="Corpo (JSON)">
             <UTextarea v-model="form.body" :rows="5" class="w-full font-mono text-xs" placeholder="{&quot;email&quot;: &quot;{{email}}&quot;, &quot;nome&quot;: &quot;{{nome}}&quot;}" />
@@ -240,11 +237,10 @@ async function runTest() {
             Variáveis: <span class="font-mono">{{ variableHint }}</span>. Só https; endereço interno é recusado. Timeout de 10s.
           </p>
 
-          <USwitch
-            v-model="form.requires_confirmation"
-            label="Pedir confirmação ao cliente antes"
-            description="Pra ações com dinheiro ou acesso: a IA confirma os dados e espera um sim"
-          />
+          <div class="flex items-center gap-2">
+            <USwitch v-model="form.requires_confirmation" label="Pedir confirmação ao cliente antes" />
+            <AppTip text="Pra ações com dinheiro ou acesso: a IA confirma os dados e espera um sim" />
+          </div>
           <USwitch v-model="form.active" label="Ativa" />
 
           <div class="flex justify-between gap-2">
@@ -256,13 +252,12 @@ async function runTest() {
         <template v-if="editing">
           <USeparator class="my-5" label="Testar" />
           <div class="space-y-3">
-            <p class="text-xs text-muted">
-              Faz a chamada de verdade com a versão salva. O nome do contato vira "Contato de teste".
-            </p>
             <UFormField v-for="param in editing.parameters" :key="param.name" :label="param.name">
               <UInput v-model="testArgs[param.name]" class="w-full" :placeholder="param.description" />
             </UFormField>
-            <UButton label="Testar chamada" icon="i-lucide-play" variant="soft" :loading="testing" @click="runTest" />
+            <UTooltip text="Faz a chamada de verdade com a versão salva. O nome do contato vira &quot;Contato de teste&quot;">
+              <UButton label="Testar chamada" icon="i-lucide-play" variant="soft" :loading="testing" @click="runTest" />
+            </UTooltip>
             <pre
               v-if="testResult"
               class="text-xs rounded-lg p-3 whitespace-pre-wrap break-words max-h-64 overflow-y-auto"

@@ -466,23 +466,17 @@ const waLink = computed(() => {
             </div>
 
             <div class="rounded-xl ring-1 ring-default p-4 space-y-2">
-              <p class="text-sm font-semibold">
+              <p class="text-sm font-semibold flex items-center gap-1.5">
                 Corpo esperado
-              </p>
-              <p class="text-xs text-muted">
-                Só <span class="font-mono">telefone</span> é obrigatório. O resto vira variável do fluxo.
-                Em <span class="font-mono">campos</span>, use a chave de um campo personalizado já cadastrado (Contatos, Campos): o valor fica salvo no contato.
-                Chave desconhecida é ignorada e volta em <span class="font-mono">ignored_fields</span> na resposta.
+                <AppTip text="Só telefone é obrigatório. O resto vira variável do fluxo. Em campos, use a chave de um campo personalizado já cadastrado (Contatos, Campos): o valor fica salvo no contato. Chave desconhecida é ignorada e volta em ignored_fields na resposta" />
               </p>
               <pre class="rounded-lg bg-elevated ring-1 ring-default p-3 text-xs overflow-x-auto">{{ samplePayload }}</pre>
             </div>
 
             <div class="rounded-xl ring-1 ring-default p-4 space-y-3">
-              <p class="text-sm font-semibold">
+              <p class="text-sm font-semibold flex items-center gap-1.5">
                 Link de conversa (wa.me)
-              </p>
-              <p class="text-xs text-muted">
-                O lead manda a primeira mensagem e abre a janela de 24h sem custo de template.
+                <AppTip text="O lead manda a primeira mensagem e abre a janela de 24h sem custo de template" />
               </p>
               <div class="grid gap-2 sm:grid-cols-2">
                 <UInput
@@ -554,29 +548,29 @@ const waLink = computed(() => {
             class="w-full"
           />
         </UFormField>
-        <UFormField
+        <AppField
           v-if="draft.trigger === 'keyword'"
           label="Palavra-chave"
           required
-          help="Dispara quando a mensagem do contato contém esse termo"
+          tip="Dispara quando a mensagem do contato contém esse termo"
         >
           <UInput
             v-model="draft.keyword"
             placeholder="orçamento"
             class="w-full"
           />
-        </UFormField>
-        <UFormField
+        </AppField>
+        <AppField
           v-if="draft.trigger === 'lead' && sources.length"
           label="Fonte"
-          help="Deixe vazio pra valer pra qualquer fonte"
+          tip="Deixe vazio pra valer pra qualquer fonte"
         >
           <USelect
             v-model="draft.sourceId"
             :items="sources.map(s => ({ label: s.name, value: s.id }))"
             class="w-full"
           />
-        </UFormField>
+        </AppField>
         <UAlert
           v-if="draft.trigger === 'campaign'"
           color="info"
@@ -595,9 +589,9 @@ const waLink = computed(() => {
               class="w-full"
             />
           </UFormField>
-          <UFormField
+          <AppField
             label="Etapa"
-            help="Deixe vazio pra valer pra qualquer etapa. Use o mesmo número configurado em 'recebe leads do Pipedrive'."
+            tip="Deixe vazio pra valer pra qualquer etapa. Use o mesmo número configurado em 'recebe leads do Pipedrive'."
           >
             <USelect
               v-model="draft.pipedriveStageId"
@@ -606,7 +600,7 @@ const waLink = computed(() => {
               :disabled="!pdStageItems.length"
               class="w-full"
             />
-          </UFormField>
+          </AppField>
         </template>
         <UButton
           block
@@ -627,21 +621,21 @@ const waLink = computed(() => {
   >
     <template #body>
       <div class="space-y-4">
-        <UFormField
+        <AppField
           label="Nome"
           required
-          help="Site, anúncio, planilha... só pra você identificar"
+          tip="Site, anúncio, planilha... só pra você identificar"
         >
           <UInput
             v-model="sourceDraft.name"
             placeholder="Formulário do site"
             class="w-full"
           />
-        </UFormField>
-        <UFormField
+        </AppField>
+        <AppField
           label="Conta WhatsApp"
           required
-          help="Número que vai iniciar a conversa"
+          tip="Número que vai iniciar a conversa"
         >
           <USelect
             v-model="sourceDraft.accountId"
@@ -649,7 +643,7 @@ const waLink = computed(() => {
             icon="i-lucide-phone"
             class="w-full"
           />
-        </UFormField>
+        </AppField>
         <UButton
           block
           icon="i-lucide-plus"

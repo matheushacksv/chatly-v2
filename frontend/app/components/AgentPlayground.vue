@@ -78,8 +78,9 @@ const summary = (args: Record<string, unknown>) => Object.values(args).map(v => 
 <template>
   <div class="space-y-3">
     <div class="flex items-center justify-between gap-2">
-      <p class="text-sm text-muted">
-        Converse como se fosse o cliente. Usa o prompt e as ferramentas do formulário, mesmo sem salvar. Nada é enviado nem executado de verdade.
+      <p class="text-sm text-muted flex items-center gap-1.5">
+        Converse como se fosse o cliente
+        <AppTip text="Usa o prompt e as ferramentas do formulário, mesmo sem salvar. Nada é enviado nem executado de verdade" />
       </p>
       <div class="flex gap-1 shrink-0">
         <UButton

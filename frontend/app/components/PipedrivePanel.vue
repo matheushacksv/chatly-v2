@@ -260,8 +260,8 @@ const noteDate = (raw: string | null) => {
 
 <template>
   <div v-if="config" class="space-y-3">
-    <div class="flex items-center justify-between">
-      <p class="text-xs font-semibold text-muted uppercase">Pipedrive</p>
+    <!-- o título "Pipedrive" vem da seção recolhível de Conversas -->
+    <div v-if="person && !searching" class="flex justify-end -mb-2">
       <UButton
         v-if="person && !searching"
         label="Trocar"

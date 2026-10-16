@@ -110,7 +110,7 @@ async function confirm() {
           </div>
         </div>
 
-        <UFormField label="Etiquetar todos os importados" help="Opcional. Digite pra criar uma etiqueta nova">
+        <AppField label="Etiquetar todos os importados" tip="Opcional. Digite pra criar uma etiqueta nova">
           <USelectMenu
             v-model="tagIds"
             :items="tagItems"
@@ -123,7 +123,7 @@ async function confirm() {
             :search-input="{ placeholder: 'Buscar ou criar...' }"
             @create="createTag"
           />
-        </UFormField>
+        </AppField>
 
         <UAlert
           v-if="phoneCount !== 1"
