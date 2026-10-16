@@ -15,6 +15,19 @@ class PipedriveDefaultsDTO(Schema):
     lead_account_id: int | None = None
 
 
+class AutoTemplateDTO(Schema):
+    template_name: str = ''
+    language: str = ''
+    body_params: list[str] = []
+    header_media_id: str = ''
+
+
+class AutoOpenDTO(Schema):
+    stage_ids: list[int] = []
+    template: AutoTemplateDTO = AutoTemplateDTO()
+    only_in_hours: bool = True
+
+
 class PersonLinkDTO(Schema):
     person_id: int
 
@@ -45,7 +58,7 @@ class PipedriveAccountOutDTO(ModelSchema):
 
     class Meta:
         model = PipedriveAccount
-        fields = ['id', 'default_pipeline_id', 'default_stage_id', 'created_at']
+        fields = ['id', 'default_pipeline_id', 'default_stage_id', 'auto_stage_ids', 'auto_template', 'auto_only_in_hours', 'created_at']
 
     @staticmethod
     def resolve_receiving_events(obj):

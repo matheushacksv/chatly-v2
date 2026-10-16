@@ -267,6 +267,9 @@ export interface PipedriveConfig {
   default_stage_id: number | null
   lead_account_id: number | null
   receiving_events: boolean
+  auto_stage_ids: number[]
+  auto_template: { template_name?: string, language?: string, body_params?: string[], header_media_id?: string }
+  auto_only_in_hours: boolean
   created_at: string
 }
 

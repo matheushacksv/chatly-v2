@@ -1,5 +1,6 @@
 import secrets
 
+from django.contrib.postgres.fields import ArrayField
 from django.db import models
 
 from core.fields import EncryptedTextField
@@ -17,4 +18,20 @@ class PipedriveAccount(models.Model):
     webhook_token = models.CharField(max_length=64, db_index=True, default=new_webhook_token)
     webhook_ids = models.JSONField(default=list)
     lead_account = models.ForeignKey('chats.WhatsAppAccount', null=True, blank=True, on_delete=models.SET_NULL, related_name='+')
+    # negócio que entra numa dessas etapas recebe o template de abertura e a IA cuida das respostas
+    auto_stage_ids = ArrayField(models.IntegerField(), default=list, blank=True)
+    auto_template = models.JSONField(default=dict, blank=True)  # {template_name, language, body_params, header_media_id}
+    auto_only_in_hours = models.BooleanField(default=True)  # fora do horário da IA o negócio fica de fora (não espera)
     created_at = models.DateTimeField(auto_now_add=True)
+
+
+class DealOpening(models.Model):
+    """Negócio que já recebeu o template de abertura: um envio por negócio, mesmo mudando de etapa."""
+
+    pipedrive_account = models.ForeignKey(PipedriveAccount, on_delete=models.CASCADE, related_name='openings')
+    deal_id = models.IntegerField()
+    contact = models.ForeignKey('chats.Contact', on_delete=models.CASCADE, related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['pipedrive_account', 'deal_id'], name='unique_opening_per_deal')]

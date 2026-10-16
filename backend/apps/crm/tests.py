@@ -12,7 +12,7 @@ from apps.companies.models import Company, Membership
 from apps.crm import pipedrive
 from apps.crm.models import PipedriveAccount
 from apps.testing import auth_header
-from core.exceptions import NotFound, PipedriveError
+from core.exceptions import NotFound, PipedriveError, ValidationError
 
 
 def _resp(json_data=None, status=200):
@@ -634,3 +634,91 @@ class PipedriveWebhookIngestTests(BaseCrmTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(FlowRun.objects.count(), 0)
         mock_tpl.assert_not_called()
+
+
+@patch('apps.crm.services.send_template_message')
+class PipedriveAutoOpenTests(BaseCrmTestCase):
+    """Negócio entra numa etapa configurada: template de abertura uma vez por negócio, só no horário da IA."""
+
+    TEMPLATE = {'template_name': 'boas_vindas', 'language': 'pt_BR', 'body_params': ['{{nome}}'], 'header_media_id': ''}
+
+    def setUp(self):
+        super().setUp()
+        self.contact.pipedrive_person_id = 600
+        self.contact.save(update_fields=['pipedrive_person_id'])
+        PipedriveAccount.objects.filter(pk=self.pd.pk).update(
+            lead_account=self.account, auto_stage_ids=[7, 8], auto_template=self.TEMPLATE, auto_only_in_hours=True,
+        )
+        self.url = f'/api/companies/pipedrive/webhook/{self.pd.webhook_token}'
+
+    def _post(self, action='create', stage=7, deal_id=90, previous=None, source='app', status='open'):
+        body = {
+            'meta': {'action': action, 'entity': 'deal', 'change_source': source},
+            'data': {'id': deal_id, 'person_id': 600, 'stage_id': stage, 'status': status},
+            'previous': previous,
+        }
+        return self.client.post(self.url, body, content_type='application/json')
+
+    def test_deal_created_in_stage_sends_once_per_deal(self, mock_send):
+        self._post()
+        mock_send.assert_called_once_with(self.company, self.contact.pk, 'boas_vindas', 'pt_BR', ['{{nome}}'], '')
+        # foi pra outra etapa configurada: mesmo negócio, não manda de novo
+        self._post(action='change', stage=8, previous={'stage_id': 7})
+        self.assertEqual(mock_send.call_count, 1)
+        # negócio novo da mesma pessoa: manda
+        self._post(deal_id=91)
+        self.assertEqual(mock_send.call_count, 2)
+
+    def test_moved_into_stage_sends(self, mock_send):
+        self._post(stage=1)
+        self._post(action='change', stage=7, previous={'stage_id': 1})
+        mock_send.assert_called_once()
+
+    def test_ignored_events(self, mock_send):
+        self._post(stage=1)                                             # etapa fora da lista
+        self._post(action='change', previous={'title': 'x'})            # mudou outra coisa
+        self._post(status='won')                                        # já fechado
+        self._post(source='api')                                        # o próprio chatly mexeu
+        mock_send.assert_not_called()
+
+    def test_outside_ai_hours_is_left_out(self, mock_send):
+        with patch('apps.crm.services.next_ai_opening', return_value='amanhã'):
+            self._post()
+        mock_send.assert_not_called()
+        # não ficou marcado: entrar de novo numa etapa no horário manda
+        self._post(action='change', stage=8, previous={'stage_id': 7})
+        mock_send.assert_called_once()
+
+    def test_only_in_hours_off_ignores_schedule(self, mock_send):
+        PipedriveAccount.objects.filter(pk=self.pd.pk).update(auto_only_in_hours=False)
+        with patch('apps.crm.services.next_ai_opening', return_value='amanhã'):
+            self._post()
+        mock_send.assert_called_once()
+
+    def test_failed_send_can_retry(self, mock_send):
+        mock_send.side_effect = ValidationError('Cliente A está sem valor para {{cpf}}')
+        response = self._post()
+        self.assertEqual(response.status_code, 200)  # Pipedrive não precisa saber
+        mock_send.side_effect = None
+        self._post(action='change', stage=8, previous={'stage_id': 7})
+        self.assertEqual(mock_send.call_count, 2)
+
+    @patch('apps.crm.services.get_template_send_info', return_value=('Oi {{1}}', 'NONE'))
+    def test_save_config(self, mock_info, mock_send):
+        url = f'{self.base}/pipedrive/auto-open'
+        body = {'stage_ids': [3, 3, 4], 'template': self.TEMPLATE, 'only_in_hours': False}
+        response = self.client.put(url, body, content_type='application/json', headers=self.member_auth)
+        self.assertEqual(response.status_code, 404)  # só o dono (membro não enxerga)
+
+        response = self.client.put(url, body, content_type='application/json', headers=self.auth)
+        self.assertEqual(response.status_code, 200, response.json())
+        self.assertEqual(response.json()['auto_stage_ids'], [3, 4])
+        self.assertFalse(response.json()['auto_only_in_hours'])
+        mock_info.assert_called_once_with(self.account, 'boas_vindas', 'pt_BR')
+
+        body = {'stage_ids': [3], 'template': {}, 'only_in_hours': True}
+        response = self.client.put(url, body, content_type='application/json', headers=self.auth)
+        self.assertEqual(response.status_code, 400)  # etapa sem template
+
+        response = self.client.put(url, {'stage_ids': []}, content_type='application/json', headers=self.auth)
+        self.assertEqual(response.status_code, 200)  # desligar não precisa de template

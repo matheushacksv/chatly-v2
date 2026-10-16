@@ -1,11 +1,19 @@
+import logging
+
+import httpx
 from django.conf import settings
+from django.db import IntegrityError, transaction
+from django.utils import timezone
 
 from apps.chats import events
 from apps.chats.models import Contact, WhatsAppAccount
-from apps.chats.services import find_contact, normalize_number
+from apps.agents.services import next_ai_opening
+from apps.chats.services import find_contact, get_template_send_info, normalize_number, send_template_message
 from apps.crm import pipedrive
-from apps.crm.models import PipedriveAccount
-from core.exceptions import NotFound, PipedriveError, ValidationError
+from apps.crm.models import DealOpening, PipedriveAccount
+from core.exceptions import DomainError, NotFound, PipedriveError, ValidationError
+
+logger = logging.getLogger(__name__)
 
 
 def _webhook_url(account: PipedriveAccount) -> str:
@@ -69,25 +77,54 @@ def ingest_deal_event(pd: PipedriveAccount, action: str, data: dict, previous: d
         events.publish(pd.company.pk, {'type': 'contact_synced', 'contact_id': contact.pk})
 
     if change_source != 'api':
+        _auto_open(pd, contact, action, data, previous)
         from apps.automations import services as flow_services
 
         flow_services.dispatch_pipedrive_event(contact, action, data, previous)
     return contact
 
-    person = pipedrive.get_person(pd.api_key, person_id)
+
+def _auto_open(pd: PipedriveAccount, contact: Contact, action: str, deal: dict, previous: dict | None) -> None:
+    """Negócio entrou numa etapa configurada: manda o template de abertura e a IA assume as respostas.
+    Mudança feita pelo próprio chatly (change_source 'api') nem chega aqui: a conversa já existe."""
+    template = pd.auto_template
+    if deal.get('stage_id') not in pd.auto_stage_ids or not template.get('template_name'):
+        return
+    if deal.get('status', 'open') != 'open':
+        return
+    if action == 'change' and 'stage_id' not in (previous or {}):
+        return  # mudou outra coisa no negócio, não a etapa
+    if pd.auto_only_in_hours and next_ai_opening(pd.lead_account.agent, timezone.now()) is not None:
+        return  # fora do horário da IA: fica de fora, não espera abrir
     try:
-        wa_id = normalize_number(_first_phone(person))
-    except ValidationError:
-        return None
+        with transaction.atomic():
+            DealOpening.objects.create(pipedrive_account=pd, deal_id=deal['id'], contact=contact)
+    except IntegrityError:
+        return
+    try:
+        send_template_message(
+            pd.company, contact.pk, template['template_name'], template.get('language', ''),
+            template.get('body_params', []), template.get('header_media_id', ''),
+        )
+    except (DomainError, httpx.HTTPError) as e:
+        # sem envio não conta como aberto: a próxima mudança de etapa tenta de novo
+        DealOpening.objects.filter(pipedrive_account=pd, deal_id=deal['id']).delete()
+        logger.warning('abertura do negócio %s não enviada: %s', deal['id'], e)
 
-    contact = find_contact(pd.lead_account, wa_id)
-    if contact:
-        link_person(contact, person_id)
-    else:
-        contact = Contact.objects.create(account=pd.lead_account, wa_id=wa_id, name=person.get('name') or '', pipedrive_person_id=person_id)
 
-    events.publish(pd.company.pk, {'type': 'contact_synced', 'contact_id': contact.pk})
-    return contact
+def update_auto_open(company, stage_ids: list[int], template: dict, only_in_hours: bool) -> PipedriveAccount:
+    account = get_pipedrive_account(company)
+    if stage_ids:
+        if account.lead_account is None:
+            raise ValidationError('escolha a conta de WhatsApp dos leads antes')
+        if not template.get('template_name') or not template.get('language'):
+            raise ValidationError('escolha o template de abertura')
+        get_template_send_info(account.lead_account, template['template_name'], template['language'])  # aprovado?
+    account.auto_stage_ids = list(dict.fromkeys(stage_ids))
+    account.auto_template = template
+    account.auto_only_in_hours = only_in_hours
+    account.save(update_fields=['auto_stage_ids', 'auto_template', 'auto_only_in_hours'])
+    return account
 
 
 def get_pipedrive_account(company) -> PipedriveAccount:

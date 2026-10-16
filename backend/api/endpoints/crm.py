@@ -6,6 +6,7 @@ from ninja import Router, Status
 from apps.companies import services as companies_services
 from apps.crm import pipedrive, services
 from apps.crm.schemas import (
+    AutoOpenDTO,
     ActivityOutDTO,
     DealBriefDTO,
     DealCreateDTO,
@@ -42,6 +43,12 @@ def get_pipedrive_endpoint(request, company_id: int):
 def update_pipedrive_defaults_endpoint(request, company_id: int, payload: PipedriveDefaultsDTO):
     company = companies_services.get_owned_company(request.auth, company_id)
     return services.update_defaults(company, payload.pipeline_id, payload.stage_id, payload.lead_account_id)
+
+
+@router.put('/{company_id}/pipedrive/auto-open', response=PipedriveAccountOutDTO)
+def update_pipedrive_auto_open_endpoint(request, company_id: int, payload: AutoOpenDTO):
+    company = companies_services.get_owned_company(request.auth, company_id)
+    return services.update_auto_open(company, payload.stage_ids, payload.template.dict(), payload.only_in_hours)
 
 
 @router.delete('/{company_id}/pipedrive', response={204: None})

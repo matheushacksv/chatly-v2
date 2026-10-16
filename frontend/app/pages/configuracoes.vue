@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { TabsItem } from '@nuxt/ui'
-import type { Agent, Credential, Invite, Member, PipedriveConfig, PipedrivePipeline, Tag, TagColor, WhatsAppAccount } from '~/types/api'
+import type { Agent, Credential, Invite, Member, PipedriveConfig, PipedrivePipeline, Tag, TagColor, Template, WhatsAppAccount } from '~/types/api'
 
 // ?tab= abre direto numa aba (ex.: link "Gerenciar respostas rápidas" do chat)
 const tab = ref(String(useRoute().query.tab || 'credenciais'))
@@ -432,6 +432,45 @@ async function savePipedriveDefaults() {
   }
 }
 
+// ---- IA atende negócio novo: template de abertura quando entra numa das etapas ----
+const autoStageIds = ref<number[]>([])
+const autoOnlyInHours = ref(true)
+const autoTemplate = ref<PipedriveConfig['auto_template']>({})
+const autoPicked = ref<Template | null>(null)
+const autoParams = ref<string[]>([])
+const autoHeaderMediaId = ref('')
+const savingAuto = ref(false)
+const allStageItems = computed(() => pipelines.value.flatMap(p => p.stages.map(s => ({ label: `${p.name} > ${s.name}`, value: s.id }))))
+watch(pipedrive, (config) => {
+  autoStageIds.value = [...(config?.auto_stage_ids ?? [])]
+  autoOnlyInHours.value = config?.auto_only_in_hours ?? true
+  autoTemplate.value = { ...(config?.auto_template ?? {}) }
+  autoPicked.value = null
+})
+watch([autoPicked, autoParams, autoHeaderMediaId], () => {
+  if (!autoPicked.value) return
+  autoTemplate.value = {
+    template_name: autoPicked.value.name,
+    language: autoPicked.value.language,
+    body_params: [...autoParams.value],
+    header_media_id: autoHeaderMediaId.value
+  }
+}, { deep: true })
+
+async function saveAutoOpen() {
+  savingAuto.value = true
+  try {
+    pipedrive.value = await api<PipedriveConfig>(`/companies/${companyId.value}/pipedrive/auto-open`, {
+      method: 'PUT', body: { stage_ids: autoStageIds.value, template: autoTemplate.value, only_in_hours: autoOnlyInHours.value }
+    })
+    toast.add({ title: autoStageIds.value.length ? 'IA vai atender os negócios novos' : 'Atendimento automático desligado', color: 'success' })
+  } catch (error) {
+    toast.add({ title: apiErrorDetail(error), color: 'error' })
+  } finally {
+    savingAuto.value = false
+  }
+}
+
 async function disconnectPipedrive() {
   const ok = await confirmModal({
     title: 'Desconectar o Pipedrive?',
@@ -561,6 +600,65 @@ async function disconnectPipedrive() {
                 <div class="flex items-center gap-2">
                   <UButton label="Desconectar" color="error" variant="ghost" size="xs" @click="disconnectPipedrive()" />
                   <UButton label="Salvar" :loading="savingDefaults" :disabled="!pipelineId || !stageId" @click="savePipedriveDefaults()" />
+                </div>
+              </div>
+
+              <div class="rounded-lg ring-1 ring-default p-4 space-y-3">
+                <div>
+                  <h3 class="font-semibold">
+                    IA atende negócios novos
+                  </h3>
+                  <p class="text-sm text-muted">
+                    Quando um negócio é criado ou movido para uma dessas etapas, o lead recebe o template de abertura e a IA cuida das respostas. Uma vez por negócio.
+                  </p>
+                </div>
+                <UFormField label="Etapas" help="Vazio = desligado">
+                  <USelectMenu
+                    v-model="autoStageIds"
+                    :items="allStageItems"
+                    value-key="value"
+                    multiple
+                    placeholder="Nenhuma"
+                    icon="i-lucide-kanban"
+                    class="w-full"
+                  />
+                </UFormField>
+                <template v-if="autoStageIds.length && pipedrive.lead_account_id">
+                  <UFormField label="Template de abertura" help="A Meta só deixa iniciar conversa com template aprovado">
+                    <p v-if="autoTemplate.template_name" class="text-xs text-muted mb-2">
+                      Atual: <span class="font-mono">{{ autoTemplate.template_name }} ({{ autoTemplate.language }})</span>
+                    </p>
+                    <TemplatePicker
+                      v-model:template="autoPicked"
+                      v-model:params="autoParams"
+                      v-model:header-media-id="autoHeaderMediaId"
+                      :company-id="companyId!"
+                      :account-id="pipedrive.lead_account_id"
+                    />
+                  </UFormField>
+                  <USwitch
+                    v-model="autoOnlyInHours"
+                    label="Só no horário da IA"
+                    description="Negócio que entra fora do horário do agente fica de fora: não recebe nada, nem depois"
+                  />
+                  <p class="text-xs text-muted">
+                    Tem fluxo de automação com gatilho do Pipedrive na mesma etapa? O lead recebe as duas mensagens.
+                  </p>
+                </template>
+                <UAlert
+                  v-else-if="autoStageIds.length"
+                  color="warning"
+                  variant="subtle"
+                  icon="i-lucide-triangle-alert"
+                  title="Escolha o número que recebe leads do Pipedrive e salve antes"
+                />
+                <div class="flex justify-end">
+                  <UButton
+                    label="Salvar"
+                    :loading="savingAuto"
+                    :disabled="autoStageIds.length > 0 && !autoTemplate.template_name"
+                    @click="saveAutoOpen()"
+                  />
                 </div>
               </div>
             </template>
