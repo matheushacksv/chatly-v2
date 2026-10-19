@@ -32,7 +32,8 @@ export const phoneDigits = (cell = '') => {
 
 /** Lê o CSV em células. Aceita "," ou ";" (Excel em pt-BR) e células entre aspas com separador dentro. */
 export function readCsv(text: string): string[][] {
-  const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/).filter(l => l.trim())
+  // NFKC: letra "estilizada" do Instagram (𝐇𝐞𝐥𝐜𝐢𝐨) vira normal e acento solto (e + ´) vira um caractere só
+  const lines = text.normalize('NFKC').replace(/^\uFEFF/, '').split(/\r?\n/).filter(l => l.trim())
   const first = lines[0] ?? ''
   const sep = (first.match(/;/g)?.length ?? 0) > (first.match(/,/g)?.length ?? 0) ? ';' : ','
   return lines.map((line) => {
