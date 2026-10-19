@@ -891,6 +891,10 @@ class CrmRuntimeTests(BaseAutomationsTestCase):
         mock_deal.assert_called_once()
         self.assertEqual(run.context.get('deal_id'), 77)
 
+    def test_deal_title_renders_variables(self, mock_person, mock_deal, mock_note, mock_stage):
+        self._run('deal', {'title': 'Lead {{nome}} - {{campanha}}'}, context={'campanha': 'Outubro'})
+        self.assertEqual(mock_deal.call_args.args[2], 'Lead Ana - Outubro')
+
     def test_deal_reuses_open_deal(self, mock_person, mock_deal, mock_note, mock_stage):
         self.mock_open_deals.return_value = [{'id': 5, 'title': 'Aberto'}]
         run, _ = self._run('deal', {'title': 'Novo negócio'})
