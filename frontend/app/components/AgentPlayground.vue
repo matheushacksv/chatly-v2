@@ -1,10 +1,10 @@
 <script setup lang="ts">
 // Chat de teste do agente: contato fictício, ferramentas simuladas, usa o prompt do formulário mesmo sem salvar.
-import type { NativeTool } from '~/types/api'
+import type { NativeTool, Template, WhatsAppAccount } from '~/types/api'
 
 const props = defineProps<{ companyId: number, agentId: number, prompt: string, nativeTools: NativeTool[] }>()
 
-type Turn = { role: 'user', content: string } | { role: 'assistant', parts: string[], toolCalls: { name: string, arguments: Record<string, unknown> }[] }
+type Turn = { role: 'user', content: string } | { role: 'assistant', parts: string[], toolCalls: { name: string, arguments: Record<string, unknown> }[], quickReplies?: string[] }
 
 const api = useApi()
 const toast = useToast()
@@ -17,6 +17,33 @@ const draft = ref('')
 const sending = ref(false)
 const showContact = ref(false)
 const scroller = useTemplateRef<HTMLElement>('scroller')
+
+// simula o caminho real: template enviado -> cliente responde (ou clica no botão) -> IA continua
+const accounts = ref<WhatsAppAccount[]>([])
+onMounted(async () => {
+  accounts.value = await api<WhatsAppAccount[]>(`/companies/${props.companyId}/whatsapp-accounts`)
+})
+const accountId = computed(() => (accounts.value.find(a => a.agent === props.agentId) ?? accounts.value[0])?.id)
+const pickingTemplate = ref(false)
+const template = ref<Template | null>(null)
+const templateParams = ref<string[]>([])
+
+function fillVars(text: string) {
+  const values: Record<string, string> = { ...contact.fields, nome: contact.name || contact.phone, telefone: contact.phone }
+  return text.replace(/\{\{\s*(\w+)\s*\}\}/g, (raw, key) => values[key] ?? raw)
+}
+
+function sendTemplate() {
+  if (!template.value) return
+  const body = template.value.body_text.replace(/\{\{(\d+)\}\}/g, (raw, i) => fillVars(templateParams.value[+i - 1] ?? '').trim() || raw)
+  turns.value = [{ role: 'assistant', parts: [body], toolCalls: [], quickReplies: template.value.quick_replies }]
+  pickingTemplate.value = false
+}
+
+function clickQuickReply(label: string) {
+  draft.value = label
+  send()
+}
 
 const TOOL_LABELS: Record<string, string> = {
   transferir_para_atendente: 'Transferiria pra equipe',
@@ -114,9 +141,28 @@ const summary = (args: Record<string, unknown>) => Object.values(args).map(v => 
     </div>
 
     <div ref="scroller" class="h-96 overflow-y-auto rounded-lg ring-1 ring-default bg-elevated/30 p-3 space-y-2">
-      <div v-if="!turns.length && !sending" class="text-sm text-muted text-center pt-28 space-y-3">
+      <div v-if="pickingTemplate && accountId" class="space-y-3">
+        <TemplatePicker v-model:template="template" v-model:params="templateParams" :company-id="companyId" :account-id="accountId" />
+        <div class="flex justify-end gap-2">
+          <UButton type="button" label="Cancelar" variant="ghost" color="neutral" size="sm" @click="() => { pickingTemplate = false }" />
+          <UButton type="button" label="Enviar template" icon="i-lucide-send" size="sm" :disabled="!template" @click="sendTemplate" />
+        </div>
+      </div>
+      <div v-else-if="!turns.length && !sending" class="text-sm text-muted text-center pt-28 space-y-3">
         <p>Mande a primeira mensagem como o cliente mandaria, ou</p>
-        <UButton type="button" label="IA começa a conversa" icon="i-lucide-sparkles" variant="soft" size="sm" @click="send(true)" />
+        <div class="flex justify-center flex-wrap gap-2">
+          <UButton type="button" label="IA começa a conversa" icon="i-lucide-sparkles" variant="soft" size="sm" @click="send(true)" />
+          <UButton
+            v-if="accountId"
+            type="button"
+            label="Começar com template"
+            icon="i-lucide-layout-template"
+            variant="soft"
+            color="neutral"
+            size="sm"
+            @click="() => { pickingTemplate = true }"
+          />
+        </div>
       </div>
       <template v-for="(turn, i) in turns" :key="i">
         <div v-if="turn.role === 'user'" class="flex justify-start">
@@ -138,6 +184,17 @@ const summary = (args: Record<string, unknown>) => Object.values(args).map(v => 
                 <span v-if="summary(call.arguments)"> · {{ summary(call.arguments) }}</span>
               </span>
             </p>
+          </div>
+          <div v-if="turn.quickReplies?.length && i === turns.length - 1 && !sending" class="flex justify-end flex-wrap gap-1.5">
+            <UButton
+              v-for="label in turn.quickReplies"
+              :key="label"
+              type="button"
+              :label="label"
+              variant="outline"
+              size="xs"
+              @click="clickQuickReply(label)"
+            />
           </div>
         </template>
       </template>
