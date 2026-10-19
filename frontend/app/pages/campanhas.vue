@@ -372,15 +372,6 @@ async function create() {
           <UInput v-model="name" placeholder="Promo de julho" class="w-full" />
         </AppField>
 
-        <TemplatePicker
-          v-if="accountId"
-          v-model:template="template"
-          v-model:params="params"
-          v-model:header-media-id="headerMediaId"
-          :company-id="companyId ?? 0"
-          :account-id="accountId"
-        />
-
         <UFormField label="Destinatários" required>
           <URadioGroup v-model="mode" :items="modeItems" />
         </UFormField>
@@ -457,6 +448,16 @@ async function create() {
             :description="csvInvalid.slice(0, 3).join(' · ')"
           />
         </div>
+
+        <!-- depois dos destinatários: campo criado ao mapear o CSV já aparece no menu de variáveis -->
+        <TemplatePicker
+          v-if="accountId"
+          v-model:template="template"
+          v-model:params="params"
+          v-model:header-media-id="headerMediaId"
+          :company-id="companyId ?? 0"
+          :account-id="accountId"
+        />
 
         <AppField
           label="Fluxo ao clicar"
