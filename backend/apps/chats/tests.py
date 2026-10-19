@@ -16,7 +16,7 @@ from django.db import connection
 from django.test import TestCase, override_settings
 
 from apps import ai
-from apps.chats import services, tasks, whatsapp
+from apps.chats import ai_tools, services, tasks, whatsapp
 
 from django.core.files.base import ContentFile
 
@@ -4591,6 +4591,12 @@ class PlaygroundTests(BaseChatsTestCase):
     def test_last_message_must_be_from_client(self):
         response = self.post(messages=[{'role': 'assistant', 'content': 'oi'}])
         self.assertEqual(response.status_code, 400)
+
+    @patch('apps.ai.generate_reply', return_value='Oi! Tudo bem?')
+    def test_empty_conversation_ai_opens(self, mock_generate):
+        response = self.post(messages=[])
+        self.assertEqual(response.status_code, 200, response.json())
+        self.assertEqual(mock_generate.call_args.args[1:], ([], ai_tools.OPENER))
 
     def test_foreign_agent_is_404(self):
         url = f'/api/companies/{self.company.pk}/agents/{self.other_agent.pk}/playground'

@@ -27,10 +27,11 @@ const TOOL_LABELS: Record<string, string> = {
   anotar_crm: 'Anotaria no CRM'
 }
 
-async function send() {
+// sem texto e sem conversa: a IA abre a conversa
+async function send(opener = false) {
   const text = draft.value.trim()
-  if (!text || sending.value) return
-  turns.value.push({ role: 'user', content: text })
+  if ((!text && !opener) || sending.value) return
+  if (text) turns.value.push({ role: 'user', content: text })
   draft.value = ''
   sending.value = true
   scrollDown()
@@ -54,8 +55,10 @@ async function send() {
     // "salvar dado" da IA aparece no contato fictício, como apareceria no real
     contact.fields = { ...result.fields }
   } catch (error) {
-    turns.value.pop()
-    draft.value = text
+    if (text) {
+      turns.value.pop()
+      draft.value = text
+    }
     toast.add({ title: apiErrorDetail(error, 'A IA não respondeu'), color: 'error' })
   } finally {
     sending.value = false
@@ -111,9 +114,10 @@ const summary = (args: Record<string, unknown>) => Object.values(args).map(v => 
     </div>
 
     <div ref="scroller" class="h-96 overflow-y-auto rounded-lg ring-1 ring-default bg-elevated/30 p-3 space-y-2">
-      <p v-if="!turns.length" class="text-sm text-muted text-center pt-32">
-        Mande a primeira mensagem como o cliente mandaria.
-      </p>
+      <div v-if="!turns.length && !sending" class="text-sm text-muted text-center pt-28 space-y-3">
+        <p>Mande a primeira mensagem como o cliente mandaria, ou</p>
+        <UButton type="button" label="IA começa a conversa" icon="i-lucide-sparkles" variant="soft" size="sm" @click="send(true)" />
+      </div>
       <template v-for="(turn, i) in turns" :key="i">
         <div v-if="turn.role === 'user'" class="flex justify-start">
           <p class="max-w-[80%] rounded-2xl rounded-bl-sm bg-elevated ring-1 ring-default px-3 py-2 text-sm whitespace-pre-wrap break-words">
@@ -150,9 +154,9 @@ const summary = (args: Record<string, unknown>) => Object.values(args).map(v => 
         placeholder="Escreva como o cliente..."
         :disabled="sending"
         autofocus
-        @keydown.enter.prevent="send"
+        @keydown.enter.prevent="send()"
       />
-      <UButton type="button" icon="i-lucide-send" :loading="sending" :disabled="!draft.trim()" aria-label="Enviar" @click="send" />
+      <UButton type="button" icon="i-lucide-send" :loading="sending" :disabled="!draft.trim()" aria-label="Enviar" @click="send()" />
     </div>
   </div>
 </template>

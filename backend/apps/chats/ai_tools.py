@@ -225,13 +225,18 @@ def dry_run(tools: list, calls: list[dict], fields: dict[str, str]) -> list[Func
     return simulated
 
 
+OPENER = '[O cliente ainda não escreveu nada. Comece você a conversa, como num primeiro contato pelo WhatsApp.]'
+
+
 def run_playground(agent, messages: list[dict], name: str, phone: str, fields: dict[str, str], memory: str = '') -> dict:
     """Teste do agente no painel: conversa fictícia, ferramentas simuladas, nada é salvo nem enviado."""
     from apps import ai
     from core.exceptions import GatewayError, ValidationError
 
-    if not messages or messages[-1]['role'] != 'user':
+    if messages and messages[-1]['role'] != 'user':
         raise ValidationError('a última mensagem do teste precisa ser do cliente')
+    # teste sem mensagem: a IA abre a conversa
+    text = messages[-1]['content'] if messages else OPENER
     fields = {k: v for k, v in fields.items() if v is not None}
     contact = Contact(wa_id=phone or '5511999999999', name=name, custom_fields=dict(fields))
     calls: list[dict] = []
@@ -244,7 +249,7 @@ def run_playground(agent, messages: list[dict], name: str, phone: str, fields: d
         reply = ai.generate_reply(
             agent,
             messages[:-1][-40:],
-            messages[-1]['content'],
+            text,
             memory='\n\n'.join(filter(None, [memory, filled and f'Dados cadastrados:\n{filled}'])),
             tools=dry_run(tools, calls, contact.custom_fields),
             variables=variables,
