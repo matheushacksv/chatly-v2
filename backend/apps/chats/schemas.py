@@ -79,7 +79,8 @@ class ContactOutDTO(ModelSchema):
 
     @staticmethod
     def resolve_ai_opens_at(obj):
-        return next_ai_opening(obj.account.agent, timezone.now())
+        # lead de campanha não ganha resposta atrasada: não promete "IA responde às 18h"
+        return None if obj.ai_no_catchup else next_ai_opening(obj.account.agent, timezone.now())
 
 
 class ContactPatchDTO(Schema):

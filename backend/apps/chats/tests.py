@@ -2247,6 +2247,27 @@ class ProcessIncomingMessageTests(BaseChatsTestCase):
         mock_generate.assert_not_called()
         mock_enqueue.assert_called_once_with(args=(incoming.pk,), kwargs={'deferred': True}, eta=datetime(2026, 10, 6, 9, tzinfo=SP))
 
+    @patch('apps.chats.tasks.process_incoming_message.apply_async')
+    @patch('apps.chats.whatsapp.send_text', return_value='wamid.ia')
+    @patch('apps.ai.generate_reply', return_value='Oi, aqui é a IA')
+    def test_campaign_lead_has_no_catchup_reply(self, mock_generate, mock_send, mock_enqueue):
+        Agent.objects.filter(pk=self.agent.pk).update(ai_schedule=[[['18:00', '00:00']]] * 7)
+        Contact.objects.filter(pk=self.contact.pk).update(ai_no_catchup=True)
+        afternoon = Message.objects.create(contact=self.contact, direction='in', content='Tenho interesse', wa_message_id='wamid.tarde')
+        with patch('apps.chats.tasks.timezone.now', return_value=datetime(2026, 10, 5, 15, tzinfo=SP)):
+            tasks.process_incoming_message(afternoon.pk)
+        # 15h, fora do horário da IA: fica pra equipe, nada agendado pras 18h
+        mock_enqueue.assert_not_called()
+        mock_generate.assert_not_called()
+
+        night = Message.objects.create(contact=self.contact, direction='in', content='Ainda tá aí?', wa_message_id='wamid.noite2')
+        with patch('apps.chats.tasks.timezone.now', return_value=datetime(2026, 10, 5, 20, tzinfo=SP)):
+            tasks.process_incoming_message(night.pk)
+        # 20h, dentro do horário: responde, e o contato volta ao normal
+        mock_send.assert_called_once()
+        self.contact.refresh_from_db()
+        self.assertFalse(self.contact.ai_no_catchup)
+
     @patch('apps.automations.services.dispatch_incoming')
     @patch('apps.chats.whatsapp.send_text')
     @patch('apps.ai.generate_reply')
@@ -3271,6 +3292,8 @@ class RunCampaignTests(BaseChatsTestCase):
         self.assertEqual(message.content, 'Oi Cliente A, temos 10% off pra você.')
         self.assertTrue(message.from_human)
         self.assertFalse(Message.objects.filter(contact=self.contact_b, direction='out').exists())
+        # quem recebeu fica sem resposta atrasada da IA; quem falhou não
+        self.assertEqual(set(Contact.objects.filter(ai_no_catchup=True)), {self.contact})
 
     @patch('apps.chats.whatsapp.send_template')
     @patch('apps.chats.whatsapp.list_templates')

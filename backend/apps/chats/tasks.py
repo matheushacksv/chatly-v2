@@ -49,6 +49,8 @@ def process_incoming_message(self, message_id: int, deferred: bool = False, pend
         if deferred and Message.objects.filter(contact=contact, direction='out', pk__gt=message.pk).exists():
             return
         opens_at = agents_services.next_ai_opening(account.agent, timezone.now())
+        if opens_at and contact.ai_no_catchup:
+            return  # lead de campanha fora do horário da IA: fica pra equipe, sem resposta atrasada
         if opens_at:
             process_incoming_message.apply_async(args=(message.pk,), kwargs={'deferred': True}, eta=opens_at)
             return
@@ -82,6 +84,8 @@ def _send_parts(task, message_id: int, contact: Contact, parts: list[str], defer
             pending = {'deferred': deferred, 'pending': parts[i:], 'handed_off': handed_off}
             raise task.retry(exc=exc, countdown=2**task.request.retries, args=(message_id,), kwargs=pending)
         services.record_outgoing_message(contact, wamid, part)
+    # a IA respondeu: o lead de campanha volta ao normal
+    Contact.objects.filter(pk=contact.pk, ai_no_catchup=True).update(ai_no_catchup=False)
 
 
 @shared_task(bind=True, max_retries=3)
@@ -138,6 +142,7 @@ def run_campaign(campaign_id: int, contact_ids: list[int]):
         services.record_outgoing_message(
             contact, wamid, services.render_template(body, campaign.body_params, contact), from_human=True, campaign=campaign
         )
+        Contact.objects.filter(pk=contact.pk).update(ai_no_catchup=True)
         Campaign.objects.filter(pk=campaign_id).update(sent=F('sent') + 1)
         time.sleep(0.1)
     Campaign.objects.filter(pk=campaign_id).update(status='done')

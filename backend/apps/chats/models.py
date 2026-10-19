@@ -60,6 +60,9 @@ class Contact(models.Model):
     name = models.CharField(max_length=255, blank=True)
     memory = models.TextField(blank=True, default='')
     ai_paused = models.BooleanField(default=False)
+    # veio de campanha: fora do horário da IA a mensagem fica pra equipe, sem resposta atrasada quando o
+    # horário abrir. Fluxo e clique em botão não limpam; limpa quando a IA responde de fato
+    ai_no_catchup = models.BooleanField(default=False)
     ai_resume_at = models.DateTimeField(null=True, blank=True)
     assigned_to = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='assigned_contacts'
