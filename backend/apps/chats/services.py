@@ -795,6 +795,14 @@ def cancel_campaign(company: Company, campaign_id: int) -> Campaign:
     return get_campaign(company, campaign_id)
 
 
+def delete_campaign(company: Company, campaign_id: int) -> None:
+    """Some da lista; as mensagens ficam nas conversas (campaign vira null) e o clique num botão dela não roda mais o fluxo."""
+    campaign = get_campaign(company, campaign_id)
+    if campaign.status == Campaign.Status.SENDING:
+        raise Conflict('campanha ainda enviando: espere terminar')
+    campaign.delete()
+
+
 def campaign_audience(account: WhatsAppAccount, tag_groups: list[list[int]], exclude_tag_ids: list[int] | None = None) -> QuerySet[Contact]:
     """Contatos da conta que batem com algum grupo (OU), tendo todas as etiquetas do grupo (E).
     Sem grupo = todos. Ex.: [[x, y], [z], [p]] = (x e y) ou z ou p."""

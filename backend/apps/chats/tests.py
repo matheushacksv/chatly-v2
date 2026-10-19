@@ -3184,6 +3184,57 @@ class CampaignTests(BaseChatsTestCase):
         self.assertEqual(campaign.header_media_type, 'image')
 
 
+class CampaignFirstNameEndToEndTests(BaseChatsTestCase):
+    url = CampaignTests.url
+    campaign_payload = CampaignTests.campaign_payload
+    post_campaign = CampaignTests.post_campaign
+
+    """Caminho real: campo criado no mapeamento do CSV (rótulo "first_name") -> campanha com {{first_name}} -> envio."""
+
+    @patch('apps.chats.tasks.time.sleep')
+    @patch('apps.chats.whatsapp.send_template', side_effect=['wamid.e1', 'wamid.e2'])
+    @patch('apps.chats.whatsapp.list_templates', return_value=TEMPLATES_FIXTURE)
+    def test_csv_first_name_fills_template_variable(self, mock_list, mock_send, mock_sleep):
+        r = self.client.post(f'/api/companies/{self.company.pk}/contact-fields', data={'label': 'first_name'}, content_type='application/json', headers=self.auth)
+        self.assertEqual(r.json()['key'], 'first_name')
+
+        numbers = [
+            {'number': '5511955550001', 'name': 'Hélcio Santos | Violinista', 'fields': {'first_name': 'Hélcio'}},
+            {'number': self.contact.wa_id, 'name': 'Cliente A', 'fields': {'first_name': 'Ana'}},  # contato que já existia
+        ]
+        with patch('apps.chats.tasks.run_campaign.delay', side_effect=lambda *args: tasks.run_campaign(*args)):
+            r = self.post_campaign(self.company.pk, contact_ids=[], numbers=numbers, body_params=['{{first_name}}', '10% off'])
+        self.assertEqual(r.status_code, 201, r.json())
+
+        sent = {c.args[1]: c.args[4] for c in mock_send.call_args_list}
+        self.assertEqual(sent, {'5511955550001': ['Hélcio', '10% off'], self.contact.wa_id: ['Ana', '10% off']})
+        campaign = Campaign.objects.get(pk=r.json()['id'])
+        self.assertEqual((campaign.sent, campaign.failed, campaign.status), (2, 0, 'done'))
+
+
+class DeleteCampaignTests(BaseChatsTestCase):
+    url = CampaignTests.url
+    campaign_payload = CampaignTests.campaign_payload
+    post_campaign = CampaignTests.post_campaign
+
+    def test_delete_keeps_messages_in_chat(self):
+        campaign = Campaign.objects.create(account=self.account, name='teste', template_name='oferta', template_language='pt_BR', status='done')
+        msg = Message.objects.create(contact=self.contact, direction='out', content='oi', campaign=campaign)
+        r = self.client.delete(self.url(self.company.pk, campaign.pk), headers=self.auth)
+        self.assertEqual(r.status_code, 204)
+        self.assertFalse(Campaign.objects.filter(pk=campaign.pk).exists())
+        msg.refresh_from_db()
+        self.assertIsNone(msg.campaign_id)
+
+    def test_delete_rules(self):
+        sending = Campaign.objects.create(account=self.account, name='x', template_name='oferta', template_language='pt_BR', status='sending')
+        r = self.client.delete(self.url(self.company.pk, sending.pk), headers=self.auth)
+        self.assertEqual(r.status_code, 409)
+        r = self.client.delete(self.url(self.other_company.pk, sending.pk), headers=self.auth)
+        self.assertEqual(r.status_code, 404)
+        self.assertTrue(Campaign.objects.filter(pk=sending.pk).exists())
+
+
 class RunCampaignTests(BaseChatsTestCase):
     """Task de disparo: contadores, render por contato e término com status certo."""
 

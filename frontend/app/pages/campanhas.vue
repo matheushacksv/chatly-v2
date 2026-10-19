@@ -3,7 +3,8 @@ import type { Campaign, Contact, CsvRecipient, Flow, Paginated, Tag, Template, W
 
 const api = useApi()
 const toast = useToast()
-const { activeId: companyId } = useCompany()
+const { activeId: companyId, isOwner } = useCompany()
+const confirmModal = useConfirm()
 
 // ---- contas WhatsApp ----
 const { data: accounts } = await useAsyncData(
@@ -109,6 +110,25 @@ const whenItems = [{ label: 'Agora', value: 'now' }, { label: 'Agendar', value: 
 const scheduledLocal = ref('')
 const toLocalInput = (d: Date) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
 const minScheduleLocal = computed(() => (createOpen.value ? toLocalInput(new Date()) : ''))
+
+async function removeCampaign() {
+  const campaign = detail.value
+  if (!campaign) return
+  const ok = await confirmModal({
+    title: `Excluir "${campaign.name}"?`,
+    description: 'Some da lista. As mensagens enviadas continuam nas conversas, mas clique em botão dela não roda mais o fluxo.',
+    confirmLabel: 'Excluir'
+  })
+  if (!ok) return
+  try {
+    await api(`/companies/${companyId.value}/campaigns/${campaign.id}`, { method: 'DELETE' })
+    campaigns.value = campaigns.value.filter(c => c.id !== campaign.id)
+    detailOpen.value = false
+    toast.add({ title: 'Campanha excluída', icon: 'i-lucide-trash-2' })
+  } catch (error) {
+    toast.add({ title: apiErrorDetail(error, 'Não foi possível excluir'), color: 'error' })
+  }
+}
 
 const canceling = ref(false)
 async function cancelScheduled() {
@@ -362,6 +382,9 @@ async function create() {
           <p class="text-xl font-semibold tabular-nums text-error">{{ detail.failed }}</p>
         </div>
       </div>
+    </template>
+    <template v-if="isOwner && detail && detail.status !== 'sending'" #footer>
+      <UButton label="Excluir campanha" icon="i-lucide-trash-2" color="error" variant="ghost" size="sm" @click="removeCampaign" />
     </template>
   </UModal>
 

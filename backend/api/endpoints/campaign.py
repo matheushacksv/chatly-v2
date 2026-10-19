@@ -49,6 +49,13 @@ def cancel_campaign_endpoint(request, company_id: int, campaign_id: int):
     return services.cancel_campaign(company, campaign_id)
 
 
+@router.delete('/{company_id}/campaigns/{campaign_id}', response={204: None})
+def delete_campaign_endpoint(request, company_id: int, campaign_id: int):
+    company = companies_services.get_owned_company(request.auth, company_id)
+    services.delete_campaign(company, campaign_id)
+    return Status(204, None)
+
+
 @router.get('/{company_id}/campaigns/{campaign_id}', response=CampaignOutDTO)
 def get_campaign_endpoint(request, company_id: int, campaign_id: int):
     company = companies_services.get_company(request.auth, company_id)
