@@ -2268,6 +2268,15 @@ class ProcessIncomingMessageTests(BaseChatsTestCase):
         self.contact.refresh_from_db()
         self.assertFalse(self.contact.ai_no_catchup)
 
+    @patch('apps.chats.whatsapp.send_text')
+    @patch('apps.ai.generate_reply')
+    def test_deferred_run_skips_campaign_lead(self, mock_generate, mock_send):
+        Contact.objects.filter(pk=self.contact.pk).update(ai_no_catchup=True)
+        incoming = Message.objects.create(contact=self.contact, direction='in', content='Oi?', wa_message_id='wamid.agendada')
+        tasks.process_incoming_message(incoming.pk, deferred=True)
+        mock_generate.assert_not_called()
+        mock_send.assert_not_called()
+
     @patch('apps.automations.services.dispatch_incoming')
     @patch('apps.chats.whatsapp.send_text')
     @patch('apps.ai.generate_reply')

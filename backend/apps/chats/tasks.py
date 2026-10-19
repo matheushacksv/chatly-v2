@@ -48,6 +48,9 @@ def process_incoming_message(self, message_id: int, deferred: bool = False, pend
         # esperou o horário da IA e alguém já respondeu nesse meio-tempo
         if deferred and Message.objects.filter(contact=contact, direction='out', pk__gt=message.pk).exists():
             return
+        # agendada antes de o contato virar lead de campanha: também não sai
+        if deferred and contact.ai_no_catchup:
+            return
         opens_at = agents_services.next_ai_opening(account.agent, timezone.now())
         if opens_at and contact.ai_no_catchup:
             return  # lead de campanha fora do horário da IA: fica pra equipe, sem resposta atrasada
