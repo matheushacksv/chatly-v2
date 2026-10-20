@@ -52,7 +52,10 @@ def update_pipedrive_defaults_endpoint(request, company_id: int, payload: Pipedr
 def update_pipedrive_auto_open_endpoint(request, company_id: int, payload: AutoOpenDTO):
     company = companies_services.get_owned_company(request.auth, company_id)
     rules = [r.dict() for r in payload.rules]
-    return services.update_auto_open(company, payload.stage_ids, payload.template.dict(), payload.only_in_hours, rules)
+    followup = payload.followup.dict() if payload.followup else None
+    return services.update_auto_open(
+        company, payload.stage_ids, payload.template.dict(), payload.only_in_hours, rules, payload.delay_minutes, followup
+    )
 
 
 @router.get('/{company_id}/pipedrive/deal-labels', response=list[StageBriefDTO])

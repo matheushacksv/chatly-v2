@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { TabsItem } from '@nuxt/ui'
-import type { Agent, AutoRule, AutoTemplate, PipedriveField, Credential, Invite, Member, PipedriveConfig, PipedrivePipeline, Tag, TagColor, WhatsAppAccount } from '~/types/api'
+import type { Agent, AutoFollowup, AutoRule, AutoTemplate, PipedriveField, Credential, Invite, Member, PipedriveConfig, PipedrivePipeline, Tag, TagColor, WhatsAppAccount } from '~/types/api'
 
 // ?tab= abre direto numa aba (ex.: link "Gerenciar respostas rápidas" do chat)
 const tab = ref(String(useRoute().query.tab || 'credenciais'))
@@ -437,6 +437,9 @@ const autoStageIds = ref<number[]>([])
 const autoOnlyInHours = ref(true)
 const autoTemplate = ref<AutoTemplate>({})
 const autoRules = ref<AutoRule[]>([])
+const autoDelay = ref(0)
+const autoFollowupOn = ref(false)
+const autoFollowup = ref<AutoFollowup>({ after_hours: 24 })
 const savingAuto = ref(false)
 const allStageItems = computed(() => pipelines.value.flatMap(p => p.stages.map(s => ({ label: `${p.name} > ${s.name}`, value: s.id }))))
 watch(pipedrive, (config) => {
@@ -444,15 +447,28 @@ watch(pipedrive, (config) => {
   autoOnlyInHours.value = config?.auto_only_in_hours ?? true
   autoTemplate.value = { ...(config?.auto_template ?? {}) }
   autoRules.value = structuredClone(toRaw(config?.auto_rules ?? []))
+  autoDelay.value = config?.auto_delay_minutes ?? 0
+  autoFollowupOn.value = Boolean(config?.auto_followup?.template_name)
+  autoFollowup.value = { after_hours: 24, ...(config?.auto_followup ?? {}) }
   fieldMap.value = (config?.field_map ?? []).map(m => ({ ref: `${m.source}:${m.key}`, contact_field: m.contact_field }))
 })
-const autoReady = computed(() => !autoStageIds.value.length || Boolean(autoTemplate.value.template_name) || autoRules.value.length > 0)
+const autoReady = computed(() => !autoStageIds.value.length || (
+  (Boolean(autoTemplate.value.template_name) || autoRules.value.length > 0)
+  && (!autoFollowupOn.value || (Boolean(autoFollowup.value.template_name) && autoFollowup.value.after_hours >= 1))
+))
 
 async function saveAutoOpen() {
   savingAuto.value = true
   try {
     pipedrive.value = await api<PipedriveConfig>(`/companies/${companyId.value}/pipedrive/auto-open`, {
-      method: 'PUT', body: { stage_ids: autoStageIds.value, template: autoTemplate.value, rules: autoRules.value, only_in_hours: autoOnlyInHours.value }
+      method: 'PUT', body: {
+        stage_ids: autoStageIds.value,
+        template: autoTemplate.value,
+        rules: autoRules.value,
+        only_in_hours: autoOnlyInHours.value,
+        delay_minutes: autoDelay.value || 0,
+        followup: autoFollowupOn.value ? autoFollowup.value : null
+      }
     })
     toast.add({ title: autoStageIds.value.length ? 'IA vai atender os negócios novos' : 'Atendimento automático desligado', color: 'success' })
   } catch (error) {
@@ -702,9 +718,24 @@ async function disconnectPipedrive() {
                   >
                     <AutoTemplateChoice v-model="autoTemplate" :company-id="companyId!" :account-id="pipedrive.lead_account_id" />
                   </AppField>
+                  <AppField label="Esperar antes de enviar (minutos)" tip="0 manda na hora. Se o lead escrever, o negócio for fechado ou sair da etapa durante a espera, a abertura não sai">
+                    <UInput v-model.number="autoDelay" type="number" min="0" max="1440" class="w-32" />
+                  </AppField>
+                  <div class="flex items-center gap-2">
+                    <USwitch v-model="autoFollowupOn" label="Follow-up para quem não respondeu" />
+                    <AppTip text="Um segundo template, só para quem não respondeu a abertura. Respondeu, não recebe. Negócio fechado ou atendente no controle também não" />
+                  </div>
+                  <template v-if="autoFollowupOn">
+                    <AppField label="Enviar depois de (horas sem resposta)">
+                      <UInput v-model.number="autoFollowup.after_hours" type="number" min="1" max="720" class="w-32" />
+                    </AppField>
+                    <AppField label="Template do follow-up">
+                      <AutoTemplateChoice v-model="autoFollowup" :company-id="companyId!" :account-id="pipedrive.lead_account_id" />
+                    </AppField>
+                  </template>
                   <div class="flex items-center gap-2">
                     <USwitch v-model="autoOnlyInHours" label="Só no horário da IA" />
-                    <AppTip text="Negócio que entra fora do horário do agente fica de fora: não recebe nada, nem depois" />
+                    <AppTip text="Negócio que entra fora do horário do agente fica de fora: não recebe nada, nem depois. Abertura com espera e follow-up que caem fora do horário saem quando a IA volta" />
                   </div>
                 </template>
                 <UAlert

@@ -26,6 +26,9 @@ class PipedriveAccount(models.Model):
     auto_rules = models.JSONField(default=list, blank=True)  # [{field, values: [...], template: {...}}]
     # campo personalizado do Pipedrive (negócio ou pessoa) copiado pro campo do contato a cada evento de negócio
     field_map = models.JSONField(default=list, blank=True)  # [{source: deal|person, key, name, options: {id: label}, contact_field}]
+    auto_delay_minutes = models.PositiveIntegerField(default=0)  # espera antes da abertura; 0 = na hora
+    # template pra quem não respondeu a abertura até after_hours depois; sem template_name = sem follow-up
+    auto_followup = models.JSONField(default=dict, blank=True)  # {template_name, language, body_params, header_media_id, after_hours}
     created_at = models.DateTimeField(auto_now_add=True)
 
 
@@ -35,6 +38,9 @@ class DealOpening(models.Model):
     pipedrive_account = models.ForeignKey(PipedriveAccount, on_delete=models.CASCADE, related_name='openings')
     deal_id = models.IntegerField()
     contact = models.ForeignKey('chats.Contact', on_delete=models.CASCADE, related_name='+')
+    send_at = models.DateTimeField(null=True, blank=True)  # abertura esperando o atraso; null = enviada ou descartada
+    sent_at = models.DateTimeField(null=True, blank=True)
+    followup_at = models.DateTimeField(null=True, blank=True)  # follow-up pendente, se o lead não responder até lá
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

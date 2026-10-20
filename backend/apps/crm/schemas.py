@@ -1,6 +1,6 @@
 from typing import Literal
 
-from ninja import ModelSchema, Schema
+from ninja import Field, ModelSchema, Schema
 
 from apps.crm.models import PipedriveAccount
 
@@ -28,11 +28,17 @@ class AutoRuleDTO(Schema):
     template: AutoTemplateDTO
 
 
+class AutoFollowupDTO(AutoTemplateDTO):
+    after_hours: int = Field(24, ge=1, le=720)
+
+
 class AutoOpenDTO(Schema):
     stage_ids: list[int] = []
     template: AutoTemplateDTO = AutoTemplateDTO()
     rules: list[AutoRuleDTO] = []
     only_in_hours: bool = True
+    delay_minutes: int = Field(0, ge=0, le=1440)
+    followup: AutoFollowupDTO | None = None
 
 
 class FieldMapItemDTO(Schema):
@@ -77,7 +83,7 @@ class PipedriveAccountOutDTO(ModelSchema):
 
     class Meta:
         model = PipedriveAccount
-        fields = ['id', 'default_pipeline_id', 'default_stage_id', 'auto_stage_ids', 'auto_template', 'auto_rules', 'auto_only_in_hours', 'field_map', 'created_at']
+        fields = ['id', 'default_pipeline_id', 'default_stage_id', 'auto_stage_ids', 'auto_template', 'auto_rules', 'auto_only_in_hours', 'auto_delay_minutes', 'auto_followup', 'field_map', 'created_at']
 
     @staticmethod
     def resolve_receiving_events(obj):

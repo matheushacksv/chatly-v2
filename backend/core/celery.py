@@ -12,4 +12,5 @@ app.autodiscover_tasks()
 app.conf.beat_schedule = {
     'dispatch-scheduled-campaigns': {'task': 'apps.chats.tasks.dispatch_scheduled_campaigns', 'schedule': 60.0},
     'dispatch-followups': {'task': 'apps.chats.tasks.dispatch_followups', 'schedule': 60.0},
+    'dispatch-deal-openings': {'task': 'apps.crm.tasks.dispatch_deal_openings', 'schedule': 60.0},
 }

@@ -271,6 +271,8 @@ export interface PipedriveConfig {
   auto_template: AutoTemplate
   auto_rules: AutoRule[]
   auto_only_in_hours: boolean
+  auto_delay_minutes: number
+  auto_followup: AutoFollowup | Record<string, never>
   field_map: PipedriveFieldMapItem[]
   created_at: string
 }
@@ -278,6 +280,7 @@ export interface PipedriveConfig {
 export interface AutoTemplate { template_name?: string, language?: string, body_params?: string[], header_media_id?: string }
 
 /** Contato com `field` igual a um dos `values` recebe esse template na abertura */
+export interface AutoFollowup extends AutoTemplate { after_hours: number }
 export interface AutoRule { field: string, values: string[], template: AutoTemplate }
 
 export interface PipedriveField { source: 'deal' | 'person', key: string, name: string }

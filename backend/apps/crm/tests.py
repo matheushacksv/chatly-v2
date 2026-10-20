@@ -9,7 +9,7 @@ from apps.agents.models import Agent, Credential
 from apps.automations.models import Flow, FlowRun
 from apps.chats.models import Contact, WhatsAppAccount
 from apps.companies.models import Company, Membership
-from apps.crm import pipedrive
+from apps.crm import pipedrive, services
 from apps.crm.models import PipedriveAccount
 from apps.testing import auth_header
 from core.exceptions import NotFound, PipedriveError, ValidationError
@@ -709,6 +709,95 @@ class PipedriveAutoOpenTests(BaseCrmTestCase):
         mock_send.side_effect = None
         self._post(action='change', stage=8, previous={'stage_id': 7})
         self.assertEqual(mock_send.call_count, 2)
+
+    FOLLOWUP = {'template_name': 'lembrete', 'language': 'pt_BR', 'body_params': [], 'header_media_id': '', 'after_hours': 24}
+
+    def _later(self, **delta):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        with patch('apps.crm.services.timezone.now', return_value=timezone.now() + timedelta(**delta)):
+            services.dispatch_deal_openings()
+
+    @patch('apps.crm.pipedrive.get_deal', return_value={'status': 'open', 'stage_id': 7})
+    def test_delay_waits_then_sends(self, mock_deal, mock_send):
+        PipedriveAccount.objects.filter(pk=self.pd.pk).update(auto_delay_minutes=10)
+        self._post()
+        mock_send.assert_not_called()  # ainda na espera
+        self._later(minutes=5)
+        mock_send.assert_not_called()
+        self._later(minutes=11)
+        mock_send.assert_called_once()
+        self._later(minutes=12)
+        mock_send.assert_called_once()  # não repete
+
+    @patch('apps.crm.pipedrive.get_deal', return_value={'status': 'open', 'stage_id': 7})
+    def test_delay_skips_when_conversation_started_or_deal_left(self, mock_deal, mock_send):
+        from apps.chats.models import Message
+
+        PipedriveAccount.objects.filter(pk=self.pd.pk).update(auto_delay_minutes=10)
+        self._post()
+        Message.objects.create(contact=self.contact, direction='in', content='oi, vi o anúncio')
+        self._later(minutes=11)
+        mock_send.assert_not_called()  # lead escreveu na espera: a IA já está atendendo
+
+        mock_deal.return_value = {'status': 'won', 'stage_id': 7}
+        self._post(deal_id=95)
+        Message.objects.filter(contact=self.contact).delete()
+        self._later(minutes=11)
+        mock_send.assert_not_called()  # negócio fechado na espera
+
+    @patch('apps.crm.pipedrive.get_deal', return_value={'status': 'open', 'stage_id': 7})
+    def test_followup_only_without_reply(self, mock_deal, mock_send):
+        from apps.chats.models import Message
+
+        PipedriveAccount.objects.filter(pk=self.pd.pk).update(auto_followup=self.FOLLOWUP)
+        self._post()                                      # abertura na hora
+        self._later(hours=23)
+        self.assertEqual(mock_send.call_count, 1)
+        self._later(hours=25)
+        self.assertEqual(mock_send.call_count, 2)          # não respondeu: follow-up
+        self.assertEqual(mock_send.call_args.args[2], 'lembrete')
+        self._later(hours=50)
+        self.assertEqual(mock_send.call_count, 2)          # um só
+
+        self._post(deal_id=96)                             # outro negócio, esse responde
+        Message.objects.create(contact=self.contact, direction='in', content='oi!')
+        self._later(hours=25)
+        self.assertEqual(mock_send.call_count, 3)          # só a abertura do 96
+
+    @patch('apps.crm.pipedrive.get_deal', return_value={'status': 'open', 'stage_id': 7})
+    def test_followup_outside_hours_waits(self, mock_deal, mock_send):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        PipedriveAccount.objects.filter(pk=self.pd.pk).update(auto_followup=self.FOLLOWUP)
+        self._post()
+        opens = timezone.now() + timedelta(hours=30)
+        with patch('apps.crm.services.next_ai_opening', return_value=opens):
+            self._later(hours=25)
+        self.assertEqual(mock_send.call_count, 1)
+        from apps.crm.models import DealOpening
+
+        self.assertEqual(DealOpening.objects.get(deal_id=90).followup_at, opens)
+        self._later(hours=31)
+        self.assertEqual(mock_send.call_count, 2)
+
+    @patch('apps.crm.services.get_template_send_info', return_value=('Oi {{1}}', 'NONE'))
+    def test_save_delay_and_followup(self, mock_info, mock_send):
+        url = f'{self.base}/pipedrive/auto-open'
+        body = {'stage_ids': [3], 'template': self.TEMPLATE, 'delay_minutes': 15, 'followup': self.FOLLOWUP}
+        response = self.client.put(url, body, content_type='application/json', headers=self.auth)
+        self.assertEqual(response.status_code, 200, response.json())
+        self.assertEqual(response.json()['auto_delay_minutes'], 15)
+        self.assertEqual(response.json()['auto_followup']['template_name'], 'lembrete')
+        self.assertEqual(mock_info.call_count, 2)  # abertura e follow-up conferidos
+
+        body['followup'] = {'template_name': ''}
+        response = self.client.put(url, body, content_type='application/json', headers=self.auth)
+        self.assertEqual(response.json()['auto_followup'], {})  # sem template: sem follow-up
 
     @patch('apps.crm.services.get_template_send_info', return_value=('Oi {{1}}', 'NONE'))
     def test_save_config(self, mock_info, mock_send):

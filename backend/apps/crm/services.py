@@ -1,4 +1,5 @@
 import logging
+from datetime import timedelta
 import re
 
 import httpx
@@ -170,23 +171,106 @@ def _auto_open(pd: PipedriveAccount, contact: Contact, action: str, deal: dict, 
         return  # mudou outra coisa no negócio, não a etapa
     if pd.auto_only_in_hours and next_ai_opening(pd.lead_account.agent, timezone.now()) is not None:
         return  # fora do horário da IA: fica de fora, não espera abrir
+    delay = pd.auto_delay_minutes
     try:
         with transaction.atomic():
-            DealOpening.objects.create(pipedrive_account=pd, deal_id=deal['id'], contact=contact)
+            opening = DealOpening.objects.create(
+                pipedrive_account=pd, deal_id=deal['id'], contact=contact,
+                send_at=timezone.now() + timedelta(minutes=delay) if delay else None,
+            )
     except IntegrityError:
         return
+    if not delay:
+        _send_opening(pd, opening)  # com atraso quem manda é o dispatch_deal_openings
+
+
+def _send_template(pd: PipedriveAccount, contact: Contact, template: dict, deal_id: int) -> bool:
     try:
         send_template_message(
             pd.company, contact.pk, template['template_name'], template.get('language', ''),
             template.get('body_params', []), template.get('header_media_id', ''),
         )
     except (DomainError, httpx.HTTPError) as e:
-        # sem envio não conta como aberto: a próxima mudança de etapa tenta de novo
-        DealOpening.objects.filter(pipedrive_account=pd, deal_id=deal['id']).delete()
-        logger.warning('abertura do negócio %s não enviada: %s', deal['id'], e)
+        logger.warning('template %s do negócio %s não enviado: %s', template['template_name'], deal_id, e)
+        return False
+    return True
 
 
-def update_auto_open(company, stage_ids: list[int], template: dict, only_in_hours: bool, rules: list[dict] = ()) -> PipedriveAccount:
+def _send_opening(pd: PipedriveAccount, opening: DealOpening) -> None:
+    template = _pick_template(pd, opening.contact)  # na hora do envio: os campos podem ter chegado durante a espera
+    if not template.get('template_name'):
+        return
+    if not _send_template(pd, opening.contact, template, opening.deal_id):
+        opening.delete()  # sem envio não conta como aberto: a próxima mudança de etapa tenta de novo
+        return
+    opening.sent_at = timezone.now()
+    hours = pd.auto_followup.get('after_hours') if pd.auto_followup.get('template_name') else None
+    opening.followup_at = opening.sent_at + timedelta(hours=hours) if hours else None
+    opening.save(update_fields=['sent_at', 'followup_at'])
+
+
+def _deal_open(pd: PipedriveAccount, deal_id: int, stage_ids: list[int] | None = None) -> bool | None:
+    """Negócio ainda aberto (e numa das etapas, se pedir)? None: Pipedrive fora do ar, tenta no próximo minuto."""
+    try:
+        deal = pipedrive.get_deal(pd.api_key, deal_id)
+    except NotFound:
+        return False
+    except PipedriveError:
+        return None
+    return deal.get('status') == 'open' and (stage_ids is None or deal.get('stage_id') in stage_ids)
+
+
+def dispatch_deal_openings() -> None:
+    """Beat, a cada minuto: aberturas que esperavam o atraso e follow-ups de quem não respondeu.
+    Lead que já conversou, atendente no controle ou negócio fechado/fora da etapa: descarta.
+    Fora do horário da IA (com "só no horário"): adia pra quando abrir."""
+    now = timezone.now()
+    related = ('pipedrive_account__company', 'pipedrive_account__lead_account__agent', 'contact__account')
+    for opening in DealOpening.objects.filter(send_at__lte=now).select_related(*related):
+        # update condicional: dois beats não mandam a mesma abertura duas vezes
+        if not DealOpening.objects.filter(pk=opening.pk, send_at=opening.send_at).update(send_at=None):
+            continue
+        pd, contact = opening.pipedrive_account, opening.contact
+        if contact.ai_paused or contact.messages.filter(created_at__gte=opening.created_at).exists():
+            continue  # a conversa começou durante a espera: não abre por cima
+        if later := _outside_hours(pd, now):
+            DealOpening.objects.filter(pk=opening.pk).update(send_at=later)
+            continue
+        is_open = _deal_open(pd, opening.deal_id, pd.auto_stage_ids)
+        if is_open is None:
+            DealOpening.objects.filter(pk=opening.pk).update(send_at=now + timedelta(minutes=1))
+        elif is_open:
+            _send_opening(pd, opening)
+
+    for opening in DealOpening.objects.filter(followup_at__lte=now).select_related(*related):
+        if not DealOpening.objects.filter(pk=opening.pk, followup_at=opening.followup_at).update(followup_at=None):
+            continue
+        pd, contact = opening.pipedrive_account, opening.contact
+        template = pd.auto_followup
+        if not template.get('template_name') or contact.ai_paused:
+            continue
+        if contact.messages.filter(direction='in', created_at__gt=opening.sent_at).exists():
+            continue  # respondeu a abertura: sem follow-up
+        if later := _outside_hours(pd, now):
+            DealOpening.objects.filter(pk=opening.pk).update(followup_at=later)
+            continue
+        is_open = _deal_open(pd, opening.deal_id)
+        if is_open is None:
+            DealOpening.objects.filter(pk=opening.pk).update(followup_at=now + timedelta(minutes=1))
+        elif is_open:
+            _send_template(pd, contact, template, opening.deal_id)
+
+
+def _outside_hours(pd: PipedriveAccount, now):
+    if pd.auto_only_in_hours and pd.lead_account and pd.lead_account.agent:
+        return next_ai_opening(pd.lead_account.agent, now)
+    return None
+
+
+def update_auto_open(
+    company, stage_ids: list[int], template: dict, only_in_hours: bool, rules: list[dict] = (),
+    delay_minutes: int = 0, followup: dict | None = None,
+) -> PipedriveAccount:
     account = get_pipedrive_account(company)
     rules = [{**r, 'values': [v.strip() for v in r['values'] if v.strip()]} for r in rules]
     if stage_ids:
@@ -198,14 +282,18 @@ def update_auto_open(company, stage_ids: list[int], template: dict, only_in_hour
         for rule in rules:
             if not rule['field'] or not rule['values'] or not rule['template'].get('template_name'):
                 raise ValidationError('cada regra precisa de campo, valores e template')
-        for t in [template, *(r['template'] for r in rules)]:
+        if followup and followup.get('template_name') and not followup.get('after_hours'):
+            raise ValidationError('diga depois de quantas horas sai o follow-up')
+        for t in [template, *(r['template'] for r in rules), followup or {}]:
             if t.get('template_name'):
                 get_template_send_info(account.lead_account, t['template_name'], t.get('language', ''))  # aprovado?
     account.auto_stage_ids = list(dict.fromkeys(stage_ids))
     account.auto_template = template
     account.auto_rules = rules
     account.auto_only_in_hours = only_in_hours
-    account.save(update_fields=['auto_stage_ids', 'auto_template', 'auto_rules', 'auto_only_in_hours'])
+    account.auto_delay_minutes = delay_minutes
+    account.auto_followup = followup if followup and followup.get('template_name') else {}
+    account.save(update_fields=['auto_stage_ids', 'auto_template', 'auto_rules', 'auto_only_in_hours', 'auto_delay_minutes', 'auto_followup'])
     return account
 
 
