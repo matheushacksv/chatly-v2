@@ -32,7 +32,7 @@ function fillVars(text: string) {
   const values: Record<string, string> = {
     ...contact.fields,
     nome: contact.name || contact.phone,
-    first_name: contact.fields.first_name || firstWord(contact.name) || contact.phone,
+    first_name: firstWord(contact.name) || contact.phone,
     telefone: contact.phone
   }
   return text.replace(/\{\{\s*(\w+)\s*\}\}/g, (raw, key) => values[key] ?? raw)

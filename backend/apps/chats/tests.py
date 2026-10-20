@@ -3219,14 +3219,14 @@ class CampaignFirstNameEndToEndTests(BaseChatsTestCase):
     campaign_payload = CampaignTests.campaign_payload
     post_campaign = CampaignTests.post_campaign
 
-    """Caminho real: campo criado no mapeamento do CSV (rótulo "first_name") -> campanha com {{first_name}} -> envio."""
+    """Caminho real: CSV -> campanha com {{first_name}} (do sistema, sai do nome) -> envio."""
 
     @patch('apps.chats.tasks.time.sleep')
     @patch('apps.chats.whatsapp.send_template', side_effect=['wamid.e1', 'wamid.e2'])
     @patch('apps.chats.whatsapp.list_templates', return_value=TEMPLATES_FIXTURE)
     def test_csv_first_name_fills_template_variable(self, mock_list, mock_send, mock_sleep):
         r = self.client.post(f'/api/companies/{self.company.pk}/contact-fields', data={'label': 'first_name'}, content_type='application/json', headers=self.auth)
-        self.assertEqual(r.json()['key'], 'first_name')
+        self.assertEqual(r.status_code, 400)  # reservado ao sistema
 
         numbers = [
             {'number': '5511955550001', 'name': 'Hélcio Santos | Violinista', 'fields': {'first_name': 'Hélcio'}},
@@ -3237,7 +3237,7 @@ class CampaignFirstNameEndToEndTests(BaseChatsTestCase):
         self.assertEqual(r.status_code, 201, r.json())
 
         sent = {c.args[1]: c.args[4] for c in mock_send.call_args_list}
-        self.assertEqual(sent, {'5511955550001': ['Hélcio', '10% off'], self.contact.wa_id: ['Ana', '10% off']})
+        self.assertEqual(sent, {'5511955550001': ['Hélcio', '10% off'], self.contact.wa_id: ['Cliente', '10% off']})
         campaign = Campaign.objects.get(pk=r.json()['id'])
         self.assertEqual((campaign.sent, campaign.failed, campaign.status), (2, 0, 'done'))
 
@@ -3248,7 +3248,7 @@ class FirstNameVariableTests(BaseChatsTestCase):
             ('Henrique Teste', {}, 'Henrique'),
             ('Ana', {}, 'Ana'),
             ('🌸 Maria Clara', {}, 'Maria'),
-            ('Hélcio Santos', {'first_name': 'Helcinho'}, 'Helcinho'),  # valor gravado (CSV) tem prioridade
+            ('Hélcio Santos', {'first_name': 'Helcinho'}, 'Hélcio'),  # valor antigo no JSON não vale mais
             ('', {}, '5511900000000'),
         ]
         for name, fields, expected in cases:

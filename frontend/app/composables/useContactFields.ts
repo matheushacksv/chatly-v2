@@ -15,8 +15,7 @@ export function useContactFields() {
     { label: 'Nome', key: 'nome' },
     { label: 'Primeiro nome', key: 'first_name' },
     { label: 'Telefone', key: 'telefone' },
-    // first_name é do sistema; campo personalizado com essa chave só guarda o valor que tem prioridade
-    ...fields.value.filter(f => f.key !== 'first_name').map(f => ({ label: f.label, key: f.key }))
+    ...fields.value.map(f => ({ label: f.label, key: f.key }))
   ])
 
   return { fields, load, variables }

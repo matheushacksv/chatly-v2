@@ -29,7 +29,7 @@ PLACEHOLDERS = {'image': '[imagem]', 'audio': '[áudio]', 'video': '[vídeo]', '
 TEMPLATE_PARAM_RE = re.compile(r'\{\{(\d+)\}\}')
 VAR_RE = re.compile(r'\{\{\s*(\w+)\s*\}\}')
 # variáveis embutidas: campo personalizado não pode ter esses nomes
-RESERVED_VARS = {'nome', 'telefone', 'botao', 'campanha'}
+RESERVED_VARS = {'nome', 'first_name', 'telefone', 'botao', 'campanha'}
 TEMPLATE_NAME_RE = re.compile(r'^[a-z0-9_]+$')
 SERVICE_WINDOW = timedelta(hours=24)
 
@@ -352,13 +352,12 @@ def delete_contact_field(company: Company, field_id: int) -> None:
 
 def contact_variables(contact: Contact) -> dict[str, str]:
     """Valores das variáveis {{...}} de um contato: nome, primeiro nome, telefone e os campos personalizados.
-    first_name nunca fica vazio: o valor gravado (campo first_name do CSV), senão a primeira palavra do nome
-    que tenha letra (pula emoji), senão o número."""
+    first_name nunca fica vazio: primeira palavra do nome que tenha letra (pula emoji), senão o número."""
     first = next((w for w in (contact.name or '').split() if any(c.isalpha() for c in w)), '')
     return {
         **contact.custom_fields,
         'nome': contact.name or contact.wa_id,
-        'first_name': contact.custom_fields.get('first_name') or first or contact.wa_id,
+        'first_name': first or contact.wa_id,
         'telefone': contact.wa_id,
     }
 
