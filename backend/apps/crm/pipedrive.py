@@ -78,8 +78,12 @@ def create_deal(api_key: str, title: str, person_id: int, pipeline_id: int, stag
     return _req(api_key, 'POST', f'{V2_URL}/deals', json=payload)['data']
 
 
-def update_deal(api_key: str, deal_id: int, *, stage_id: int | None = None, status: str | None = None) -> dict:
+def update_deal(
+    api_key: str, deal_id: int, *, stage_id: int | None = None, status: str | None = None, label_ids: list[int] | None = None
+) -> dict:
     payload: dict = {}
+    if label_ids is not None:
+        payload['label_ids'] = label_ids
     if stage_id:
         payload['stage_id'] = stage_id
     if status:
@@ -114,6 +118,12 @@ def list_fields(api_key: str, source: str) -> list[dict]:
     # ponytail: uma página de 500 campos, paginar se alguém passar disso
     body = _req(api_key, 'GET', f'{V1_URL}/{source}Fields', params={'limit': 500})
     return body.get('data') or []
+
+
+def list_deal_labels(api_key: str) -> list[dict]:
+    # etiquetas do negócio são as opções do campo nativo 'label'
+    field = next((f for f in list_fields(api_key, 'deal') if f.get('key') == 'label'), None)
+    return [{'id': o['id'], 'name': o['label']} for o in (field or {}).get('options') or []]
 
 
 def get_deal(api_key: str, deal_id: int) -> dict:

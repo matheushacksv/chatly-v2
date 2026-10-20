@@ -66,7 +66,7 @@ export const FLOW_NODE_META: Record<FlowNodeType, NodeMeta> = {
     label: 'Pipedrive',
     icon: 'i-lucide-handshake',
     color: 'text-success',
-    hint: 'Cria person, negócio, anotação ou move de estágio',
+    hint: 'Cria pessoa, negócio, anotação, move de estágio ou etiqueta o negócio',
     data: () => ({ action: 'deal', title: '', text: '' })
   },
   http: {
@@ -143,7 +143,8 @@ const CRM_ACTIONS: Record<string, string> = {
   person: 'Criar/vincular pessoa',
   deal: 'Criar negócio',
   note: 'Salvar anotação',
-  stage: 'Mover de estágio'
+  stage: 'Mover de estágio',
+  label: 'Etiqueta no negócio'
 }
 
 export const FLOW_CRM_ACTION_ITEMS = Object.entries(CRM_ACTIONS).map(([value, label]) => ({ label, value }))
@@ -181,6 +182,7 @@ export function flowNodeSummary(type: FlowNodeType, data: FlowNodeData): string 
     case 'delay':
       return formatMinutes(data.minutes ?? 0)
     case 'crm':
+      if (data.action === 'label') return data.label_mode === 'remove' ? 'Remove etiqueta do negócio' : 'Etiqueta o negócio'
       return CRM_ACTIONS[data.action ?? 'deal'] ?? ''
     case 'http':
       return data.url ? `${data.method ?? 'POST'} ${data.url}` : 'Informe a URL'

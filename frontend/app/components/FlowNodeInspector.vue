@@ -135,6 +135,22 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
     stagesError.value = apiErrorDetail(error, 'Conecte o Pipedrive em Configurações')
   }
 }, { immediate: true })
+
+// ---- etiquetas do negócio no Pipedrive (nó crm: etiqueta) ----
+const dealLabelItems = ref<{ label: string, value: number }[]>([])
+const dealLabelsError = ref('')
+const LABEL_MODE_ITEMS = [{ label: 'Adicionar', value: 'add' }, { label: 'Remover', value: 'remove' }]
+
+watch(() => [props.type, data.value.action], async ([type, action]) => {
+  if (type !== 'crm' || action !== 'label' || dealLabelItems.value.length) return
+  try {
+    const labels = await api<{ id: number, name: string }[]>(`/companies/${props.companyId}/pipedrive/deal-labels`)
+    dealLabelItems.value = labels.map(l => ({ label: l.name, value: l.id }))
+    if (!labels.length) dealLabelsError.value = 'Crie etiquetas de negócio no Pipedrive'
+  } catch (error) {
+    dealLabelsError.value = apiErrorDetail(error, 'Conecte o Pipedrive em Configurações')
+  }
+}, { immediate: true })
 </script>
 
 <template>
@@ -482,6 +498,29 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
           class="w-full"
         />
       </UFormField>
+      <template v-if="data.action === 'label'">
+        <UFormField label="O que fazer">
+          <USelect
+            :model-value="data.label_mode ?? 'add'"
+            :items="LABEL_MODE_ITEMS"
+            class="w-full"
+            @update:model-value="data.label_mode = $event"
+          />
+        </UFormField>
+        <AppField
+          label="Etiqueta"
+          tip="Vale para o negócio do fluxo (gatilho Pipedrive ou bloco Criar negócio) ou, sem ele, o negócio aberto da pessoa. As outras etiquetas do negócio ficam"
+          required
+        >
+          <USelect
+            v-model="data.label_id"
+            :items="dealLabelItems"
+            :placeholder="dealLabelsError || 'Escolha a etiqueta'"
+            :disabled="!dealLabelItems.length"
+            class="w-full"
+          />
+        </AppField>
+      </template>
     </template>
   </div>
 </template>

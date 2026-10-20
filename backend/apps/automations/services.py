@@ -127,9 +127,33 @@ def _run_crm(node: dict, run: FlowRun) -> None:
         text = _render(data.get('text', ''), run)
         pipedrive.create_note(pd.api_key, text, person_id=person_id)
     elif action == 'stage':
-        deal_id = run.context.get('deal_id')
+        deal_id = _deal_id(pd, run)
         if deal_id and data.get('stage_id'):
             pipedrive.update_deal(pd.api_key, deal_id, stage_id=data['stage_id'])
+    elif action == 'label':
+        deal_id = _deal_id(pd, run)
+        if deal_id and data.get('label_id'):
+            labels = pipedrive.get_deal(pd.api_key, deal_id).get('label_ids') or []
+            # mexe só na etiqueta escolhida: as outras do negócio ficam
+            if data.get('label_mode') == 'remove':
+                new = [i for i in labels if i != data['label_id']]
+            else:
+                new = labels if data['label_id'] in labels else [*labels, data['label_id']]
+            if new != labels:
+                pipedrive.update_deal(pd.api_key, deal_id, label_ids=new)
+
+
+def _deal_id(pd, run: FlowRun) -> int | None:
+    """Negócio do fluxo (gatilho Pipedrive ou bloco "Criar negócio"); sem ele, o negócio aberto da pessoa vinculada."""
+    from apps.crm import pipedrive
+
+    if run.context.get('deal_id'):
+        return run.context['deal_id']
+    person_id = run.contact.pipedrive_person_id
+    deals = pipedrive.list_open_deals(pd.api_key, person_id) if person_id else []
+    if deals:
+        run.context['deal_id'] = deals[0]['id']
+    return run.context.get('deal_id')
 
 
 # * ------ executores -----

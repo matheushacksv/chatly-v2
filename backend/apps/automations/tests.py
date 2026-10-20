@@ -875,9 +875,11 @@ class CrmRuntimeTests(BaseAutomationsTestCase):
         from apps.crm.models import PipedriveAccount
         PipedriveAccount.objects.create(company=self.company, api_key='x', default_pipeline_id=1, default_stage_id=2)
 
-    def _run(self, action, data=None, context=None):
+    def _run(self, action, data=None, context=None, person_id=None):
         flow = self.make_flow(graph=_crm_graph(action, data), active=True, trigger=Flow.Trigger.FIRST_MESSAGE)
-        contact = Contact.objects.create(account=self.account, wa_id='5511999998888', name='Ana')
+        contact, _ = Contact.objects.update_or_create(
+            account=self.account, wa_id='5511999998888', defaults={'name': 'Ana', 'pipedrive_person_id': person_id}
+        )
         run = services.start_flow(flow, contact, context)
         run.refresh_from_db()
         return run, contact
@@ -909,6 +911,25 @@ class CrmRuntimeTests(BaseAutomationsTestCase):
     def test_stage_uses_deal_id_from_context(self, mock_person, mock_deal, mock_note, mock_stage):
         self._run('stage', {'stage_id': 5}, context={'deal_id': 77})
         mock_stage.assert_called_once()
+
+    @patch('apps.crm.pipedrive.get_deal', return_value={'label_ids': [3]})
+    def test_label_adds_and_removes_keeping_others(self, mock_get, mock_person, mock_deal, mock_note, mock_update):
+        self._run('label', {'label_id': 9}, context={'deal_id': 77})
+        mock_update.assert_called_once_with('x', 77, label_ids=[3, 9])
+        mock_update.reset_mock()
+        self._run('label', {'label_id': 3, 'label_mode': 'remove'}, context={'deal_id': 77})
+        mock_update.assert_called_once_with('x', 77, label_ids=[])
+        mock_update.reset_mock()
+        self._run('label', {'label_id': 3}, context={'deal_id': 77})  # já tem: não chama
+        mock_update.assert_not_called()
+
+    @patch('apps.crm.pipedrive.get_deal', return_value={'label_ids': []})
+    def test_label_without_deal_in_flow_uses_open_deal_of_person(self, mock_get, mock_person, mock_deal, mock_note, mock_update):
+        self._run('label', {'label_id': 9})  # sem pessoa vinculada: nada
+        mock_update.assert_not_called()
+        self.mock_open_deals.return_value = [{'id': 55}]
+        self._run('label', {'label_id': 9}, person_id=600)
+        mock_update.assert_called_once_with('x', 55, label_ids=[9])
 
     def test_no_pipedrive_is_noop(self, mock_person, mock_deal, mock_note, mock_stage):
         from apps.crm.models import PipedriveAccount

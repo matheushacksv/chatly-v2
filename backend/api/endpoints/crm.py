@@ -23,6 +23,7 @@ from apps.crm.schemas import (
     PipedriveConnectDTO,
     PipedriveDefaultsDTO,
     PipelineOutDTO,
+    StageBriefDTO,
 )
 from core.exceptions import PipedriveError
 
@@ -52,6 +53,12 @@ def update_pipedrive_auto_open_endpoint(request, company_id: int, payload: AutoO
     company = companies_services.get_owned_company(request.auth, company_id)
     rules = [r.dict() for r in payload.rules]
     return services.update_auto_open(company, payload.stage_ids, payload.template.dict(), payload.only_in_hours, rules)
+
+
+@router.get('/{company_id}/pipedrive/deal-labels', response=list[StageBriefDTO])
+def list_pipedrive_deal_labels_endpoint(request, company_id: int):
+    company = companies_services.get_company(request.auth, company_id)
+    return pipedrive.list_deal_labels(services.get_pipedrive_account(company).api_key)
 
 
 @router.get('/{company_id}/pipedrive/fields', response=list[PipedriveFieldDTO])

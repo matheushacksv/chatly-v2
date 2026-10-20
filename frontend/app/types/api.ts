@@ -406,9 +406,11 @@ export interface FlowNodeData {
   op?: 'contains' | 'equals' | 'regex' | 'window_open' | 'has_tag' | 'filled'
   value?: string
   minutes?: number
-  action?: 'person' | 'deal' | 'note' | 'stage' | 'add' | 'remove'
+  action?: 'person' | 'deal' | 'note' | 'stage' | 'label' | 'add' | 'remove'
   title?: string
   stage_id?: number
+  label_id?: number
+  label_mode?: 'add' | 'remove'
   // requisição HTTP
   method?: HttpMethod
   url?: string
