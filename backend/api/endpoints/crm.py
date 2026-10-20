@@ -7,6 +7,8 @@ from apps.companies import services as companies_services
 from apps.crm import pipedrive, services
 from apps.crm.schemas import (
     AutoOpenDTO,
+    FieldMapItemDTO,
+    PipedriveFieldDTO,
     ActivityOutDTO,
     DealBriefDTO,
     DealCreateDTO,
@@ -48,7 +50,20 @@ def update_pipedrive_defaults_endpoint(request, company_id: int, payload: Pipedr
 @router.put('/{company_id}/pipedrive/auto-open', response=PipedriveAccountOutDTO)
 def update_pipedrive_auto_open_endpoint(request, company_id: int, payload: AutoOpenDTO):
     company = companies_services.get_owned_company(request.auth, company_id)
-    return services.update_auto_open(company, payload.stage_ids, payload.template.dict(), payload.only_in_hours)
+    rules = [r.dict() for r in payload.rules]
+    return services.update_auto_open(company, payload.stage_ids, payload.template.dict(), payload.only_in_hours, rules)
+
+
+@router.get('/{company_id}/pipedrive/fields', response=list[PipedriveFieldDTO])
+def list_pipedrive_fields_endpoint(request, company_id: int):
+    company = companies_services.get_owned_company(request.auth, company_id)
+    return services.list_custom_fields(company)
+
+
+@router.put('/{company_id}/pipedrive/field-map', response=PipedriveAccountOutDTO)
+def update_pipedrive_field_map_endpoint(request, company_id: int, payload: list[FieldMapItemDTO]):
+    company = companies_services.get_owned_company(request.auth, company_id)
+    return services.update_field_map(company, [i.dict() for i in payload])
 
 
 @router.delete('/{company_id}/pipedrive', response={204: None})

@@ -110,6 +110,12 @@ def mark_activity_done(api_key: str, activity_id: int) -> dict:
     return _req(api_key, 'PATCH', f'{V2_URL}/activities/{activity_id}', json={'done': True})['data']
 
 
+def list_fields(api_key: str, source: str) -> list[dict]:
+    # ponytail: uma página de 500 campos, paginar se alguém passar disso
+    body = _req(api_key, 'GET', f'{V1_URL}/{source}Fields', params={'limit': 500})
+    return body.get('data') or []
+
+
 def get_deal(api_key: str, deal_id: int) -> dict:
     return _req(api_key, 'GET', f'{V2_URL}/deals/{deal_id}')['data']
 

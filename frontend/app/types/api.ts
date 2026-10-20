@@ -268,10 +268,21 @@ export interface PipedriveConfig {
   lead_account_id: number | null
   receiving_events: boolean
   auto_stage_ids: number[]
-  auto_template: { template_name?: string, language?: string, body_params?: string[], header_media_id?: string }
+  auto_template: AutoTemplate
+  auto_rules: AutoRule[]
   auto_only_in_hours: boolean
+  field_map: PipedriveFieldMapItem[]
   created_at: string
 }
+
+export interface AutoTemplate { template_name?: string, language?: string, body_params?: string[], header_media_id?: string }
+
+/** Contato com `field` igual a um dos `values` recebe esse template na abertura */
+export interface AutoRule { field: string, values: string[], template: AutoTemplate }
+
+export interface PipedriveField { source: 'deal' | 'person', key: string, name: string }
+
+export interface PipedriveFieldMapItem extends PipedriveField { contact_field: string }
 
 export interface PipedrivePipeline {
   id: number

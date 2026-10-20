@@ -722,3 +722,71 @@ class PipedriveAutoOpenTests(BaseCrmTestCase):
 
         response = self.client.put(url, {'stage_ids': []}, content_type='application/json', headers=self.auth)
         self.assertEqual(response.status_code, 200)  # desligar não precisa de template
+
+
+    DEAL_KEY = 'a' * 40
+    PERSON_KEY = 'b' * 40
+
+    def _map_fields(self):
+        from apps.chats.models import ContactField
+
+        ContactField.objects.create(company=self.company, key='conteudo', label='Conteúdo')
+        ContactField.objects.create(company=self.company, key='cargo', label='Cargo')
+        PipedriveAccount.objects.filter(pk=self.pd.pk).update(field_map=[
+            {'source': 'deal', 'key': self.DEAL_KEY, 'name': 'Identificador', 'options': {}, 'contact_field': 'conteudo'},
+            {'source': 'person', 'key': self.PERSON_KEY, 'name': 'Cargo', 'options': {'3': 'Projetista'}, 'contact_field': 'cargo'},
+        ])
+
+    @patch('apps.crm.pipedrive.get_person', return_value={'custom_fields': {'b' * 40: 3}})
+    @patch('apps.crm.pipedrive.get_deal')
+    def test_rule_picks_template_by_mapped_field(self, mock_deal, mock_person, mock_send):
+        self._map_fields()
+        demo = {'template_name': 'demo_sinc', 'language': 'pt_BR', 'body_params': [], 'header_media_id': ''}
+        PipedriveAccount.objects.filter(pk=self.pd.pk).update(auto_rules=[
+            {'field': 'conteudo', 'values': ['pagina-de-captura-seabra-assista-demo', 'software-demonstracao-sinc'], 'template': demo},
+        ])
+        mock_deal.return_value = {'custom_fields': {self.DEAL_KEY: 'Pagina-de-captura-seabra-assista-demo '}}
+        self._post()  # webhook sem custom_fields: busca o negócio
+        mock_send.assert_called_once_with(self.company, self.contact.pk, 'demo_sinc', 'pt_BR', [], '')
+        self.contact.refresh_from_db()
+        self.assertEqual(self.contact.custom_fields['cargo'], 'Projetista')  # opção da pessoa vira o nome
+
+        # identificador sem regra: template padrão
+        mock_deal.return_value = {'custom_fields': {self.DEAL_KEY: 'blocos-cad'}}
+        self._post(deal_id=91)
+        self.assertEqual(mock_send.call_args.args[2], 'boas_vindas')
+        self.contact.refresh_from_db()
+        self.assertEqual(self.contact.custom_fields['conteudo'], 'blocos-cad')
+
+    @patch('apps.crm.pipedrive.list_fields')
+    def test_save_field_map(self, mock_fields, mock_send):
+        from apps.chats.models import ContactField
+
+        ContactField.objects.create(company=self.company, key='conteudo', label='Conteúdo')
+        mock_fields.side_effect = lambda key, source: [
+            {'key': 'title', 'name': 'Título'},  # nativo: fica de fora
+            {'key': {'deal': 'd', 'person': 'e'}[source] * 40, 'name': f'Campo {source}', 'options': [{'id': 1, 'label': 'Um'}]},
+        ]
+        url = f'{self.base}/pipedrive/fields'
+        response = self.client.get(url, headers=self.auth)
+        self.assertEqual([(f['source'], f['name']) for f in response.json()], [('deal', 'Campo deal'), ('person', 'Campo person')])
+
+        url = f'{self.base}/pipedrive/field-map'
+        item = {'source': 'deal', 'key': 'd' * 40, 'contact_field': 'conteudo'}
+        response = self.client.put(url, [item], content_type='application/json', headers=self.auth)
+        self.assertEqual(response.status_code, 200, response.json())
+        self.assertEqual(response.json()['field_map'][0]['options'], {'1': 'Um'})
+        response = self.client.put(url, [{**item, 'contact_field': 'nao_existe'}], content_type='application/json', headers=self.auth)
+        self.assertEqual(response.status_code, 400)
+        response = self.client.put(url, [{**item, 'key': 'x' * 40}], content_type='application/json', headers=self.auth)
+        self.assertEqual(response.status_code, 400)
+
+    @patch('apps.crm.services.get_template_send_info', return_value=('Oi', 'NONE'))
+    def test_save_rules_without_default(self, mock_info, mock_send):
+        url = f'{self.base}/pipedrive/auto-open'
+        rule = {'field': 'conteudo', 'values': [' blocos-cad ', ''], 'template': self.TEMPLATE}
+        response = self.client.put(url, {'stage_ids': [3], 'rules': [rule]}, content_type='application/json', headers=self.auth)
+        self.assertEqual(response.status_code, 200, response.json())
+        self.assertEqual(response.json()['auto_rules'][0]['values'], ['blocos-cad'])
+        response = self.client.put(url, {'stage_ids': [3], 'rules': [{**rule, 'values': []}]}, content_type='application/json', headers=self.auth)
+        self.assertEqual(response.status_code, 400)

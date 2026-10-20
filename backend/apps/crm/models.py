@@ -22,6 +22,10 @@ class PipedriveAccount(models.Model):
     auto_stage_ids = ArrayField(models.IntegerField(), default=list, blank=True)
     auto_template = models.JSONField(default=dict, blank=True)  # {template_name, language, body_params, header_media_id}
     auto_only_in_hours = models.BooleanField(default=True)  # fora do horário da IA o negócio fica de fora (não espera)
+    # template por valor de campo do contato, primeira regra que casa; nenhuma casou: auto_template
+    auto_rules = models.JSONField(default=list, blank=True)  # [{field, values: [...], template: {...}}]
+    # campo personalizado do Pipedrive (negócio ou pessoa) copiado pro campo do contato a cada evento de negócio
+    field_map = models.JSONField(default=list, blank=True)  # [{source: deal|person, key, name, options: {id: label}, contact_field}]
     created_at = models.DateTimeField(auto_now_add=True)
 
 

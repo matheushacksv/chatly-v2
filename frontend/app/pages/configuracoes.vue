@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { TabsItem } from '@nuxt/ui'
-import type { Agent, Credential, Invite, Member, PipedriveConfig, PipedrivePipeline, Tag, TagColor, Template, WhatsAppAccount } from '~/types/api'
+import type { Agent, AutoRule, AutoTemplate, PipedriveField, Credential, Invite, Member, PipedriveConfig, PipedrivePipeline, Tag, TagColor, WhatsAppAccount } from '~/types/api'
 
 // ?tab= abre direto numa aba (ex.: link "Gerenciar respostas rápidas" do chat)
 const tab = ref(String(useRoute().query.tab || 'credenciais'))
@@ -435,39 +435,67 @@ async function savePipedriveDefaults() {
 // ---- IA atende negócio novo: template de abertura quando entra numa das etapas ----
 const autoStageIds = ref<number[]>([])
 const autoOnlyInHours = ref(true)
-const autoTemplate = ref<PipedriveConfig['auto_template']>({})
-const autoPicked = ref<Template | null>(null)
-const autoParams = ref<string[]>([])
-const autoHeaderMediaId = ref('')
+const autoTemplate = ref<AutoTemplate>({})
+const autoRules = ref<AutoRule[]>([])
 const savingAuto = ref(false)
 const allStageItems = computed(() => pipelines.value.flatMap(p => p.stages.map(s => ({ label: `${p.name} > ${s.name}`, value: s.id }))))
 watch(pipedrive, (config) => {
   autoStageIds.value = [...(config?.auto_stage_ids ?? [])]
   autoOnlyInHours.value = config?.auto_only_in_hours ?? true
   autoTemplate.value = { ...(config?.auto_template ?? {}) }
-  autoPicked.value = null
+  autoRules.value = structuredClone(toRaw(config?.auto_rules ?? []))
+  fieldMap.value = (config?.field_map ?? []).map(m => ({ ref: `${m.source}:${m.key}`, contact_field: m.contact_field }))
 })
-watch([autoPicked, autoParams, autoHeaderMediaId], () => {
-  if (!autoPicked.value) return
-  autoTemplate.value = {
-    template_name: autoPicked.value.name,
-    language: autoPicked.value.language,
-    body_params: [...autoParams.value],
-    header_media_id: autoHeaderMediaId.value
-  }
-}, { deep: true })
+const autoReady = computed(() => !autoStageIds.value.length || Boolean(autoTemplate.value.template_name) || autoRules.value.length > 0)
 
 async function saveAutoOpen() {
   savingAuto.value = true
   try {
     pipedrive.value = await api<PipedriveConfig>(`/companies/${companyId.value}/pipedrive/auto-open`, {
-      method: 'PUT', body: { stage_ids: autoStageIds.value, template: autoTemplate.value, only_in_hours: autoOnlyInHours.value }
+      method: 'PUT', body: { stage_ids: autoStageIds.value, template: autoTemplate.value, rules: autoRules.value, only_in_hours: autoOnlyInHours.value }
     })
     toast.add({ title: autoStageIds.value.length ? 'IA vai atender os negócios novos' : 'Atendimento automático desligado', color: 'success' })
   } catch (error) {
     toast.add({ title: apiErrorDetail(error), color: 'error' })
   } finally {
     savingAuto.value = false
+  }
+}
+
+// ---- campos do Pipedrive (negócio/pessoa) copiados pro contato a cada evento ----
+const { fields: contactFields, load: loadContactFields } = useContactFields()
+const pipedriveFields = ref<PipedriveField[]>([])
+const fieldMap = ref<{ ref: string, contact_field: string }[]>([])
+const savingFieldMap = ref(false)
+const SOURCE_LABEL = { deal: 'Negócio', person: 'Pessoa' }
+const pipedriveFieldItems = computed(() => pipedriveFields.value.map(f => ({ label: `${SOURCE_LABEL[f.source]} · ${f.name}`, value: `${f.source}:${f.key}` })))
+const contactFieldItems = computed(() => contactFields.value.map(f => ({ label: f.label, value: f.key })))
+
+watch(() => pipedrive.value?.id, async (id) => {
+  if (!id) return
+  loadContactFields()
+  try {
+    pipedriveFields.value = await api<PipedriveField[]>(`/companies/${companyId.value}/pipedrive/fields`)
+  } catch (error) {
+    toast.add({ title: apiErrorDetail(error, 'Falha ao carregar campos do Pipedrive'), color: 'error' })
+  }
+})
+
+async function saveFieldMap() {
+  savingFieldMap.value = true
+  try {
+    pipedrive.value = await api<PipedriveConfig>(`/companies/${companyId.value}/pipedrive/field-map`, {
+      method: 'PUT',
+      body: fieldMap.value.filter(m => m.ref && m.contact_field).map((m) => {
+        const [source, key] = m.ref.split(':')
+        return { source, key, contact_field: m.contact_field }
+      })
+    })
+    toast.add({ title: 'Campos salvos', color: 'success' })
+  } catch (error) {
+    toast.add({ title: apiErrorDetail(error), color: 'error' })
+  } finally {
+    savingFieldMap.value = false
   }
 }
 
@@ -608,6 +636,32 @@ async function disconnectPipedrive() {
 
               <div class="rounded-lg ring-1 ring-default p-4 space-y-3">
                 <h3 class="font-semibold flex items-center gap-1.5">
+                  Campos do Pipedrive
+                  <AppTip text="A cada negócio criado ou movido, o valor do campo personalizado (do negócio ou da pessoa) é copiado para o campo do contato. Serve para o template, as regras de abertura e a IA" />
+                </h3>
+                <div v-for="(item, i) in fieldMap" :key="i" class="flex items-center gap-2">
+                  <USelectMenu v-model="item.ref" :items="pipedriveFieldItems" value-key="value" placeholder="Campo no Pipedrive" class="flex-1 min-w-0" />
+                  <UIcon name="i-lucide-arrow-right" class="size-4 text-muted shrink-0" />
+                  <USelect v-model="item.contact_field" :items="contactFieldItems" placeholder="Campo do contato" class="flex-1 min-w-0" />
+                  <UButton icon="i-lucide-x" variant="ghost" color="neutral" size="xs" aria-label="Remover" @click="fieldMap.splice(i, 1)" />
+                </div>
+                <p v-if="!contactFields.length" class="text-xs text-muted">
+                  Crie antes o campo do contato em Contatos > Campos.
+                </p>
+                <div class="flex justify-between gap-2">
+                  <UButton
+                    label="Adicionar campo"
+                    icon="i-lucide-plus"
+                    variant="ghost"
+                    size="sm"
+                    @click="fieldMap.push({ ref: '', contact_field: '' })"
+                  />
+                  <UButton label="Salvar" :loading="savingFieldMap" @click="saveFieldMap()" />
+                </div>
+              </div>
+
+              <div class="rounded-lg ring-1 ring-default p-4 space-y-3">
+                <h3 class="font-semibold flex items-center gap-1.5">
                   IA atende negócios novos
                   <AppTip text="Quando um negócio é criado ou movido para uma dessas etapas, o lead recebe o template de abertura e a IA cuida das respostas. Uma vez por negócio. Se um fluxo de automação usa a mesma etapa, o lead recebe as duas mensagens" />
                 </h3>
@@ -623,17 +677,30 @@ async function disconnectPipedrive() {
                   />
                 </UFormField>
                 <template v-if="autoStageIds.length && pipedrive.lead_account_id">
-                  <AppField label="Template de abertura" tip="A Meta só deixa iniciar conversa com template aprovado">
-                    <p v-if="autoTemplate.template_name" class="text-xs text-muted mb-2">
-                      Atual: <span class="font-mono">{{ autoTemplate.template_name }} ({{ autoTemplate.language }})</span>
-                    </p>
-                    <TemplatePicker
-                      v-model:template="autoPicked"
-                      v-model:params="autoParams"
-                      v-model:header-media-id="autoHeaderMediaId"
-                      :company-id="companyId!"
-                      :account-id="pipedrive.lead_account_id"
-                    />
+                  <div v-for="(rule, i) in autoRules" :key="i" class="rounded-md bg-elevated/40 ring-1 ring-default p-3 space-y-3">
+                    <div class="flex items-start gap-2">
+                      <UFormField label="Se o campo" class="w-40 shrink-0">
+                        <USelect v-model="rule.field" :items="contactFieldItems" placeholder="Campo" class="w-full" />
+                      </UFormField>
+                      <AppField label="for um destes valores" tip="Enter para adicionar. Não diferencia maiúsculas" class="flex-1 min-w-0">
+                        <UInputTags v-model="rule.values" placeholder="ex.: blocos-cad" class="w-full" />
+                      </AppField>
+                      <UButton icon="i-lucide-x" variant="ghost" color="neutral" size="xs" class="mt-6" aria-label="Remover regra" @click="autoRules.splice(i, 1)" />
+                    </div>
+                    <AutoTemplateChoice v-model="rule.template" :company-id="companyId!" :account-id="pipedrive.lead_account_id" />
+                  </div>
+                  <UButton
+                    label="Template por valor de campo"
+                    icon="i-lucide-plus"
+                    variant="ghost"
+                    size="sm"
+                    @click="autoRules.push({ field: '', values: [], template: {} })"
+                  />
+                  <AppField
+                    :label="autoRules.length ? 'Template padrão (os demais)' : 'Template de abertura'"
+                    :tip="autoRules.length ? 'Para quem não casa com nenhuma regra. Sem padrão, esses ficam sem mensagem' : 'A Meta só deixa iniciar conversa com template aprovado'"
+                  >
+                    <AutoTemplateChoice v-model="autoTemplate" :company-id="companyId!" :account-id="pipedrive.lead_account_id" />
                   </AppField>
                   <div class="flex items-center gap-2">
                     <USwitch v-model="autoOnlyInHours" label="Só no horário da IA" />
@@ -651,7 +718,7 @@ async function disconnectPipedrive() {
                   <UButton
                     label="Salvar"
                     :loading="savingAuto"
-                    :disabled="autoStageIds.length > 0 && !autoTemplate.template_name"
+                    :disabled="!autoReady"
                     @click="saveAutoOpen()"
                   />
                 </div>

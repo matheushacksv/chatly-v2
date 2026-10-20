@@ -22,10 +22,29 @@ class AutoTemplateDTO(Schema):
     header_media_id: str = ''
 
 
+class AutoRuleDTO(Schema):
+    field: str
+    values: list[str]
+    template: AutoTemplateDTO
+
+
 class AutoOpenDTO(Schema):
     stage_ids: list[int] = []
     template: AutoTemplateDTO = AutoTemplateDTO()
+    rules: list[AutoRuleDTO] = []
     only_in_hours: bool = True
+
+
+class FieldMapItemDTO(Schema):
+    source: Literal['deal', 'person']
+    key: str
+    contact_field: str
+
+
+class PipedriveFieldDTO(Schema):
+    source: Literal['deal', 'person']
+    key: str
+    name: str
 
 
 class PersonLinkDTO(Schema):
@@ -58,7 +77,7 @@ class PipedriveAccountOutDTO(ModelSchema):
 
     class Meta:
         model = PipedriveAccount
-        fields = ['id', 'default_pipeline_id', 'default_stage_id', 'auto_stage_ids', 'auto_template', 'auto_only_in_hours', 'created_at']
+        fields = ['id', 'default_pipeline_id', 'default_stage_id', 'auto_stage_ids', 'auto_template', 'auto_rules', 'auto_only_in_hours', 'field_map', 'created_at']
 
     @staticmethod
     def resolve_receiving_events(obj):

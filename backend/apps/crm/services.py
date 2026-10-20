@@ -1,4 +1,5 @@
 import logging
+import re
 
 import httpx
 from django.conf import settings
@@ -8,7 +9,9 @@ from django.utils import timezone
 from apps.chats import events
 from apps.chats.models import Contact, WhatsAppAccount
 from apps.agents.services import next_ai_opening
-from apps.chats.services import find_contact, get_template_send_info, normalize_number, send_template_message
+from apps.chats.services import (
+    _field_keys, _merge_import_fields, find_contact, get_template_send_info, normalize_number, send_template_message,
+)
 from apps.crm import pipedrive
 from apps.crm.models import DealOpening, PipedriveAccount
 from core.exceptions import DomainError, NotFound, PipedriveError, ValidationError
@@ -77,6 +80,7 @@ def ingest_deal_event(pd: PipedriveAccount, action: str, data: dict, previous: d
         events.publish(pd.company.pk, {'type': 'contact_synced', 'contact_id': contact.pk})
 
     if change_source != 'api':
+        _sync_fields(pd, contact, data, person_id)
         _auto_open(pd, contact, action, data, previous)
         from apps.automations import services as flow_services
 
@@ -84,10 +88,80 @@ def ingest_deal_event(pd: PipedriveAccount, action: str, data: dict, previous: d
     return contact
 
 
+CUSTOM_KEY = re.compile(r'[0-9a-f]{40}')  # campo personalizado do Pipedrive tem chave hash; os nativos, nome
+
+
+def _field_value(raw, options: dict) -> str:
+    """Valor do Pipedrive em texto: opção vira o nome dela, várias opções viram lista, moeda/endereço o `value`."""
+    if raw is None:
+        return ''
+    if isinstance(raw, dict):
+        raw = raw.get('value', '')
+    if isinstance(raw, list):
+        return ', '.join(options.get(str(v), str(v)) for v in raw)
+    return options.get(str(raw), str(raw))
+
+
+def _sync_fields(pd: PipedriveAccount, contact: Contact, deal: dict, person_id: int) -> None:
+    """Copia os campos mapeados (negócio e pessoa) pro contato antes da abertura: o template e a IA já usam."""
+    if not pd.field_map:
+        return
+    try:
+        custom = {}
+        if any(m['source'] == 'deal' for m in pd.field_map):
+            source = deal if 'custom_fields' in deal else pipedrive.get_deal(pd.api_key, deal['id'])
+            custom['deal'] = source.get('custom_fields') or {}
+        if any(m['source'] == 'person' for m in pd.field_map):
+            custom['person'] = pipedrive.get_person(pd.api_key, person_id).get('custom_fields') or {}
+    except DomainError as e:
+        logger.warning('campos do negócio %s não sincronizados: %s', deal.get('id'), e)
+        return
+    values = {m['contact_field']: _field_value(custom[m['source']].get(m['key']), m['options']) for m in pd.field_map}
+    _merge_import_fields(contact, values, _field_keys(pd.company))
+
+
+def list_custom_fields(company) -> list[dict]:
+    account = get_pipedrive_account(company)
+    return [
+        {'source': source, 'key': f['key'], 'name': f.get('name') or f['key'],
+         'options': {str(o['id']): o['label'] for o in f.get('options') or []}}
+        for source in ('deal', 'person')
+        for f in pipedrive.list_fields(account.api_key, source)
+        if CUSTOM_KEY.fullmatch(f.get('key') or '')
+    ]
+
+
+def update_field_map(company, items: list[dict]) -> PipedriveAccount:
+    account = get_pipedrive_account(company)
+    available = {(f['source'], f['key']): f for f in list_custom_fields(company)} if items else {}
+    known = _field_keys(company)
+    field_map = []
+    for item in items:
+        field = available.get((item['source'], item['key']))
+        if field is None:
+            raise ValidationError('campo do Pipedrive não encontrado')
+        if item['contact_field'] not in known:
+            raise ValidationError('campo do contato não encontrado')
+        # ponytail: opções copiadas ao salvar; opção criada depois no Pipedrive chega como id até salvar de novo
+        field_map.append({**field, 'contact_field': item['contact_field']})
+    account.field_map = field_map
+    account.save(update_fields=['field_map'])
+    return account
+
+
+def _pick_template(pd: PipedriveAccount, contact: Contact) -> dict:
+    """Primeira regra cujo campo do contato está entre os valores; nenhuma: o template padrão."""
+    for rule in pd.auto_rules:
+        value = str(contact.custom_fields.get(rule['field'], '')).strip().lower()
+        if value and value in {v.strip().lower() for v in rule['values']}:
+            return rule['template']
+    return pd.auto_template
+
+
 def _auto_open(pd: PipedriveAccount, contact: Contact, action: str, deal: dict, previous: dict | None) -> None:
     """Negócio entrou numa etapa configurada: manda o template de abertura e a IA assume as respostas.
     Mudança feita pelo próprio chatly (change_source 'api') nem chega aqui: a conversa já existe."""
-    template = pd.auto_template
+    template = _pick_template(pd, contact)
     if deal.get('stage_id') not in pd.auto_stage_ids or not template.get('template_name'):
         return
     if deal.get('status', 'open') != 'open':
@@ -112,18 +186,26 @@ def _auto_open(pd: PipedriveAccount, contact: Contact, action: str, deal: dict, 
         logger.warning('abertura do negócio %s não enviada: %s', deal['id'], e)
 
 
-def update_auto_open(company, stage_ids: list[int], template: dict, only_in_hours: bool) -> PipedriveAccount:
+def update_auto_open(company, stage_ids: list[int], template: dict, only_in_hours: bool, rules: list[dict] = ()) -> PipedriveAccount:
     account = get_pipedrive_account(company)
+    rules = [{**r, 'values': [v.strip() for v in r['values'] if v.strip()]} for r in rules]
     if stage_ids:
         if account.lead_account is None:
             raise ValidationError('escolha a conta de WhatsApp dos leads antes')
-        if not template.get('template_name') or not template.get('language'):
+        # sem padrão vale, desde que haja regra: quem não casa com nenhuma fica sem mensagem
+        if not rules and not template.get('template_name'):
             raise ValidationError('escolha o template de abertura')
-        get_template_send_info(account.lead_account, template['template_name'], template['language'])  # aprovado?
+        for rule in rules:
+            if not rule['field'] or not rule['values'] or not rule['template'].get('template_name'):
+                raise ValidationError('cada regra precisa de campo, valores e template')
+        for t in [template, *(r['template'] for r in rules)]:
+            if t.get('template_name'):
+                get_template_send_info(account.lead_account, t['template_name'], t.get('language', ''))  # aprovado?
     account.auto_stage_ids = list(dict.fromkeys(stage_ids))
     account.auto_template = template
+    account.auto_rules = rules
     account.auto_only_in_hours = only_in_hours
-    account.save(update_fields=['auto_stage_ids', 'auto_template', 'auto_only_in_hours'])
+    account.save(update_fields=['auto_stage_ids', 'auto_template', 'auto_rules', 'auto_only_in_hours'])
     return account
 
 
