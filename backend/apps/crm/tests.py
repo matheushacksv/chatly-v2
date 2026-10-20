@@ -625,6 +625,7 @@ class PipedriveWebhookIngestTests(BaseCrmTestCase):
     def test_api_source_does_not_fire_flow(self, mock_get_person, mock_tpl):
         self._pd_flow({'event': 'stage_changed', 'stage_id': 20})
         mock_get_person.return_value = {'id': 601, 'name': 'Lead', 'phones': [{'value': '5511555551111', 'primary': True}]}
+        pipedrive.mark_own_change(71)
         body = {
             'meta': {'action': 'change', 'entity': 'deal', 'change_source': 'api'},  # eco do próprio Chatly
             'data': {'id': 71, 'person_id': 601, 'stage_id': 20, 'pipeline_id': 7},
@@ -678,8 +679,14 @@ class PipedriveAutoOpenTests(BaseCrmTestCase):
         self._post(stage=1)                                             # etapa fora da lista
         self._post(action='change', previous={'title': 'x'})            # mudou outra coisa
         self._post(status='won')                                        # já fechado
-        self._post(source='api')                                        # o próprio chatly mexeu
+        pipedrive.mark_own_change(92)
+        self._post(source='api', deal_id=92)                            # o próprio chatly mexeu
         mock_send.assert_not_called()
+
+    def test_deal_from_other_integration_sends(self, mock_send):
+        # formulário do site cria o negócio pela API: change_source 'api', mas não foi o chatly
+        self._post(source='api', deal_id=93)
+        mock_send.assert_called_once()
 
     def test_outside_ai_hours_is_left_out(self, mock_send):
         with patch('apps.crm.services.next_ai_opening', return_value='amanhã'):

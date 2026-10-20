@@ -79,7 +79,7 @@ def ingest_deal_event(pd: PipedriveAccount, action: str, data: dict, previous: d
             contact = Contact.objects.create(account=pd.lead_account, wa_id=wa_id, name=person.get('name') or '', pipedrive_person_id=person_id)
         events.publish(pd.company.pk, {'type': 'contact_synced', 'contact_id': contact.pk})
 
-    if change_source != 'api':
+    if not (change_source == 'api' and pipedrive.is_own_change(data['id'])):
         _sync_fields(pd, contact, data, person_id)
         _auto_open(pd, contact, action, data, previous)
         from apps.automations import services as flow_services
@@ -160,7 +160,7 @@ def _pick_template(pd: PipedriveAccount, contact: Contact) -> dict:
 
 def _auto_open(pd: PipedriveAccount, contact: Contact, action: str, deal: dict, previous: dict | None) -> None:
     """Negócio entrou numa etapa configurada: manda o template de abertura e a IA assume as respostas.
-    Mudança feita pelo próprio chatly (change_source 'api') nem chega aqui: a conversa já existe."""
+    Mudança feita pelo próprio chatly nem chega aqui: a conversa já existe."""
     template = _pick_template(pd, contact)
     if deal.get('stage_id') not in pd.auto_stage_ids or not template.get('template_name'):
         return

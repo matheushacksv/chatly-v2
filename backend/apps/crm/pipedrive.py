@@ -1,4 +1,5 @@
 import httpx
+from django.core.cache import cache
 
 from core.exceptions import NotFound, PipedriveError
 
@@ -67,6 +68,20 @@ def create_person(api_key: str, name: str, phone: str) -> dict:
     return _req(api_key, 'POST', f'{V2_URL}/persons', json=payload)['data']
 
 
+# O webhook só diz change_source 'api', que vale pra qualquer integração (o formulário do site também).
+# Pra separar o eco do chatly, cada negócio que a gente cria ou altera fica marcado uns minutos.
+# ponytail: chave só pelo id do negócio; duas contas Pipedrive com o mesmo id no mesmo minuto se confundem
+OWN_CHANGE_TTL = 120
+
+
+def mark_own_change(deal_id: int) -> None:
+    cache.set(f'pipedrive:own_deal:{deal_id}', 1, OWN_CHANGE_TTL)
+
+
+def is_own_change(deal_id: int) -> bool:
+    return cache.get(f'pipedrive:own_deal:{deal_id}') is not None
+
+
 def list_open_deals(api_key: str, person_id: int) -> list[dict]:
     return _paginate(api_key, f'{V2_URL}/deals', {'person_id': person_id, 'status': 'open'})
 
@@ -75,7 +90,9 @@ def create_deal(api_key: str, title: str, person_id: int, pipeline_id: int, stag
     payload: dict = {'title': title, 'person_id': person_id, 'pipeline_id': pipeline_id, 'stage_id': stage_id}
     if value:
         payload['value'] = value
-    return _req(api_key, 'POST', f'{V2_URL}/deals', json=payload)['data']
+    deal = _req(api_key, 'POST', f'{V2_URL}/deals', json=payload)['data']
+    mark_own_change(deal['id'])
+    return deal
 
 
 def update_deal(
@@ -88,6 +105,7 @@ def update_deal(
         payload['stage_id'] = stage_id
     if status:
         payload['status'] = status
+    mark_own_change(deal_id)
     return _req(api_key, 'PATCH', f'{V2_URL}/deals/{deal_id}', json=payload)['data']
 
 

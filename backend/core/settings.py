@@ -159,6 +159,8 @@ EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
 
 # Redis
 REDIS_URL = config('REDIS_URL', default='redis://localhost:6379/0')
+# compartilhado entre api e worker (o padrão em memória é por processo)
+CACHES = {'default': {'BACKEND': 'django.core.cache.backends.redis.RedisCache', 'LOCATION': REDIS_URL}}
 
 # Storages
 
