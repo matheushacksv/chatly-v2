@@ -3242,6 +3242,20 @@ class CampaignFirstNameEndToEndTests(BaseChatsTestCase):
         self.assertEqual((campaign.sent, campaign.failed, campaign.status), (2, 0, 'done'))
 
 
+class FirstNameVariableTests(BaseChatsTestCase):
+    def test_first_name_always_filled(self):
+        cases = [
+            ('Henrique Teste', {}, 'Henrique'),
+            ('Ana', {}, 'Ana'),
+            ('🌸 Maria Clara', {}, 'Maria'),
+            ('Hélcio Santos', {'first_name': 'Helcinho'}, 'Helcinho'),  # valor gravado (CSV) tem prioridade
+            ('', {}, '5511900000000'),
+        ]
+        for name, fields, expected in cases:
+            contact = Contact(account=self.account, wa_id='5511900000000', name=name, custom_fields=fields)
+            self.assertEqual(services.contact_variables(contact)['first_name'], expected, name)
+
+
 class DeleteCampaignTests(BaseChatsTestCase):
     url = CampaignTests.url
     campaign_payload = CampaignTests.campaign_payload

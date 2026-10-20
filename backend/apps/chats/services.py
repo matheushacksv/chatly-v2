@@ -351,8 +351,16 @@ def delete_contact_field(company: Company, field_id: int) -> None:
 
 
 def contact_variables(contact: Contact) -> dict[str, str]:
-    """Valores das variáveis {{...}} de um contato: nome, telefone e os campos personalizados."""
-    return {**contact.custom_fields, 'nome': contact.name or contact.wa_id, 'telefone': contact.wa_id}
+    """Valores das variáveis {{...}} de um contato: nome, primeiro nome, telefone e os campos personalizados.
+    first_name nunca fica vazio: o valor gravado (campo first_name do CSV), senão a primeira palavra do nome
+    que tenha letra (pula emoji), senão o número."""
+    first = next((w for w in (contact.name or '').split() if any(c.isalpha() for c in w)), '')
+    return {
+        **contact.custom_fields,
+        'nome': contact.name or contact.wa_id,
+        'first_name': contact.custom_fields.get('first_name') or first or contact.wa_id,
+        'telefone': contact.wa_id,
+    }
 
 
 def _publish_contact(contact: Contact) -> None:
@@ -745,7 +753,7 @@ def create_campaign(
         raise ValidationError('esse template exige um arquivo no cabeçalho, envie antes de criar a campanha')
 
     header_media_type = header_format.lower() if header_media_id else ''
-    known = {'nome', 'telefone', *_field_keys(company)}
+    known = {'nome', 'first_name', 'telefone', *_field_keys(company)}
     if unknown := {v for p in body_params for v in VAR_RE.findall(p)} - known:
         raise ValidationError(f'variável desconhecida: {", ".join("{{" + v + "}}" for v in sorted(unknown))}')
 

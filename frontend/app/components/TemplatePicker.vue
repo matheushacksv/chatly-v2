@@ -52,8 +52,8 @@ const variableItems = (index: number) => [
       params.value[index] = current ? `${current} {{${v.key}}}` : `{{${v.key}}}`
     }
   })),
-  // só nome e telefone: diz de onde vêm os campos personalizados
-  ...(variables.value.length <= 2 ? [{ label: 'Campos personalizados: crie em Contatos > Campos ou ao mapear o CSV', disabled: true, class: 'whitespace-normal max-w-60' }] : [])
+  // só os do sistema: diz de onde vêm os campos personalizados
+  ...(variables.value.length <= 3 ? [{ label: 'Campos personalizados: crie em Contatos > Campos ou ao mapear o CSV', disabled: true, class: 'whitespace-normal max-w-60' }] : [])
 ]
 
 // preview ao vivo: variáveis preenchidas substituem os {{n}} do corpo
