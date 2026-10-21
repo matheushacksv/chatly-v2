@@ -10,7 +10,7 @@ from django.utils import timezone
 from ninja import UploadedFile
 from pypdf import PdfReader
 
-from apps.agents.models import Agent, AgentTool, Credential, Document
+from apps.agents.models import Agent, AgentFile, AgentTool, Credential, Document
 from apps.companies import plans
 from apps.companies.models import Company
 from core.exceptions import Conflict, NotFound, ValidationError
@@ -329,3 +329,27 @@ def run_agent_tool(tool: AgentTool, arguments: dict, variables: dict[str, str]) 
     except Exception as exc:  # URL recusada, timeout, DNS
         return False, f'Falha ao chamar: {exc}'
     return 200 <= status < 300, f'HTTP {status}\n{text}'
+
+
+# * ----- arquivos que a IA envia -----
+
+
+def list_agent_files(company: Company, agent_id: int) -> QuerySet[AgentFile]:
+    return AgentFile.objects.filter(agent=get_agent(company, agent_id)).order_by('name')
+
+
+def create_agent_file(company: Company, agent_id: int, file: UploadedFile, name: str, description: str = '') -> AgentFile:
+    from apps.chats.services import media_kind
+
+    agent = get_agent(company, agent_id)
+    name = name.strip() or file.name
+    media_kind(file.content_type, file.size)  # mesmo limite do WhatsApp: falha aqui, não na hora da IA mandar
+    if AgentFile.objects.filter(agent=agent, name=name).exists():
+        raise Conflict('já existe um arquivo com esse nome')
+    return AgentFile.objects.create(agent=agent, name=name, description=description.strip(), file=file, content_type=file.content_type)
+
+
+def delete_agent_file(company: Company, agent_id: int, file_id: int) -> None:
+    deleted, _ = AgentFile.objects.filter(agent=get_agent(company, agent_id), pk=file_id).delete()
+    if not deleted:
+        raise NotFound('file not found')

@@ -4683,3 +4683,53 @@ class PlanGateTests(BaseChatsTestCase):
         with override_settings(BILLING_ENABLED=False):
             self.assertTrue(plans.is_active(self.company))
             plans.require_feature(self.company, 'campaigns')
+
+
+@override_settings(**LOCAL_STORAGE_SETTINGS)
+@patch('apps.chats.services.events.publish')
+class SendFileToolTests(BaseChatsTestCase):
+    def setUp(self):
+        super().setUp()
+        from apps.agents.models import AgentFile
+
+        Agent.objects.filter(pk=self.agent.pk).update(native_tools=['send_file'])
+        AgentFile.objects.create(
+            agent=self.agent, name='Catálogo', description='quando pedir os planos',
+            file=SimpleUploadedFile('catalogo.pdf', b'%PDF-1.4', content_type='application/pdf'), content_type='application/pdf',
+        )
+
+    def tool(self):
+        from apps.chats import ai_tools
+
+        self.contact.refresh_from_db()
+        tools, _ = ai_tools.build_tools(self.contact)
+        return next(t for t in tools if getattr(t, 'name', '') == 'enviar_arquivo')
+
+    @patch('apps.chats.whatsapp.send_media', return_value='wamid.arquivo')
+    @patch('apps.chats.whatsapp.upload_media', return_value='media-1')
+    def test_sends_file_and_records_message(self, mock_upload, mock_send, mock_pub):
+        tool = self.tool()
+        self.assertIn('Catálogo (quando pedir os planos)', tool.description)
+        self.assertIn('enviado', tool.entrypoint(arquivo='Catálogo', legenda='Segue'))
+        self.assertEqual(mock_upload.call_args.args[1:], (b'%PDF-1.4', 'application/pdf', 'catalogo.pdf'))
+        mock_send.assert_called_once_with(self.account, self.contact.wa_id, 'document', 'media-1', 'Segue', 'catalogo.pdf')
+        msg = Message.objects.get(wa_message_id='wamid.arquivo')
+        self.assertEqual((msg.message_type, msg.from_human, msg.content), ('document', False, 'Segue'))
+        self.assertTrue(msg.media_file.name.endswith('catalogo.pdf'))
+
+    @patch('apps.chats.whatsapp.upload_media', side_effect=httpx.ConnectError('fora'))
+    def test_unknown_name_or_failure_reported_to_ai(self, mock_upload, mock_pub):
+        tool = self.tool()
+        self.assertIn('inexistente', tool.entrypoint(arquivo='Outro'))
+        self.assertIn('Falha', tool.entrypoint(arquivo='Catálogo'))
+        self.assertFalse(ToolCall.objects.filter(ok=True).exists())
+
+    def test_upload_endpoint_validates(self, mock_pub):
+        url = f'/api/companies/{self.company.pk}/agents/{self.agent.pk}/files'
+        ok = self.client.post(url, {'file': SimpleUploadedFile('foto.png', b'png', content_type='image/png'), 'name': 'Foto'}, headers=self.auth)
+        self.assertEqual(ok.status_code, 201)
+        dup = self.client.post(url, {'file': SimpleUploadedFile('f.png', b'png', content_type='image/png'), 'name': 'Foto'}, headers=self.auth)
+        self.assertEqual(dup.status_code, 409)
+        bad = self.client.post(url, {'file': SimpleUploadedFile('f.gif', b'gif', content_type='image/gif'), 'name': 'Gif'}, headers=self.auth)
+        self.assertEqual(bad.status_code, 400)
+        self.assertEqual([f['name'] for f in self.client.get(url, headers=self.auth).json()], ['Catálogo', 'Foto'])

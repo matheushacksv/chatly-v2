@@ -437,20 +437,40 @@ def send_manual_message(company: Company, contact_id: int, content: str, user=No
     return record_outgoing_message(contact, wamid, content, from_human=True)
 
 
-def send_manual_media(company: Company, contact_id: int, file, caption: str = '', user=None) -> Message:
-    contact = get_contact(company, contact_id)
-    check_service_window(contact)
-    kind = file.content_type.split('/')[0]
-    if file.content_type == 'image/webp':
+def media_kind(content_type: str, size: int) -> str:
+    """Tipo de mídia do WhatsApp pro arquivo; ValidationError se o formato ou o tamanho não passam."""
+    kind = content_type.split('/')[0]
+    if content_type == 'image/webp':
         kind = 'sticker'
     elif kind not in ('image', 'audio', 'video'):
         kind = 'document'
     allowed_mimes, max_size = MEDIA_SPECS[kind]
-    if allowed_mimes is not None and file.content_type not in allowed_mimes:
-        raise ValidationError(f'unsupported {kind} type: {file.content_type}')
-    if file.size > max_size:
+    if allowed_mimes is not None and content_type not in allowed_mimes:
+        raise ValidationError(f'unsupported {kind} type: {content_type}')
+    if size > max_size:
         limit = f'{max_size // 2**20}MB' if max_size >= 2**20 else f'{max_size // 2**10}KB'
         raise ValidationError(f'{kind} exceeds {limit} limit')
+    return kind
+
+
+def send_agent_file(contact: Contact, agent_file, caption: str = '') -> Message:
+    """IA manda um arquivo do agente na conversa. Sobe de novo a cada envio (media_id da Meta expira)."""
+    f = agent_file.file
+    kind = media_kind(agent_file.content_type, f.size)
+    filename = f.name.rsplit('/', 1)[-1]
+    with f.open('rb') as fh:
+        content_bytes = fh.read()
+    media_id = whatsapp.upload_media(contact.account, content_bytes, agent_file.content_type, filename)
+    wamid = whatsapp.send_media(contact.account, contact.wa_id, kind, media_id, caption, filename)
+    content = caption or PLACEHOLDERS.get(kind) or f'[documento: {filename}]'
+    # mesmo arquivo no storage: a mensagem aponta pro arquivo do agente, sem copiar
+    return record_outgoing_message(contact, wamid, content, message_type=kind, media_file=f.name)
+
+
+def send_manual_media(company: Company, contact_id: int, file, caption: str = '', user=None) -> Message:
+    contact = get_contact(company, contact_id)
+    check_service_window(contact)
+    kind = media_kind(file.content_type, file.size)
     content_bytes = file.read()
     try:
         media_id = whatsapp.upload_media(contact.account, content_bytes, file.content_type, file.name)

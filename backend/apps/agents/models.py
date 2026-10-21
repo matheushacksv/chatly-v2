@@ -1,3 +1,5 @@
+from uuid import uuid4
+
 from django.contrib.postgres.fields import ArrayField
 from django.db import models
 from pgvector.django import VectorField
@@ -27,7 +29,7 @@ def all_days() -> list[int]:  # usado só pela migration 0007
 
 
 # ferramentas embutidas que o dono liga/desliga por agente (apps/chats/ai_tools.py)
-NATIVE_TOOLS = ('handoff', 'followup', 'save_field', 'tag', 'pipedrive')
+NATIVE_TOOLS = ('handoff', 'followup', 'save_field', 'tag', 'pipedrive', 'send_file')
 
 
 def default_native_tools() -> list[str]:
@@ -95,3 +97,21 @@ class DocumentChunk(models.Model):
     document = models.ForeignKey(Document, on_delete=models.CASCADE, related_name='chunks')
     content = models.TextField()
     embedding = VectorField(dimensions=1536)
+
+
+def agent_file_path(instance, filename):
+    return f'agent_files/{uuid4().hex}/{filename}'
+
+
+class AgentFile(models.Model):
+    """Arquivo que a IA pode mandar na conversa (ferramenta nativa send_file): catálogo, tabela de preços, vídeo..."""
+
+    agent = models.ForeignKey(Agent, on_delete=models.CASCADE, related_name='files')
+    name = models.CharField(max_length=100)  # o que a IA escolhe na ferramenta
+    description = models.CharField(max_length=500, blank=True, default='')  # quando mandar
+    file = models.FileField(upload_to=agent_file_path)
+    content_type = models.CharField(max_length=100)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['agent', 'name'], name='unique_file_name_per_agent')]

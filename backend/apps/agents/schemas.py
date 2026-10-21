@@ -5,9 +5,9 @@ from ninja import Field, ModelSchema, Schema
 
 import json
 
-from apps.agents.models import Agent, AgentTool, Credential, Document
+from apps.agents.models import Agent, AgentFile, AgentTool, Credential, Document
 
-NativeTool = Literal['handoff', 'followup', 'save_field', 'tag', 'pipedrive']
+NativeTool = Literal['handoff', 'followup', 'save_field', 'tag', 'pipedrive', 'send_file']
 # 7 dias (0 = segunda), cada um com suas faixas [início, fim]
 AiSchedule = Annotated[list[list[tuple[time, time]]], Field(min_length=7, max_length=7)]
 
@@ -66,6 +66,18 @@ class DocumentOutDTO(ModelSchema):
     class Meta:
         model = Document
         fields = ['id', 'name', 'status', 'created_at']
+
+
+class AgentFileOutDTO(ModelSchema):
+    url: str
+
+    class Meta:
+        model = AgentFile
+        fields = ['id', 'name', 'description', 'content_type', 'created_at']
+
+    @staticmethod
+    def resolve_url(obj) -> str:
+        return obj.file.url
 
 
 class ToolParamDTO(Schema):

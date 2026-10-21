@@ -137,6 +137,40 @@ def build_tools(contact: Contact, agent=None) -> tuple[list, dict]:
     if 'pipedrive' in enabled:
         tools += _pipedrive_tools(contact, company_id)
 
+    files = {f.name: f for f in agent.files.all()} if 'send_file' in enabled and agent.pk else {}
+    if files:
+
+        def enviar_arquivo(arquivo: str, legenda: str = '') -> str:
+            args = {'arquivo': arquivo, 'legenda': legenda}
+            agent_file = files.get(arquivo)
+            if agent_file is None:
+                return _log(contact, 'enviar_arquivo', args, f'Arquivo inexistente. Use um destes: {", ".join(files)}', ok=False)
+            try:
+                services.send_agent_file(contact, agent_file, legenda.strip())
+            except Exception as exc:  # Meta recusou, storage fora: a IA avisa o cliente em vez de fingir que mandou
+                return _log(contact, 'enviar_arquivo', args, f'Falha ao enviar o arquivo: {exc}', ok=False)
+            return _log(contact, 'enviar_arquivo', args, f'Arquivo {arquivo} enviado ao cliente')
+
+        catalog = '; '.join(f'{name} ({f.description})' if f.description else name for name, f in files.items())
+        tools.append(Function(
+            name='enviar_arquivo',
+            description=(
+                'Envia ao cliente, na conversa, um arquivo pronto (PDF, imagem, vídeo...). O arquivo chega antes da sua resposta em texto, '
+                'então não diga que vai mandar depois. Não envie o mesmo arquivo de novo se ele já recebeu. '
+                f'Arquivos disponíveis: {catalog}.'
+            ),
+            parameters={
+                'type': 'object',
+                'properties': {
+                    'arquivo': {'type': 'string', 'enum': list(files), 'description': 'Nome do arquivo'},
+                    'legenda': {'type': 'string', 'description': 'Texto curto junto do arquivo (opcional)'},
+                },
+                'required': ['arquivo'],
+            },
+            entrypoint=enviar_arquivo,
+            skip_entrypoint_processing=True,
+        ))
+
     variables = services.contact_variables(contact)
     for tool in agent.tools.filter(active=True):
         tools.append(_custom_tool(contact, tool, variables))

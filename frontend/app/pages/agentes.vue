@@ -139,7 +139,8 @@ const NATIVE_TOOL_NAMES: Record<NativeTool, string[]> = {
   followup: ['agendar_retomada'],
   save_field: ['salvar_dado_contato'],
   tag: ['etiquetar_contato'],
-  pipedrive: ['criar_negocio', 'anotar_crm']
+  pipedrive: ['criar_negocio', 'anotar_crm'],
+  send_file: ['enviar_arquivo']
 }
 const promptInput = useTemplateRef<{ textareaRef: HTMLTextAreaElement | null }>('promptInput')
 
@@ -270,7 +271,8 @@ const NATIVE_TOOL_ITEMS: { label: string, description: string, value: NativeTool
   { label: 'Agendar retomada', description: 'Programa uma mensagem pra data combinada ("me chama segunda")', value: 'followup' },
   { label: 'Salvar dado do contato', description: 'Preenche os campos personalizados com o que o cliente informou', value: 'save_field' },
   { label: 'Etiquetar contato', description: 'Adiciona ou remove etiquetas existentes', value: 'tag' },
-  { label: 'Pipedrive', description: 'Cria negócio e anota no CRM (precisa do Pipedrive conectado)', value: 'pipedrive' }
+  { label: 'Pipedrive', description: 'Cria negócio e anota no CRM (precisa do Pipedrive conectado)', value: 'pipedrive' },
+  { label: 'Enviar arquivo', description: 'Manda na conversa os arquivos cadastrados abaixo (PDF, imagem, vídeo...)', value: 'send_file' }
 ]
 
 const modelItems = computed(() => {
@@ -695,6 +697,21 @@ const statusBadge: Record<AgentDocument['status'], { label: string, color: 'warn
               <UFormField name="native_tools" label="Ferramentas nativas">
                 <UCheckboxGroup v-model="state.native_tools" :items="NATIVE_TOOL_ITEMS" />
               </UFormField>
+              <div v-if="state.native_tools.includes('send_file')">
+                <p class="text-sm font-medium mb-2 flex items-center gap-1.5">
+                  Arquivos para enviar
+                  <AppTip text="A IA escolhe o arquivo pelo nome e pela descrição. PDF e documentos até 100MB, imagem JPG/PNG até 5MB, vídeo MP4 até 16MB" />
+                </p>
+                <AgentFilesPanel
+                  v-if="editing && companyId"
+                  :company-id="companyId"
+                  :agent-id="editing.id"
+                  :is-owner="isOwner"
+                />
+                <p v-else class="text-sm text-muted">
+                  Crie o agente primeiro; depois os arquivos aparecem aqui.
+                </p>
+              </div>
               <div>
                 <p class="text-sm font-medium mb-2 flex items-center gap-1.5">
                   Ferramentas personalizadas

@@ -214,7 +214,16 @@ export interface Agent {
   created_at: string
 }
 
-export type NativeTool = 'handoff' | 'followup' | 'save_field' | 'tag' | 'pipedrive'
+export type NativeTool = 'handoff' | 'followup' | 'save_field' | 'tag' | 'pipedrive' | 'send_file'
+
+export interface AgentFile {
+  id: number
+  name: string
+  description: string
+  content_type: string
+  url: string
+  created_at: string
+}
 
 export interface AgentToolParam {
   name: string
