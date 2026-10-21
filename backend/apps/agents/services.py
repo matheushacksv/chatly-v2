@@ -11,6 +11,7 @@ from ninja import UploadedFile
 from pypdf import PdfReader
 
 from apps.agents.models import Agent, AgentTool, Credential, Document
+from apps.companies import plans
 from apps.companies.models import Company
 from core.exceptions import Conflict, NotFound, ValidationError
 
@@ -101,6 +102,7 @@ def create_agent(
     ai_schedule: list | None = None,
     native_tools: list[str] | None = None,
 ) -> Agent:
+    plans.require_room(company, 'agents', company.agents.count())
     credential = get_credential(company, credential_id)
     agent = Agent(
         company=company,

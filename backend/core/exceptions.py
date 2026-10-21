@@ -43,3 +43,9 @@ class GatewayError(DomainError):
 
     status_code = 502
     default_message = 'WhatsApp gateway request failed'
+
+class PaymentRequired(DomainError):
+    """Plano expirado ou recurso fora do plano da empresa."""
+
+    status_code = 402
+    default_message = 'Payment required'

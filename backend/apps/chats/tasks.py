@@ -9,12 +9,13 @@ from apps import ai
 from apps.agents import services as agents_services
 from apps.chats import ai_tools, events, services, whatsapp
 from apps.chats.models import Campaign, Contact, ContactField, FollowUp, Message
+from apps.companies import plans
 from core.exceptions import ValidationError
 
 
 @shared_task(bind=True, max_retries=3)
 def process_incoming_message(self, message_id: int, deferred: bool = False, pending: list[str] | None = None, handed_off: bool = False):
-    message = Message.objects.select_related('contact__account__agent__credential').filter(pk=message_id).first()
+    message = Message.objects.select_related('contact__account__agent__credential', 'contact__account__company').filter(pk=message_id).first()
     if message is None:
         return
     contact = message.contact
@@ -36,6 +37,8 @@ def process_incoming_message(self, message_id: int, deferred: bool = False, pend
         if not deferred and flow_services.dispatch_incoming(message):
             return
 
+        if not plans.is_active(account.company):
+            return  # plano vencido: a mensagem fica gravada, mas a IA não responde
         if contact.ai_paused and contact.ai_resume_at and contact.ai_resume_at <= timezone.now():
             services.resume_ai(contact)
         if contact.ai_paused:
@@ -119,8 +122,11 @@ def _memory_with_fields(contact: Contact) -> str:
 
 @shared_task
 def run_campaign(campaign_id: int, contact_ids: list[int]):
-    campaign = Campaign.objects.select_related('account').filter(pk=campaign_id).first()
+    campaign = Campaign.objects.select_related('account__company').filter(pk=campaign_id).first()
     if campaign is None:
+        return
+    if not plans.allows(campaign.account.company, 'campaigns'):  # agendada antes de o plano vencer
+        Campaign.objects.filter(pk=campaign_id).update(status='failed')
         return
     try:
         body, _ = services.get_template_send_info(campaign.account, campaign.template_name, campaign.template_language)
@@ -163,12 +169,15 @@ def dispatch_scheduled_campaigns():
 @shared_task
 def dispatch_followups():
     """Beat, a cada minuto: envia as retomadas agendadas pela IA. Atendente no controle (IA pausada) cancela."""
-    due = FollowUp.objects.filter(status=FollowUp.Status.PENDING, send_at__lte=timezone.now()).select_related('contact__account')
+    due = FollowUp.objects.filter(status=FollowUp.Status.PENDING, send_at__lte=timezone.now()).select_related('contact__account__company')
     for followup in due:
         # update condicional: dois beats (ou um retry) não mandam a mesma retomada duas vezes
         if not FollowUp.objects.filter(pk=followup.pk, status=FollowUp.Status.PENDING).update(status=FollowUp.Status.SENT):
             continue
         contact = followup.contact
+        if not plans.is_active(contact.account.company):
+            FollowUp.objects.filter(pk=followup.pk).update(status=FollowUp.Status.CANCELED, error='plano expirado')
+            continue
         if contact.ai_paused:
             FollowUp.objects.filter(pk=followup.pk).update(status=FollowUp.Status.CANCELED, error='atendente assumiu a conversa')
             continue

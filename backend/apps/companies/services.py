@@ -1,15 +1,19 @@
 from datetime import timedelta
 
+from django.conf import settings
 from django.db.models import Case, CharField, Q, QuerySet, Value, When
 from django.utils import timezone
 
 from apps.accounts.models import User
+from apps.companies import plans
 from apps.companies.models import Company, Invite, Membership
 from core.exceptions import NotFound
 
 
 def create_company(name: str, owner: User) -> Company:
-    return Company.objects.create(name=name, owner=owner)
+    if not settings.BILLING_ENABLED:
+        return Company.objects.create(name=name, owner=owner)
+    return Company.objects.create(name=name, owner=owner, plan='trial', plan_until=timezone.now() + timedelta(days=settings.TRIAL_DAYS))
 
 
 def get_company(user: User, company_id: int) -> Company:
@@ -62,7 +66,9 @@ def remove_member(user: User, company_id: int, member_id: int) -> None:
 
 
 def create_invite(user: User, company_id: int) -> Invite:
-    return Invite.objects.create(company=get_owned_company(user, company_id))
+    company = get_owned_company(user, company_id)
+    plans.require_room(company, 'members', company.memberships.count() + 1)
+    return Invite.objects.create(company=company)
 
 
 def list_invites(user: User, company_id: int) -> QuerySet[Invite]:
@@ -80,7 +86,8 @@ def accept_invite(user: User, token: str) -> Company:
     if invite is None:
         raise NotFound('invite not found')
     company = invite.company
-    if company.owner != user:
+    if company.owner != user and not company.memberships.filter(user=user).exists():
+        plans.require_room(company, 'members', company.memberships.count() + 1)
         Membership.objects.get_or_create(company=company, user=user)
     invite.delete()
     return company

@@ -23,9 +23,10 @@ from django.core.files.base import ContentFile
 from apps.accounts.models import User
 from apps.agents.models import Agent, Credential, Document, DocumentChunk
 from apps.chats.models import Campaign, Contact, ContactField, FollowUp, Message, ToolCall, Sticker, Tag, TemplateHeaderMedia, WhatsAppAccount
+from apps.companies import plans
 from apps.companies.models import Company, Membership
 from apps.crm.models import PipedriveAccount
-from core.exceptions import NotFound, PipedriveError, ValidationError
+from core.exceptions import NotFound, PaymentRequired, PipedriveError, ValidationError
 from apps.testing import auth_header
 
 SP = ZoneInfo('America/Sao_Paulo')
@@ -4646,3 +4647,39 @@ class QuickReplyTests(BaseChatsTestCase):
         foreign = QuickReply.objects.create(company=self.other_company, shortcut='x', text='x')
         self.assertEqual(self.client.delete(self.url(foreign.pk), headers=self.auth).status_code, 404)
         self.assertEqual(self.client.get(self.url(company_id=self.other_company.pk), headers=self.auth).status_code, 404)
+
+
+@override_settings(BILLING_ENABLED=True)
+class PlanGateTests(BaseChatsTestCase):
+    def expire(self):
+        Company.objects.filter(pk=self.company.pk).update(plan='pro', plan_until=timezone.now() - timedelta(minutes=1))
+
+    @patch('apps.ai.generate_reply')
+    def test_expired_plan_keeps_message_but_ai_stays_quiet(self, mock_generate):
+        self.expire()
+        incoming = Message.objects.create(contact=self.contact, direction='in', content='Oi?', wa_message_id='wamid.vencido')
+
+        tasks.process_incoming_message(incoming.pk)
+
+        mock_generate.assert_not_called()
+
+    def test_starter_blocks_second_number_and_campaigns(self):
+        Company.objects.filter(pk=self.company.pk).update(plan='starter')
+        payload = {
+            'agent_id': self.agent.pk, 'phone_number_id': '222', 'waba_id': 'w2', 'access_token': 't',
+            'app_secret': 's', 'verify_token': 'v2',
+        }
+        response = self.client.post(
+            f'/api/companies/{self.company.pk}/whatsapp-accounts', data=payload, content_type='application/json', headers=self.auth
+        )
+        self.assertEqual(response.status_code, 402)
+        self.company.refresh_from_db()
+        with self.assertRaises(PaymentRequired):
+            services.create_campaign(self.company, self.account.pk, 'c', 'tpl', 'pt_BR', [], contact_ids=[self.contact.pk])
+
+    def test_billing_off_lets_everything_through(self):
+        self.expire()
+        self.company.refresh_from_db()
+        with override_settings(BILLING_ENABLED=False):
+            self.assertTrue(plans.is_active(self.company))
+            plans.require_feature(self.company, 'campaigns')

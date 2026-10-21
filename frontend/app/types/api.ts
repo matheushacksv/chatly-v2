@@ -14,6 +14,9 @@ export interface Company {
   id: number
   name: string
   role?: 'owner' | 'member' | null
+  plan: 'trial' | 'starter' | 'pro' | 'business'
+  plan_until: string | null
+  plan_active: boolean
 }
 
 export interface Member {

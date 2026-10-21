@@ -2,7 +2,7 @@
 import type { NavigationMenuItem } from '@nuxt/ui'
 
 const { user, logout } = useAuth()
-const { companies, activeId, load, setActive, isOwner } = useCompany()
+const { companies, active, activeId, load, setActive, isOwner } = useCompany()
 const { connect } = useEventStream()
 const { lastEvent, openContact } = useChatEvents()
 const toast = useToast()
@@ -102,6 +102,18 @@ const nav = computed<NavigationMenuItem[]>(() => [
     : [])
 ])
 
+// teste grátis acabando ou plano vencido (sem cobrança ligada, a empresa vem como business sem vencimento)
+const planNotice = computed(() => {
+  const company = active.value
+  if (!company?.plan_until) return null
+  if (!company.plan_active) {
+    return { color: 'error' as const, title: 'Plano expirado', description: 'A IA, campanhas e automações estão pausadas. Fale com a gente para assinar.' }
+  }
+  if (company.plan !== 'trial') return null
+  const days = Math.max(1, Math.ceil((new Date(company.plan_until).getTime() - Date.now()) / 86_400_000))
+  return { color: 'primary' as const, title: `Teste grátis: ${days} ${days === 1 ? 'dia' : 'dias'}`, description: 'Fale com a gente para assinar.' }
+})
+
 const companyItems = computed(() =>
   companies.value.map(c => ({ label: c.name, value: c.id }))
 )
@@ -167,6 +179,15 @@ const userMenuItems = computed(() => [
           :items="nav"
           orientation="vertical"
           :ui="{ link: collapsed ? 'justify-center' : undefined }"
+        />
+        <UAlert
+          v-if="planNotice && !collapsed"
+          :color="planNotice.color"
+          variant="subtle"
+          icon="i-lucide-sparkles"
+          :title="planNotice.title"
+          :description="planNotice.description"
+          class="mt-auto"
         />
       </template>
 

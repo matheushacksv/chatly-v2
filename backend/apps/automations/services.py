@@ -11,6 +11,7 @@ from apps.chats import events, whatsapp
 from apps.chats import services as chat_services
 from apps.chats.models import Contact, Message
 from apps.chats.services import get_account
+from apps.companies import plans
 from apps.companies.models import Company
 from core.exceptions import NotFound, ValidationError
 
@@ -301,6 +302,7 @@ def _validate_trigger(trigger: str) -> None:
 
 
 def create_flow(company: Company, data: dict) -> Flow:
+    plans.require_feature(company, 'automations')
     _validate_trigger(data['trigger'])
     account = get_account(company, data['account_id'])
     flow = Flow.objects.create(
@@ -333,6 +335,7 @@ def delete_flow(company: Company, flow_id: int) -> None:
 def set_active(company: Company, flow_id: int, active: bool) -> Flow:
     flow = get_flow(company, flow_id)
     if active:
+        plans.require_feature(company, 'automations')
         validate_graph(flow)
     flow.active = active
     flow.save(update_fields=['active', 'updated_at'])
@@ -393,7 +396,7 @@ def create_lead(source: LeadSource, payload: dict) -> tuple[Contact, bool, list[
     ctx = {'origem': payload.get('origem', ''), 'email': payload.get('email', ''), **(payload.get('extras') or {})}
     _note_lead(contact, source, ctx)
     flow = Flow.objects.filter(account=source.account, trigger=Flow.Trigger.LEAD, active=True).order_by('-id').first()
-    if not flow:
+    if not flow or not plans.allows(source.company, 'automations'):
         return contact, False, ignored
     start_flow(flow, contact, ctx)
     return contact, True, ignored
@@ -427,6 +430,8 @@ def _dispatch_campaign_click(message: Message) -> bool:
 
 
 def dispatch_incoming(message: Message) -> bool:
+    if not plans.allows(message.contact.account.company, 'automations'):
+        return False  # fora do plano: fluxos param e a mensagem segue pro caminho normal
     if _dispatch_campaign_click(message):
         return True
     contact = message.contact
@@ -466,6 +471,8 @@ def _pipedrive_match(cfg: dict, action: str, deal: dict, previous: dict | None) 
 
 
 def dispatch_pipedrive_event(contact: Contact, action: str, deal: dict, previous: dict | None) -> None:
+    if not plans.allows(contact.account.company, 'automations'):
+        return
     flows = Flow.objects.filter(
         company=contact.account.company,
         account=contact.account,
@@ -517,8 +524,8 @@ def receive_lead(token: str, payload: dict) -> tuple[Contact, bool, list[str]]:
 
 
 def resume(run_id: int) -> None:
-    run = FlowRun.objects.filter(pk=run_id, status=FlowRun.Status.WAITING).select_related('flow').first()
-    if run is None:
+    run = FlowRun.objects.filter(pk=run_id, status=FlowRun.Status.WAITING).select_related('flow__company').first()
+    if run is None or not plans.allows(run.flow.company, 'automations'):
         return
     node = _node(run.flow.graph, run.node_id)
     if node is None:

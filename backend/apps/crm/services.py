@@ -13,6 +13,7 @@ from apps.agents.services import next_ai_opening
 from apps.chats.services import (
     _field_keys, _merge_import_fields, find_contact, get_template_send_info, normalize_number, send_template_message,
 )
+from apps.companies import plans
 from apps.crm import pipedrive
 from apps.crm.models import DealOpening, PipedriveAccount
 from core.exceptions import DomainError, NotFound, PipedriveError, ValidationError
@@ -185,6 +186,8 @@ def _auto_open(pd: PipedriveAccount, contact: Contact, action: str, deal: dict, 
 
 
 def _send_template(pd: PipedriveAccount, contact: Contact, template: dict, deal_id: int) -> bool:
+    if not plans.is_active(pd.company):
+        return False  # plano vencido: abertura automática e follow-up param
     try:
         send_template_message(
             pd.company, contact.pk, template['template_name'], template.get('language', ''),

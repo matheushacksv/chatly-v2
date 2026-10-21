@@ -15,6 +15,7 @@ from django.utils.text import slugify
 from apps.agents.services import get_agent
 from apps.chats import events, whatsapp
 from apps.chats.models import Campaign, Contact, ContactField, FollowUp, Message, QuickReply, ToolCall, Sticker, Tag, TemplateHeaderMedia, WhatsAppAccount
+from apps.companies import plans
 from apps.companies.models import Company, Membership
 from core.exceptions import Conflict, NotFound, ValidationError
 
@@ -136,6 +137,7 @@ def _map_template_detail(account: WhatsAppAccount, template: dict) -> dict:
 def create_account(
     company: Company, agent_id: int, phone_number_id: str, waba_id: str, access_token: str, app_secret: str, verify_token: str, app_id: str = ''
 ) -> WhatsAppAccount:
+    plans.require_room(company, 'wa_accounts', company.whatsapp_accounts.count())
     agent = get_agent(company, agent_id)
     try:
         whatsapp = WhatsAppAccount.objects.create(
@@ -732,6 +734,7 @@ def create_campaign(
     from apps.automations.models import Flow
     from apps.chats.tasks import run_campaign
 
+    plans.require_feature(company, 'campaigns')
     account = get_account(company, account_id)
     if scheduled_at and timezone.is_naive(scheduled_at):
         scheduled_at = timezone.make_aware(scheduled_at)  # sem fuso = horário de Brasília (TIME_ZONE)

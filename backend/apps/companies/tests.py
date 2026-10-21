@@ -1,6 +1,6 @@
 from datetime import timedelta
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from apps.accounts.models import User
@@ -303,3 +303,34 @@ class InviteTests(TestCase):
         response = self.client.delete(f'{self.invites_url}/{invite.pk}', headers=self.member_auth)
         self.assertEqual(response.status_code, 404)
         self.assertTrue(Invite.objects.filter(pk=invite.pk).exists())
+
+
+@override_settings(BILLING_ENABLED=True, TRIAL_DAYS=14)
+class PlanTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user(email='owner@a.com', password='strongpass123')
+        cls.other = User.objects.create_user(email='other@a.com', password='strongpass123')
+
+    def test_new_company_starts_trial(self):
+        response = self.client.post('/api/companies/', data={'name': 'Nova'}, content_type='application/json', headers=auth_header(self.user))
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()['plan'], 'trial')
+        self.assertTrue(response.json()['plan_active'])
+        company = Company.objects.get(name='Nova')
+        self.assertAlmostEqual(company.plan_until, timezone.now() + timedelta(days=14), delta=timedelta(minutes=1))
+
+    def test_starter_is_owner_only(self):
+        company = Company.objects.create(name='S', owner=self.user, plan='starter')
+        response = self.client.post(f'/api/companies/{company.pk}/invites', headers=auth_header(self.user))
+        self.assertEqual(response.status_code, 402)
+        invite = Invite.objects.create(company=company)  # convite de antes do downgrade
+        response = self.client.post(f'/api/companies/invites/{invite.token}/accept', headers=auth_header(self.other))
+        self.assertEqual(response.status_code, 402)
+        self.assertFalse(Membership.objects.filter(company=company).exists())
+
+    def test_expired_blocks_creation(self):
+        company = Company.objects.create(name='V', owner=self.user, plan='business', plan_until=timezone.now() - timedelta(days=1))
+        response = self.client.post(f'/api/companies/{company.pk}/invites', headers=auth_header(self.user))
+        self.assertEqual(response.status_code, 402)
+        self.assertIn('expirou', response.json()['detail'])

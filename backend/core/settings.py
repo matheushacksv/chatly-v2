@@ -217,3 +217,7 @@ OPENWA_WEBHOOK_SECRET = config('OPENWA_WEBHOOK_SECRET')
 OPENWA_WEBHOOK_URL = config('OPENWA_WEBHOOK_URL')
 # sufixo de JID do engine: baileys usa @s.whatsapp.net, whatsapp-web.js usa @c.us
 OPENWA_JID_SUFFIX = config('OPENWA_JID_SUFFIX', default='@s.whatsapp.net')
+
+# cobrança por plano; desligada por padrão (servidor do cliente fica de fora), liga só no chatly
+BILLING_ENABLED = config('BILLING_ENABLED', default=False, cast=bool)
+TRIAL_DAYS = config('TRIAL_DAYS', default=14, cast=int)
