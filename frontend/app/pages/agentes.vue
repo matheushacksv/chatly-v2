@@ -651,7 +651,7 @@ const statusBadge: Record<AgentDocument['status'], { label: string, color: 'warn
                     :rows="22"
                     class="w-full"
                     :ui="{ base: 'font-mono text-sm' }"
-                    placeholder="Você é o atendente da... O cliente usa {{cad}}. Quando ele pedir um humano, use transferir_para_atendente."
+                    placeholder="Você é o atendente da... O cliente se chama {{nome}}. Quando ele pedir um humano, use transferir_para_atendente."
                     @input="updateMention"
                     @click="updateMention"
                     @keydown="onPromptKeydown"

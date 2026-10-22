@@ -699,7 +699,7 @@ async function disconnectPipedrive() {
                         <USelect v-model="rule.field" :items="contactFieldItems" placeholder="Campo" class="w-full" />
                       </UFormField>
                       <AppField label="for um destes valores" tip="Enter para adicionar. Não diferencia maiúsculas" class="flex-1 min-w-0">
-                        <UInputTags v-model="rule.values" placeholder="ex.: blocos-cad" class="w-full" />
+                        <UInputTags v-model="rule.values" placeholder="ex.: plano-anual" class="w-full" />
                       </AppField>
                       <UButton icon="i-lucide-x" variant="ghost" color="neutral" size="xs" class="mt-6" aria-label="Remover regra" @click="autoRules.splice(i, 1)" />
                     </div>
