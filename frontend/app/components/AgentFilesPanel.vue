@@ -120,7 +120,7 @@ function icon(contentType: string) {
             />
           </UFormField>
           <UFormField label="Nome" required help="É por esse nome que a IA escolhe o arquivo e que você cita no prompt">
-            <UInput v-model="form.name" placeholder="Proposta sinC" class="w-full" />
+            <UInput v-model="form.name" placeholder="Catálogo de produtos" class="w-full" />
           </UFormField>
           <UFormField label="Quando enviar">
             <UTextarea v-model="form.description" :rows="2" placeholder="Quando o cliente perguntar valor ou planos" class="w-full" />
