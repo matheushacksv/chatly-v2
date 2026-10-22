@@ -681,6 +681,9 @@ async function disconnectPipedrive() {
                   IA atende negócios novos
                   <AppTip text="Quando um negócio é criado ou movido para uma dessas etapas, o lead recebe o template de abertura e a IA cuida das respostas. Uma vez por negócio. Se um fluxo de automação usa a mesma etapa, o lead recebe as duas mensagens" />
                 </h3>
+                <p class="text-xs font-semibold uppercase tracking-wide text-muted">
+                  Quando
+                </p>
                 <UFormField label="Etapas">
                   <USelectMenu
                     v-model="autoStageIds"
@@ -693,50 +696,63 @@ async function disconnectPipedrive() {
                   />
                 </UFormField>
                 <template v-if="autoStageIds.length && pipedrive.lead_account_id">
-                  <div v-for="(rule, i) in autoRules" :key="i" class="rounded-md bg-elevated/40 ring-1 ring-default p-3 space-y-3">
-                    <div class="flex items-start gap-2">
-                      <UFormField label="Se o campo" class="w-40 shrink-0">
-                        <USelect v-model="rule.field" :items="contactFieldItems" placeholder="Campo" class="w-full" />
-                      </UFormField>
-                      <AppField label="for um destes valores" tip="Enter para adicionar. Não diferencia maiúsculas" class="flex-1 min-w-0">
-                        <UInputTags v-model="rule.values" placeholder="ex.: plano-anual" class="w-full" />
-                      </AppField>
-                      <UButton icon="i-lucide-x" variant="ghost" color="neutral" size="xs" class="mt-6" aria-label="Remover regra" @click="autoRules.splice(i, 1)" />
-                    </div>
-                    <AutoTemplateChoice v-model="rule.template" :company-id="companyId!" :account-id="pipedrive.lead_account_id" />
-                  </div>
-                  <UButton
-                    label="Template por valor de campo"
-                    icon="i-lucide-plus"
-                    variant="ghost"
-                    size="sm"
-                    @click="autoRules.push({ field: '', values: [], template: {} })"
-                  />
-                  <AppField
-                    :label="autoRules.length ? 'Template padrão (os demais)' : 'Template de abertura'"
-                    :tip="autoRules.length ? 'Para quem não casa com nenhuma regra. Sem padrão, esses ficam sem mensagem' : 'A Meta só deixa iniciar conversa com template aprovado'"
-                  >
-                    <AutoTemplateChoice v-model="autoTemplate" :company-id="companyId!" :account-id="pipedrive.lead_account_id" :clearable="autoRules.length > 0" />
-                  </AppField>
                   <AppField label="Esperar antes de enviar (minutos)" tip="0 manda na hora. Se o lead escrever, o negócio for fechado ou sair da etapa durante a espera, a abertura não sai">
                     <UInput v-model.number="autoDelay" type="number" min="0" max="1440" class="w-32" />
                   </AppField>
                   <div class="flex items-center gap-2">
-                    <USwitch v-model="autoFollowupOn" label="Follow-up para quem não respondeu" />
-                    <AppTip text="Um segundo template, só para quem não respondeu a abertura. Respondeu, não recebe. Negócio fechado ou atendente no controle também não" />
-                  </div>
-                  <template v-if="autoFollowupOn">
-                    <AppField label="Enviar depois de (horas sem resposta)">
-                      <UInput v-model.number="autoFollowup.after_hours" type="number" min="1" max="720" class="w-32" />
-                    </AppField>
-                    <AppField label="Template do follow-up">
-                      <AutoTemplateChoice v-model="autoFollowup" :company-id="companyId!" :account-id="pipedrive.lead_account_id" />
-                    </AppField>
-                  </template>
-                  <div class="flex items-center gap-2">
                     <USwitch v-model="autoOnlyInHours" label="Só no horário da IA" />
                     <AppTip text="Negócio que entra fora do horário do agente fica de fora: não recebe nada, nem depois. Abertura com espera e follow-up que caem fora do horário saem quando a IA volta" />
                   </div>
+
+                  <p class="flex items-center gap-1.5 pt-2 text-xs font-semibold uppercase tracking-wide text-muted">
+                    O que enviar
+                    <AppTip text="A Meta só deixa iniciar conversa com template aprovado. A primeira regra que casar vale; quem não casa com nenhuma recebe o da última linha" />
+                  </p>
+                  <div class="space-y-2">
+                    <div v-for="(rule, i) in autoRules" :key="i" class="rounded-md ring-1 ring-default p-2.5 space-y-2">
+                      <div class="flex items-center gap-2 text-sm">
+                        <span class="shrink-0 text-muted">Se</span>
+                        <USelect v-model="rule.field" :items="contactFieldItems" placeholder="Campo" class="w-40 shrink-0" />
+                        <span class="shrink-0 text-muted">for</span>
+                        <UInputTags v-model="rule.values" placeholder="valor + Enter" class="flex-1 min-w-0" />
+                        <UButton icon="i-lucide-x" variant="ghost" color="neutral" size="xs" aria-label="Remover regra" @click="autoRules.splice(i, 1)" />
+                      </div>
+                      <div class="flex items-center gap-2 text-sm">
+                        <UIcon name="i-lucide-corner-down-right" class="size-4 shrink-0 text-muted" />
+                        <AutoTemplateChoice v-model="rule.template" :company-id="companyId!" :account-id="pipedrive.lead_account_id" class="flex-1" />
+                      </div>
+                    </div>
+                    <div class="rounded-md ring-1 ring-default p-2.5 space-y-2">
+                      <p class="text-sm text-muted">
+                        {{ autoRules.length ? 'Todos os outros' : 'Todos os negócios' }}
+                      </p>
+                      <div class="flex items-center gap-2 text-sm">
+                        <UIcon name="i-lucide-corner-down-right" class="size-4 shrink-0 text-muted" />
+                        <AutoTemplateChoice v-model="autoTemplate" :company-id="companyId!" :account-id="pipedrive.lead_account_id" :clearable="autoRules.length > 0" class="flex-1" />
+                      </div>
+                    </div>
+                    <UButton
+                      label="Regra por valor de campo"
+                      icon="i-lucide-plus"
+                      variant="ghost"
+                      size="sm"
+                      @click="autoRules.push({ field: '', values: [], template: {} })"
+                    />
+                  </div>
+
+                  <p class="pt-2 text-xs font-semibold uppercase tracking-wide text-muted">
+                    Se não responder
+                  </p>
+                  <div class="flex items-center gap-2">
+                    <USwitch v-model="autoFollowupOn" label="Mandar follow-up" />
+                    <AppTip text="Um segundo template, só para quem não respondeu a abertura. Respondeu, não recebe. Negócio fechado ou atendente no controle também não" />
+                  </div>
+                  <template v-if="autoFollowupOn">
+                    <AppField label="Depois de (horas sem resposta)">
+                      <UInput v-model.number="autoFollowup.after_hours" type="number" min="1" max="720" class="w-32" />
+                    </AppField>
+                    <AutoTemplateChoice v-model="autoFollowup" :company-id="companyId!" :account-id="pipedrive.lead_account_id" />
+                  </template>
                 </template>
                 <UAlert
                   v-else-if="autoStageIds.length"

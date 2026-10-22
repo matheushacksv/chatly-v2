@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { MediaUpload, Template } from '~/types/api'
 
-const props = defineProps<{ companyId: number, accountId: number, clearable?: boolean }>()
+const props = defineProps<{ companyId: number, accountId: number }>()
 const template = defineModel<Template | null>('template', { default: null })
 const params = defineModel<string[]>('params', { default: () => [] })
 const headerMediaId = defineModel<string>('headerMediaId', { default: '' })
@@ -26,7 +26,7 @@ async function load() {
     templates.value = await api<Template[]>(
       `/companies/${props.companyId}/accounts/${props.accountId}/templates`
     )
-    if (wanted && templates.value.some(t => key(t) === wanted)) {
+    if (wanted && items.value.some(i => i.value === wanted)) {
       restoring = true
       selectedKey.value = wanted
     }
@@ -110,25 +110,15 @@ async function onHeaderMediaPicked(event: Event) {
 <template>
   <div class="space-y-3">
     <UFormField label="Template" required help="Aprovados pela Meta - gerencie em Templates">
-      <div class="flex items-center gap-2">
-        <USelect
-          v-model="selectedKey"
-          :items="items"
-          :loading="loading"
-          :placeholder="items.length ? 'Escolha um template' : 'Nenhum template aprovado'"
-          :disabled="!items.length && !loading"
-          icon="i-lucide-layout-template"
-          class="w-full"
-        />
-        <UButton
-          v-if="clearable && selectedKey"
-          icon="i-lucide-x"
-          variant="ghost"
-          color="neutral"
-          aria-label="Remover template"
-          @click="() => { selectedKey = null }"
-        />
-      </div>
+      <USelect
+        v-model="selectedKey"
+        :items="items"
+        :loading="loading"
+        :placeholder="items.length ? 'Escolha um template' : 'Nenhum template aprovado'"
+        :disabled="!items.length && !loading"
+        icon="i-lucide-layout-template"
+        class="w-full"
+      />
     </UFormField>
 
     <template v-if="template">
