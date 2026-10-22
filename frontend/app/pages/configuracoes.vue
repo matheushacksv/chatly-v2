@@ -716,7 +716,7 @@ async function disconnectPipedrive() {
                     :label="autoRules.length ? 'Template padrão (os demais)' : 'Template de abertura'"
                     :tip="autoRules.length ? 'Para quem não casa com nenhuma regra. Sem padrão, esses ficam sem mensagem' : 'A Meta só deixa iniciar conversa com template aprovado'"
                   >
-                    <AutoTemplateChoice v-model="autoTemplate" :company-id="companyId!" :account-id="pipedrive.lead_account_id" />
+                    <AutoTemplateChoice v-model="autoTemplate" :company-id="companyId!" :account-id="pipedrive.lead_account_id" :clearable="autoRules.length > 0" />
                   </AppField>
                   <AppField label="Esperar antes de enviar (minutos)" tip="0 manda na hora. Se o lead escrever, o negócio for fechado ou sair da etapa durante a espera, a abertura não sai">
                     <UInput v-model.number="autoDelay" type="number" min="0" max="1440" class="w-32" />

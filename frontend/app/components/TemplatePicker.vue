@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { MediaUpload, Template } from '~/types/api'
 
-const props = defineProps<{ companyId: number, accountId: number }>()
+const props = defineProps<{ companyId: number, accountId: number, clearable?: boolean }>()
 const template = defineModel<Template | null>('template', { default: null })
 const params = defineModel<string[]>('params', { default: () => [] })
 const headerMediaId = defineModel<string>('headerMediaId', { default: '' })
@@ -12,21 +12,28 @@ const templates = ref<Template[]>([])
 const loading = ref(false)
 const selectedKey = ref<string | null>(null)
 
+// nome+idioma identificam o template (mesmo nome pode existir em vários idiomas)
+const key = (t: Pick<Template, 'name' | 'language'>) => `${t.name}|${t.language}`
+
+// template já vindo do pai (salvo antes) aparece selecionado, mantendo as variáveis preenchidas
+let restoring = false
 watch(() => props.accountId, load, { immediate: true })
 async function load() {
+  const wanted = template.value ? key(template.value) : null
   loading.value = true
   selectedKey.value = null
   try {
     templates.value = await api<Template[]>(
       `/companies/${props.companyId}/accounts/${props.accountId}/templates`
     )
+    if (wanted && templates.value.some(t => key(t) === wanted)) {
+      restoring = true
+      selectedKey.value = wanted
+    }
   } finally {
     loading.value = false
   }
 }
-
-// nome+idioma identificam o template (mesmo nome pode existir em vários idiomas)
-const key = (t: Template) => `${t.name}|${t.language}`
 const items = computed(() =>
   templates.value
     .filter(t => t.status === 'APPROVED')
@@ -35,6 +42,10 @@ const items = computed(() =>
 
 watch(selectedKey, (k) => {
   template.value = templates.value.find(t => key(t) === k) ?? null
+  if (restoring) {
+    restoring = false
+    return
+  }
   params.value = Array.from({ length: template.value?.param_count ?? 0 }, () => '')
   headerMediaId.value = ''
   headerMediaFileName.value = ''
@@ -99,15 +110,25 @@ async function onHeaderMediaPicked(event: Event) {
 <template>
   <div class="space-y-3">
     <UFormField label="Template" required help="Aprovados pela Meta - gerencie em Templates">
-      <USelect
-        v-model="selectedKey"
-        :items="items"
-        :loading="loading"
-        :placeholder="items.length ? 'Escolha um template' : 'Nenhum template aprovado'"
-        :disabled="!items.length && !loading"
-        icon="i-lucide-layout-template"
-        class="w-full"
-      />
+      <div class="flex items-center gap-2">
+        <USelect
+          v-model="selectedKey"
+          :items="items"
+          :loading="loading"
+          :placeholder="items.length ? 'Escolha um template' : 'Nenhum template aprovado'"
+          :disabled="!items.length && !loading"
+          icon="i-lucide-layout-template"
+          class="w-full"
+        />
+        <UButton
+          v-if="clearable && selectedKey"
+          icon="i-lucide-x"
+          variant="ghost"
+          color="neutral"
+          aria-label="Remover template"
+          @click="() => { selectedKey = null }"
+        />
+      </div>
     </UFormField>
 
     <template v-if="template">
