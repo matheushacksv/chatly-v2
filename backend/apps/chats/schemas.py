@@ -22,7 +22,7 @@ class WhatsAppAccountInDTO(Schema):
 class WhatsAppAccountOutDTO(ModelSchema):
     class Meta:
         model = WhatsAppAccount
-        fields = ['id', 'agent', 'phone_number_id', 'waba_id', 'verify_token', 'app_id']
+        fields = ['id', 'agent', 'phone_number_id', 'waba_id', 'verify_token', 'app_id', 'ai_enabled']
 
 
 class WhatsAppAccountPatchDTO(Schema):
@@ -32,6 +32,7 @@ class WhatsAppAccountPatchDTO(Schema):
     app_secret: str | None = None
     verify_token: str | None = None
     app_id: str | None = None
+    ai_enabled: bool | None = None
 
 
 class WhatsAppRegisterDTO(Schema):

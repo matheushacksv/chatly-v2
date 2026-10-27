@@ -39,6 +39,7 @@ export interface WhatsAppAccount {
   waba_id: string
   verify_token: string
   app_id: string
+  ai_enabled: boolean
 }
 
 export type TagColor = 'neutral' | 'primary' | 'success' | 'info' | 'warning' | 'error'

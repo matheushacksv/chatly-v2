@@ -20,6 +20,7 @@ class WhatsAppAccount(models.Model):
     app_secret = EncryptedTextField()
     app_id = models.CharField(max_length=32, blank=True, default='')
     verify_token = models.CharField(max_length=64)
+    ai_enabled = models.BooleanField(default=True)  # desligada: mensagens chegam, só a equipe responde
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

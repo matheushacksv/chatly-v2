@@ -117,6 +117,20 @@ function openAccountCreate() {
   accountOpen.value = true
 }
 
+// liga/desliga a IA do número sem trocar o agente: mensagens continuam chegando, só a equipe responde
+async function toggleAi(account: WhatsAppAccount, enabled: boolean) {
+  try {
+    const updated = await api<WhatsAppAccount>(
+      `/companies/${companyId.value}/whatsapp-accounts/${account.id}`,
+      { method: 'PATCH', body: { ai_enabled: enabled } }
+    )
+    accounts.value = accounts.value.map(a => (a.id === updated.id ? updated : a))
+    toast.add({ title: enabled ? 'IA ligada' : 'IA desligada: só a equipe responde', color: 'success' })
+  } catch (error) {
+    toast.add({ title: apiErrorDetail(error), color: 'error' })
+  }
+}
+
 function openAccountEdit(account: WhatsAppAccount) {
   editingAccount.value = account
   Object.assign(accountState, {
@@ -806,8 +820,17 @@ async function disconnectPipedrive() {
                 <UIcon name="i-lucide-phone" class="size-4 text-muted" />
                 <div class="flex-1 min-w-0">
                   <p class="font-mono text-sm truncate">{{ account.phone_number_id }}</p>
-                  <p class="text-xs text-muted truncate">Agente: {{ agentName(account.agent) }}</p>
+                  <p class="text-xs text-muted truncate">
+                    Agente: {{ agentName(account.agent) }}{{ account.ai_enabled ? '' : ' · IA desligada' }}
+                  </p>
                 </div>
+                <USwitch
+                  :model-value="account.ai_enabled"
+                  label="IA"
+                  size="sm"
+                  :disabled="!isOwner"
+                  @update:model-value="(v: boolean) => toggleAi(account, v)"
+                />
                 <UButton icon="i-lucide-badge-check" variant="ghost" color="neutral" size="xs" title="Registrar no Cloud API" :loading="registeringId === account.id" @click="registerAccount(account)" />
                 <UButton icon="i-lucide-pencil" variant="ghost" color="neutral" size="xs" @click="openAccountEdit(account)" />
                 <UButton icon="i-lucide-trash-2" variant="ghost" color="error" size="xs" @click="removeAccount(account)" />

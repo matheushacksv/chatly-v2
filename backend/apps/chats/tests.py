@@ -4733,3 +4733,39 @@ class SendFileToolTests(BaseChatsTestCase):
         bad = self.client.post(url, {'file': SimpleUploadedFile('f.gif', b'gif', content_type='image/gif'), 'name': 'Gif'}, headers=self.auth)
         self.assertEqual(bad.status_code, 400)
         self.assertEqual([f['name'] for f in self.client.get(url, headers=self.auth).json()], ['Catálogo', 'Foto'])
+
+
+class AiToggleTests(BaseChatsTestCase):
+    def disable(self):
+        WhatsAppAccount.objects.filter(pk=self.account.pk).update(ai_enabled=False)
+
+    @patch('apps.ai.generate_reply')
+    def test_ai_off_keeps_message_and_does_not_reply(self, mock_generate):
+        self.disable()
+        incoming = Message.objects.create(contact=self.contact, direction='in', content='Oi?', wa_message_id='wamid.ia_off')
+
+        tasks.process_incoming_message(incoming.pk)
+
+        mock_generate.assert_not_called()
+        self.assertTrue(Message.objects.filter(pk=incoming.pk).exists())
+
+    @patch('apps.chats.whatsapp.send_text')
+    def test_ai_off_cancels_followups(self, mock_send):
+        self.disable()
+        due = FollowUp.objects.create(contact=self.contact, send_at=timezone.now() - timedelta(minutes=1), text='Retomando')
+
+        tasks.dispatch_followups()
+
+        mock_send.assert_not_called()
+        due.refresh_from_db()
+        self.assertEqual(due.status, FollowUp.Status.CANCELED)
+
+    def test_patch_toggles_ai(self):
+        response = self.client.patch(
+            f'/api/companies/{self.company.pk}/whatsapp-accounts/{self.account.pk}',
+            data={'ai_enabled': False}, content_type='application/json', headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()['ai_enabled'])
+        self.account.refresh_from_db()
+        self.assertFalse(self.account.ai_enabled)

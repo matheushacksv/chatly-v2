@@ -39,6 +39,8 @@ def process_incoming_message(self, message_id: int, deferred: bool = False, pend
 
         if not plans.is_active(account.company):
             return  # plano vencido: a mensagem fica gravada, mas a IA não responde
+        if not account.ai_enabled:
+            return  # IA desligada no número: só a equipe responde, sem resposta atrasada quando religar
         if contact.ai_paused and contact.ai_resume_at and contact.ai_resume_at <= timezone.now():
             services.resume_ai(contact)
         if contact.ai_paused:
@@ -180,6 +182,9 @@ def dispatch_followups():
             continue
         if contact.ai_paused:
             FollowUp.objects.filter(pk=followup.pk).update(status=FollowUp.Status.CANCELED, error='atendente assumiu a conversa')
+            continue
+        if not contact.account.ai_enabled:
+            FollowUp.objects.filter(pk=followup.pk).update(status=FollowUp.Status.CANCELED, error='IA desligada no número')
             continue
         try:
             wamid = whatsapp.send_text(contact.account, contact.wa_id, followup.text)
