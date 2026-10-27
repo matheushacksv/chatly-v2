@@ -420,6 +420,7 @@ export interface FlowNodeData {
   source?: string
   op?: 'contains' | 'equals' | 'regex' | 'window_open' | 'has_tag' | 'filled'
   value?: string
+  values?: string[] // condição contém/é igual: basta um casar
   minutes?: number
   action?: 'person' | 'deal' | 'note' | 'stage' | 'label' | 'add' | 'remove'
   title?: string

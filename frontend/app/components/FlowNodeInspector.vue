@@ -67,6 +67,16 @@ watch(() => [props.type, data.value.source], async () => {
   const templates = await api<Template[]>(`/companies/${props.companyId}/accounts/${props.accountId}/templates`)
   templateButtons.value = templates.filter(t => t.status === 'APPROVED').flatMap(t => t.quick_replies ?? [])
 }, { immediate: true })
+// contém/é igual aceitam vários valores ("ou"); fluxo antigo guardava um só em `value`
+const conditionValues = computed({
+  get: () => data.value.values ?? (data.value.value ? [data.value.value] : []),
+  set: (values: string[]) => {
+    data.value.values = values
+    data.value.value = ''
+  }
+})
+const multiValue = computed(() => ['contains', 'equals'].includes(data.value.op ?? 'contains'))
+
 const buttonValueItems = computed(() => [...new Set([...(props.flowButtons ?? []), ...templateButtons.value])])
 
 // ---- botões ----
@@ -288,9 +298,9 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
       </UFormField>
       <UFormField
         v-if="showValue"
-        :label="data.op === 'has_tag' ? 'Etiqueta' : 'Valor'"
+        :label="data.op === 'has_tag' ? 'Etiqueta' : multiValue ? 'Valores' : 'Valor'"
         required
-        :help="data.op === 'regex' ? 'Expressão regular, ex.: \\d{5}-?\\d{3} pra CEP' : undefined"
+        :help="data.op === 'regex' ? 'Expressão regular, ex.: \\d{5}-?\\d{3} pra CEP' : multiValue ? 'Vários valores: basta um casar (ou)' : undefined"
       >
         <USelectMenu
           v-if="data.op === 'has_tag'"
@@ -302,11 +312,20 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
           @update:model-value="(id: number) => { data.value = String(id) }"
         />
         <UInputMenu
-          v-else-if="data.source === 'button'"
-          v-model="data.value"
+          v-else-if="multiValue && data.source === 'button'"
+          v-model="conditionValues"
           :items="buttonValueItems"
+          multiple
+          create-item
           class="w-full"
-          placeholder="Escolha ou digite o texto do botão"
+          placeholder="Escolha ou digite os botões"
+          @create="(item: string) => { conditionValues = [...conditionValues, item] }"
+        />
+        <UInputTags
+          v-else-if="multiValue"
+          v-model="conditionValues"
+          class="w-full"
+          placeholder="orçamento + Enter"
         />
         <UInput
           v-else

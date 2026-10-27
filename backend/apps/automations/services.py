@@ -206,7 +206,11 @@ def _execute(node: dict, run: FlowRun, message: Message | None) -> str | None:
             subject = chat_services.contact_variables(contact).get(src, '')
         if data.get('op') == 'filled':
             return 'sim' if subject.strip() else 'nao'
-        return 'sim' if _match_condition(subject, data.get('op', 'contains'), data.get('value', '')) else 'nao'
+        # vários valores = "ou": basta um casar (fluxo antigo só tem `value`)
+        op = data.get('op', 'contains')
+        many = data.get('values') if op in ('contains', 'equals') else None
+        values = [v for v in many or [data.get('value', '')] if v.strip()] or ['']
+        return 'sim' if any(_match_condition(subject, op, v) for v in values) else 'nao'
     if t == 'delay':
         from apps.automations import tasks
 

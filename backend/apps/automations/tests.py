@@ -682,7 +682,7 @@ class LeadIdempotencyTests(BaseAutomationsTestCase):
 
 def _cond_graph(op, value, source='last_message'):
     return _graph(
-        [('start', 'start', {}), ('c', 'condition', {'source': source, 'op': op, 'value': value}),
+        [('start', 'start', {}), ('c', 'condition', {'source': source, 'op': op, **({'values': value} if isinstance(value, list) else {'value': value})}),
          ('a', 'ai', {}), ('h', 'handoff', {})],
         [('start', 'c', None), ('c', 'a', 'sim'), ('c', 'h', 'nao')],
     )
@@ -769,6 +769,14 @@ class ConditionRuntimeTests(BaseAutomationsTestCase):
 
     def test_regex_no_match(self, mock_pub):
         run, _ = self._route('regex', r'\d{4}', 'sem numero')
+        self.assertEqual(run.steps[-1]['type'], 'handoff')
+
+    def test_any_of_values_match(self, mock_pub):
+        run, _ = self._route('contains', ['bora', 'quero'], 'Quero sim!')
+        self.assertEqual(run.steps[-1]['type'], 'ai')
+
+    def test_any_of_values_no_match(self, mock_pub):
+        run, _ = self._route('contains', ['bora', 'quero'], 'agora não')
         self.assertEqual(run.steps[-1]['type'], 'handoff')
 
     def test_match_condition_unit(self, mock_pub):

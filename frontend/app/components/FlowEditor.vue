@@ -171,6 +171,7 @@ const warnings = computed(() => {
 // ---- persistência ----
 
 const saving = ref(false)
+const name = ref(props.flow.name)
 const activating = ref(false)
 
 function serialize(): FlowGraph {
@@ -201,7 +202,7 @@ async function save(): Promise<Flow | null> {
     const saved = await api<Flow>(`/automations/${props.companyId}/flows/${props.flow.id}`, {
       method: 'PUT',
       body: {
-        name: props.flow.name,
+        name: name.value.trim() || props.flow.name,
         account_id: props.flow.account,
         trigger: props.flow.trigger,
         trigger_config: props.flow.trigger_config,
@@ -300,6 +301,14 @@ const flowButtons = computed(() => [...new Set(nodes.value.filter(n => n.type ==
           position="top-right"
           class="flex items-center gap-2"
         >
+          <UInput
+            v-model="name"
+            size="sm"
+            icon="i-lucide-pencil"
+            class="w-56"
+            aria-label="Nome do fluxo"
+            @keydown.enter="saveAndNotify()"
+          />
           <UButton
             label="Salvar"
             icon="i-lucide-save"

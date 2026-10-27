@@ -178,7 +178,7 @@ export function flowNodeSummary(type: FlowNodeType, data: FlowNodeData): string 
       if (data.op === 'window_open') return 'Janela de 24h aberta? (Sim = IA responde direto)'
       if (data.op === 'has_tag') return 'Contato tem a etiqueta escolhida?'
       if (data.op === 'filled') return `${CONDITION_SOURCES[data.source ?? ''] ?? `{{${data.source}}}`} está preenchido?`
-      return `${CONDITION_SOURCES[data.source ?? 'last_message'] ?? `{{${data.source}}}`} ${CONDITION_OPS[data.op ?? 'contains']} "${data.value || '...'}"`
+      return `${CONDITION_SOURCES[data.source ?? 'last_message'] ?? `{{${data.source}}}`} ${CONDITION_OPS[data.op ?? 'contains']} ${(data.op !== 'regex' && data.values?.length ? data.values : [data.value || '...']).map(v => `"${v}"`).join(' ou ')}`
     case 'delay':
       return formatMinutes(data.minutes ?? 0)
     case 'crm':
