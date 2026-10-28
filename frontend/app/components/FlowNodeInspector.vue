@@ -35,7 +35,7 @@ watch([pickedParams, pickedHeaderMediaId], () => {
 // ---- variáveis: escolher no menu em vez de digitar {{...}} ----
 const FLOW_EXTRA_VARS = [{ label: 'Botão clicado', key: 'botao' }, { label: 'Nome da campanha', key: 'campanha' }]
 
-function insertVar(field: 'text' | 'url' | 'body' | 'value', token: string) {
+function insertVar(field: 'text' | 'url' | 'body' | 'value' | 'title', token: string) {
   const current = data.value[field] ?? ''
   data.value[field] = current && !/\s$/.test(current) ? `${current} ${token}` : current + token
 }
@@ -565,6 +565,9 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
         label="Título do negócio"
         required
       >
+        <template #hint>
+          <VarInsertMenu :flow-vars="flowVars" :extra="FLOW_EXTRA_VARS" @insert="insertVar('title', $event)" />
+        </template>
         <UInput
           v-model="data.title"
           class="w-full"
@@ -588,11 +591,14 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
         label="Anotação"
         required
       >
+        <template #hint>
+          <VarInsertMenu :flow-vars="flowVars" :extra="FLOW_EXTRA_VARS" @insert="insertVar('text', $event)" />
+        </template>
         <UTextarea
           v-model="data.text"
           :rows="3"
           class="w-full"
-          placeholder="Veio do formulário do site"
+          placeholder="E-mail informado: {{email}}"
         />
       </UFormField>
       <UFormField
