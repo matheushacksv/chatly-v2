@@ -304,6 +304,8 @@ const campaignMissingReasons = computed(() => {
   const reasons: string[] = []
   if (!name.value.trim()) reasons.push('dê um nome pra campanha')
   if (!template.value) reasons.push('escolha um template')
+  // reutilizado de campanha antiga e não está mais entre os aprovados: o seletor não conseguiu carregar
+  else if (template.value.param_count === undefined) reasons.push('o template da campanha antiga não está mais aprovado, escolha outro')
   else if (!params.value.every(p => p.trim())) reasons.push('preencha todas as variáveis do corpo')
   if (template.value && ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(template.value.header_format) && !template.value.has_header_media && !headerMediaId.value) {
     reasons.push('envie o arquivo do cabeçalho')

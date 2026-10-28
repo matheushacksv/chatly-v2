@@ -34,6 +34,14 @@ async function load() {
     loading.value = false
   }
 }
+// pai trocou o template por fora (nova campanha, reutilizar público) com o seletor já montado: acompanha
+watch(template, (t) => {
+  const k = t ? key(t) : null
+  if (loading.value || k === selectedKey.value || (k && !items.value.some(i => i.value === k))) return
+  restoring = true
+  selectedKey.value = k
+})
+
 const items = computed(() =>
   templates.value
     .filter(t => t.status === 'APPROVED')
@@ -44,6 +52,9 @@ watch(selectedKey, (k) => {
   template.value = templates.value.find(t => key(t) === k) ?? null
   if (restoring) {
     restoring = false
+    // variáveis vindas do pai acompanham o template: nem sobra, nem falta
+    const n = template.value?.param_count ?? 0
+    params.value = Array.from({ length: n }, (_, i) => params.value[i] ?? '')
     return
   }
   params.value = Array.from({ length: template.value?.param_count ?? 0 }, () => '')
