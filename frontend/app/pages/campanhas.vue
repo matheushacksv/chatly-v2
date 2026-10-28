@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Campaign, CampaignRecipient, Contact, CsvRecipient, Flow, Paginated, Tag, Template, WhatsAppAccount } from '~/types/api'
+import type { Campaign, CampaignDraftData, CampaignRecipient, Contact, CsvRecipient, Flow, Paginated, Tag, Template, WhatsAppAccount } from '~/types/api'
 
 const api = useApi()
 const toast = useToast()
@@ -38,6 +38,7 @@ const poll = setInterval(() => {
 onUnmounted(() => clearInterval(poll))
 
 const statusBadge: Record<Campaign['status'], { label: string, color: 'warning' | 'success' | 'error' | 'info' | 'neutral' }> = {
+  draft: { label: 'Rascunho', color: 'neutral' },
   scheduled: { label: 'Agendada', color: 'info' },
   canceled: { label: 'Cancelada', color: 'neutral' },
   sending: { label: 'Enviando', color: 'warning' },
@@ -165,6 +166,7 @@ function openCreate() {
   reuseCampaignId.value = undefined
   reuseSearch.value = ''
   pastedNumbers.value = ''
+  draftId.value = null
   createOpen.value = true
 }
 
@@ -182,6 +184,91 @@ function reuseAudience(campaign: Campaign) {
   detailOpen.value = false
 }
 
+// ---- rascunho: guarda o formulário como está (pode faltar coisa) e reabre depois ----
+const draftId = ref<number | null>(null)
+const savingDraft = ref(false)
+let pendingReuseSelected: number[] | null = null
+
+function draftData(): CampaignDraftData {
+  return {
+    mode: mode.value,
+    template_name: template.value?.name ?? '',
+    template_language: template.value?.language ?? '',
+    body_params: [...params.value],
+    header_media_id: headerMediaId.value,
+    flow_id: flowId.value ?? null,
+    tag_groups: tagGroups.value,
+    exclude_tag_ids: excludeTagIds.value,
+    contact_ids: selectedContactIds.value,
+    csv_numbers: csvNumbers.value,
+    csv_invalid: csvInvalid.value,
+    csv_tags: csvTags.value,
+    reuse_campaign_id: reuseCampaignId.value ?? null,
+    reuse_selected: [...reuseSelected.value],
+    when: when.value,
+    scheduled_local: scheduledLocal.value
+  }
+}
+
+async function saveDraft() {
+  if (!accountId.value || savingDraft.value) return
+  savingDraft.value = true
+  try {
+    const body = { account_id: accountId.value, name: name.value, draft: draftData() }
+    const base = `/companies/${companyId.value}/campaigns/drafts`
+    const saved = draftId.value
+      ? await api<Campaign>(`${base}/${draftId.value}`, { method: 'PUT', body })
+      : await api<Campaign>(base, { method: 'POST', body })
+    campaigns.value = [saved, ...campaigns.value.filter(c => c.id !== saved.id)]
+    createOpen.value = false
+    toast.add({ title: 'Rascunho salvo', icon: 'i-lucide-file-pen', color: 'success' })
+  } catch (error) {
+    toast.add({ title: apiErrorDetail(error, 'Não foi possível salvar o rascunho'), color: 'error' })
+  } finally {
+    savingDraft.value = false
+  }
+}
+
+async function removeDraft() {
+  if (!draftId.value) return
+  const ok = await confirmModal({ title: 'Excluir rascunho?', confirmLabel: 'Excluir' })
+  if (!ok) return
+  try {
+    await api(`/companies/${companyId.value}/campaigns/${draftId.value}`, { method: 'DELETE' })
+    campaigns.value = campaigns.value.filter(c => c.id !== draftId.value)
+    createOpen.value = false
+    toast.add({ title: 'Rascunho excluído', icon: 'i-lucide-trash-2' })
+  } catch (error) {
+    toast.add({ title: apiErrorDetail(error, 'Não foi possível excluir'), color: 'error' })
+  }
+}
+
+function openDraft(campaign: Campaign) {
+  const d = campaign.draft as CampaignDraftData
+  openCreate()
+  draftId.value = campaign.id
+  accountId.value = campaign.account
+  name.value = campaign.name
+  mode.value = d.mode ?? 'all'
+  if (d.template_name) {
+    // o picker reconhece por nome+idioma e troca pelo template completo
+    template.value = { name: d.template_name, language: d.template_language ?? '' } as Template
+  }
+  params.value = [...(d.body_params ?? [])]
+  headerMediaId.value = d.header_media_id ?? ''
+  flowId.value = d.flow_id ?? undefined
+  tagGroups.value = d.tag_groups ?? []
+  excludeTagIds.value = d.exclude_tag_ids ?? []
+  selectedContactIds.value = d.contact_ids ?? []
+  csvNumbers.value = d.csv_numbers ?? []
+  csvInvalid.value = d.csv_invalid ?? []
+  csvTags.value = d.csv_tags ?? []
+  pendingReuseSelected = d.reuse_campaign_id ? (d.reuse_selected ?? null) : null
+  reuseCampaignId.value = d.reuse_campaign_id ?? undefined
+  when.value = d.when ?? 'now'
+  scheduledLocal.value = d.scheduled_local ?? ''
+}
+
 // público de outra campanha: vem todo marcado, desmarque quem não deve receber
 // ponytail: lista inteira renderizada; paginar se público de milhares ficar lento
 const reuseCampaignId = ref<number | undefined>(undefined)
@@ -190,7 +277,7 @@ const reuseSelected = ref(new Set<number>())
 const reuseSearch = ref('')
 const reuseLoading = ref(false)
 const reuseCampaignItems = computed(() =>
-  campaigns.value.filter(c => c.account === accountId.value).map(c => ({ label: `${c.name} (${c.total} contato(s))`, value: c.id }))
+  campaigns.value.filter(c => c.account === accountId.value && c.status !== 'draft').map(c => ({ label: `${c.name} (${c.total} contato(s))`, value: c.id }))
 )
 watch(reuseCampaignId, async (id) => {
   reuseContacts.value = []
@@ -199,7 +286,8 @@ watch(reuseCampaignId, async (id) => {
   reuseLoading.value = true
   try {
     reuseContacts.value = await api<CampaignRecipient[]>(`/companies/${companyId.value}/campaigns/${id}/recipients`)
-    reuseSelected.value = new Set(reuseContacts.value.map(c => c.id))
+    reuseSelected.value = new Set(pendingReuseSelected ?? reuseContacts.value.map(c => c.id))
+    pendingReuseSelected = null
   } finally {
     reuseLoading.value = false
   }
@@ -337,13 +425,14 @@ async function create() {
     if (mode.value === 'all') body.tag_groups = tagGroups.value
     if (mode.value === 'select') body.contact_ids = selectedContactIds.value
     if (mode.value === 'reuse') body.contact_ids = [...reuseSelected.value]
+    if (draftId.value) body.draft_id = draftId.value
     if (mode.value === 'csv') {
       body.contact_ids = []
       body.numbers = csvNumbers.value
       body.import_tag_ids = csvTags.value.map(t => t.id)
     }
     const created = await api<Campaign>(`/companies/${companyId.value}/campaigns`, { method: 'POST', body })
-    campaigns.value.unshift(created)
+    campaigns.value = [created, ...campaigns.value.filter(c => c.id !== draftId.value)]
     createOpen.value = false
     toast.add({
       title: created.status === 'scheduled' ? `Campanha agendada para ${dateFmt.format(new Date(created.scheduled_at!))}` : 'Campanha disparada',
@@ -386,7 +475,7 @@ async function create() {
           v-for="campaign in campaigns"
           :key="campaign.id"
           class="w-full text-left rounded-xl ring-1 ring-default bg-elevated/40 p-4 hover:ring-primary/40 transition flex items-center gap-4"
-          @click="openDetail(campaign)"
+          @click="campaign.status === 'draft' ? openDraft(campaign) : openDetail(campaign)"
         >
           <div class="size-9 rounded-lg bg-primary/10 ring-1 ring-primary/20 flex items-center justify-center shrink-0">
             <UIcon name="i-lucide-megaphone" class="size-5 text-primary" />
@@ -399,7 +488,7 @@ async function create() {
               </UBadge>
             </div>
             <p class="text-xs text-muted truncate">
-              <span class="font-mono">{{ campaign.template_name }}</span>
+              <span class="font-mono">{{ campaign.template_name || 'sem template' }}</span>
               · <template v-if="campaign.scheduled_at && ['scheduled', 'canceled'].includes(campaign.status)">
                 agendada para {{ dateFmt.format(new Date(campaign.scheduled_at)) }}
               </template>
@@ -408,11 +497,12 @@ async function create() {
               </template>
             </p>
           </div>
-          <div class="text-right shrink-0">
+          <div v-if="campaign.status !== 'draft'" class="text-right shrink-0">
             <p class="text-sm font-medium tabular-nums">{{ campaign.sent }}/{{ campaign.total }} enviadas</p>
             <p v-if="campaign.failed" class="text-xs text-error tabular-nums">{{ campaign.failed }} falhas</p>
           </div>
           <UProgress
+            v-if="campaign.status !== 'draft'"
             :model-value="campaign.sent + campaign.failed"
             :max="campaign.total"
             class="w-28 shrink-0 hidden sm:block"
@@ -486,7 +576,7 @@ async function create() {
     </template>
   </UModal>
 
-  <USlideover v-model:open="createOpen" title="Nova campanha" description="Dispara um template aprovado pra vários contatos" :ui="{ content: 'max-w-xl' }">
+  <USlideover v-model:open="createOpen" :title="draftId ? 'Rascunho de campanha' : 'Nova campanha'" description="Dispara um template aprovado pra vários contatos" :ui="{ content: 'max-w-xl' }">
     <template #body>
       <div class="space-y-5">
         <AppField label="Nome" required tip="Só pra você identificar depois">
@@ -666,14 +756,34 @@ async function create() {
         <p v-if="campaignMissingReasons.length" class="text-xs text-warning">
           Falta: {{ campaignMissingReasons.join(', ') }}
         </p>
-        <UButton
-          block
-          icon="i-lucide-send"
-          :loading="saving"
-          :disabled="!canSubmit"
-          :label="when === 'later' ? 'Agendar campanha' : 'Disparar campanha'"
-          @click="create()"
-        />
+        <div class="flex gap-2">
+          <UButton
+            v-if="draftId && isOwner"
+            icon="i-lucide-trash-2"
+            color="error"
+            variant="ghost"
+            aria-label="Excluir rascunho"
+            @click="removeDraft()"
+          />
+          <UButton
+            label="Salvar rascunho"
+            icon="i-lucide-file-pen"
+            variant="soft"
+            color="neutral"
+            :loading="savingDraft"
+            :disabled="!accountId"
+            @click="saveDraft()"
+          />
+          <UButton
+            block
+            icon="i-lucide-send"
+            :loading="saving"
+            :disabled="!canSubmit"
+            :label="when === 'later' ? 'Agendar campanha' : 'Disparar campanha'"
+            class="flex-1"
+            @click="create()"
+          />
+        </div>
       </div>
     </template>
   </USlideover>

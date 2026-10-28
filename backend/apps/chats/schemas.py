@@ -193,6 +193,13 @@ class CampaignInDTO(Schema):
     scheduled_at: datetime | None = None  # vazio = dispara agora
     import_tag_ids: list[int] = []  # etiquetas aplicadas nos contatos do CSV
     exclude_tag_ids: list[int] = []
+    draft_id: int | None = None  # disparada a partir de um rascunho: ele sai da lista
+
+
+class CampaignDraftInDTO(Schema):
+    account_id: int
+    name: str = ''
+    draft: dict = {}
 
 
 class CampaignAudienceInDTO(Schema):
@@ -212,7 +219,7 @@ class CampaignOutDTO(ModelSchema):
 
     class Meta:
         model = Campaign
-        fields = ['id', 'account', 'name', 'template_name', 'template_language', 'body_params', 'flow', 'status', 'total', 'sent', 'failed', 'scheduled_at', 'created_at']
+        fields = ['id', 'account', 'name', 'template_name', 'template_language', 'body_params', 'flow', 'status', 'total', 'sent', 'failed', 'scheduled_at', 'draft', 'created_at']
 
 
 class CampaignRecipientOutDTO(ModelSchema):

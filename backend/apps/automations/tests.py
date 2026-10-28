@@ -914,10 +914,21 @@ class CrmRuntimeTests(BaseAutomationsTestCase):
         self.assertEqual(mock_deal.call_args.args[2], 'Lead Ana - Outubro')
 
     def test_deal_reuses_open_deal(self, mock_person, mock_deal, mock_note, mock_stage):
-        self.mock_open_deals.return_value = [{'id': 5, 'title': 'Aberto'}]
+        self.mock_open_deals.return_value = [{'id': 5, 'title': 'Aberto', 'pipeline_id': 1}]
         run, _ = self._run('deal', {'title': 'Novo negócio'})
         mock_deal.assert_not_called()
         self.assertEqual(run.context.get('deal_id'), 5)  # bloco de etapa seguinte move o negócio existente
+
+    def test_deal_ignores_open_deal_in_other_pipeline(self, mock_person, mock_deal, mock_note, mock_stage):
+        self.mock_open_deals.return_value = [{'id': 5, 'title': 'Recuperação', 'pipeline_id': 7}]
+        run, _ = self._run('deal', {'title': 'Novo negócio'})
+        mock_deal.assert_called_once()
+        self.assertEqual(run.context.get('deal_id'), 77)
+
+    def test_note_prefers_default_pipeline_deal(self, mock_person, mock_deal, mock_note, mock_stage):
+        self.mock_open_deals.return_value = [{'id': 5, 'pipeline_id': 7}, {'id': 6, 'pipeline_id': 1}]
+        self._run('note', {'text': 'oi', 'note_target': 'deal'}, person_id=88)
+        mock_note.assert_called_once_with('x', 'oi', deal_id=6)
 
     def test_note(self, mock_person, mock_deal, mock_note, mock_stage):
         self._run('note', {'text': 'anotação de {{nome}}'})

@@ -187,7 +187,8 @@ export interface Campaign {
   template_language: string
   body_params: string[]
   flow: number | null
-  status: 'scheduled' | 'sending' | 'done' | 'failed' | 'canceled'
+  status: 'draft' | 'scheduled' | 'sending' | 'done' | 'failed' | 'canceled'
+  draft: CampaignDraftData | Record<string, never>
   total: number
   sent: number
   failed: number
@@ -195,6 +196,26 @@ export interface Campaign {
   created_at: string
   delivered: number
   read: number
+}
+
+/** Formulário de campanha guardado como rascunho (o backend só armazena) */
+export interface CampaignDraftData {
+  mode?: 'all' | 'select' | 'csv' | 'reuse'
+  template_name?: string
+  template_language?: string
+  body_params?: string[]
+  header_media_id?: string
+  flow_id?: number | null
+  tag_groups?: number[][]
+  exclude_tag_ids?: number[]
+  contact_ids?: number[]
+  csv_numbers?: CsvRecipient[]
+  csv_invalid?: string[]
+  csv_tags?: Tag[]
+  reuse_campaign_id?: number | null
+  reuse_selected?: number[]
+  when?: 'now' | 'later'
+  scheduled_local?: string
 }
 
 /** Contato do público de uma campanha, pra reaproveitar em outra */

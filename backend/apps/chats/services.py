@@ -750,6 +750,7 @@ def create_campaign(
     exclude_tag_ids: list[int] | None = None,
     scheduled_at: datetime | None = None,
     import_tag_ids: list[int] | None = None,
+    draft_id: int | None = None,
 ) -> Campaign:
     from apps.automations.models import Flow
     from apps.chats.tasks import run_campaign
@@ -813,9 +814,29 @@ def create_campaign(
         scheduled_at=scheduled_at,
         status=Campaign.Status.SCHEDULED if scheduled_at else Campaign.Status.SENDING,
     )
+    if draft_id:
+        Campaign.objects.filter(account__company=company, pk=draft_id, status=Campaign.Status.DRAFT).delete()
     if not scheduled_at:
         run_campaign.delay(campaign.pk, campaign.recipient_ids)
     return campaign
+
+
+def save_campaign_draft(company: Company, account_id: int, name: str, draft: dict, draft_id: int | None = None) -> Campaign:
+    """Guarda o formulário pela metade; validação de verdade só quando disparar (create_campaign)."""
+    account = get_account(company, account_id)
+    if draft_id is None:
+        campaign = Campaign(account=account, status=Campaign.Status.DRAFT, template_name='', template_language='')
+    else:
+        campaign = get_campaign(company, draft_id)
+        if campaign.status != Campaign.Status.DRAFT:
+            raise Conflict('essa campanha já saiu do rascunho')
+    campaign.account = account
+    campaign.name = name.strip() or 'Rascunho'
+    campaign.template_name = str(draft.get('template_name') or '')[:255]
+    campaign.template_language = str(draft.get('template_language') or '')[:16]
+    campaign.draft = draft
+    campaign.save()
+    return get_campaign(company, campaign.pk)
 
 
 def cancel_campaign(company: Company, campaign_id: int) -> Campaign:

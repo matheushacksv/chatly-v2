@@ -171,13 +171,15 @@ def _run_crm(node: dict, run: FlowRun) -> None:
 
 
 def _deal_id(pd, run: FlowRun) -> int | None:
-    """Negócio do fluxo (gatilho Pipedrive ou bloco "Criar negócio"); sem ele, o negócio aberto da pessoa vinculada."""
+    """Negócio do fluxo (gatilho Pipedrive ou bloco "Criar negócio"); sem ele, o negócio aberto da pessoa vinculada,
+    de preferência o do funil padrão (outro funil, tipo recuperação, só se não houver)."""
     from apps.crm import pipedrive
 
     if run.context.get('deal_id'):
         return run.context['deal_id']
     person_id = run.contact.pipedrive_person_id
     deals = pipedrive.list_open_deals(pd.api_key, person_id) if person_id else []
+    deals.sort(key=lambda d: d.get('pipeline_id') != pd.default_pipeline_id)  # funil padrão primeiro, ordem estável
     if deals:
         run.context['deal_id'] = deals[0]['id']
     return run.context.get('deal_id')

@@ -3078,6 +3078,38 @@ class CampaignTests(BaseChatsTestCase):
         self.assertEqual(campaign.status, 'sending')
         mock_delay.assert_called_once_with(campaign.pk, [self.contact.pk])
 
+    def test_draft_saves_incomplete_form_and_updates(self):
+        url = f'/api/companies/{self.company.pk}/campaigns/drafts'
+        response = self.client.post(url, data={'account_id': self.account.pk, 'name': '', 'draft': {'mode': 'csv'}},
+                                    content_type='application/json', headers=self.auth)
+        self.assertEqual(response.status_code, 201, response.json())
+        body = response.json()
+        self.assertEqual((body['status'], body['name'], body['draft']), ('draft', 'Rascunho', {'mode': 'csv'}))
+
+        response = self.client.put(f'{url}/{body["id"]}', data={'account_id': self.account.pk, 'name': 'Promo', 'draft': {'template_name': 'oferta'}},
+                                   content_type='application/json', headers=self.auth)
+        self.assertEqual(response.status_code, 200, response.json())
+        draft = Campaign.objects.get(pk=body['id'])
+        self.assertEqual((draft.name, draft.template_name, draft.status), ('Promo', 'oferta', 'draft'))
+
+    def test_draft_update_refuses_sent_campaign(self):
+        sent = Campaign.objects.create(account=self.account, name='c', template_name='t', template_language='pt_BR', status='done')
+        response = self.client.put(f'/api/companies/{self.company.pk}/campaigns/drafts/{sent.pk}', data={'account_id': self.account.pk},
+                                   content_type='application/json', headers=self.auth)
+        self.assertEqual(response.status_code, 409)
+
+    @patch('apps.chats.tasks.run_campaign.delay')
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_create_from_draft_removes_draft(self, mock_list, mock_delay):
+        mock_list.return_value = TEMPLATES_FIXTURE
+        draft = Campaign.objects.create(account=self.account, name='r', template_name='', template_language='', status='draft')
+
+        response = self.post_campaign(self.company.pk, draft_id=draft.pk)
+
+        self.assertEqual(response.status_code, 201, response.json())
+        self.assertFalse(Campaign.objects.filter(pk=draft.pk).exists())
+        mock_delay.assert_called_once()
+
     @patch('apps.chats.tasks.run_campaign.delay')
     @patch('apps.chats.whatsapp.list_templates')
     def test_create_campaign_selected_ignores_foreign_contacts(self, mock_list, mock_delay):
@@ -4540,7 +4572,7 @@ class AIToolsTests(BaseChatsTestCase):
 
 class PipedriveOpenDealTests(BaseChatsTestCase):
     @patch('apps.crm.pipedrive.create_deal')
-    @patch('apps.crm.pipedrive.list_open_deals', return_value=[{'id': 5, 'title': 'Negócio antigo'}])
+    @patch('apps.crm.pipedrive.list_open_deals', return_value=[{'id': 5, 'title': 'Negócio antigo', 'pipeline_id': 1}])
     def test_existing_open_deal_is_reused_not_duplicated(self, mock_open, mock_create):
         from apps.chats import ai_tools
         from apps.crm.models import PipedriveAccount
@@ -4553,6 +4585,19 @@ class PipedriveOpenDealTests(BaseChatsTestCase):
         self.assertIn('Já existe negócio aberto', result)
         mock_create.assert_not_called()
         mock_open.assert_called_once_with('pd-key', 88)
+
+    @patch('apps.crm.pipedrive.create_deal', return_value={'id': 9, 'title': 'Cliente A'})
+    @patch('apps.crm.pipedrive.list_open_deals', return_value=[{'id': 5, 'title': 'Recuperação', 'pipeline_id': 7}])
+    def test_open_deal_in_other_pipeline_is_not_reused(self, mock_open, mock_create):
+        from apps.chats import ai_tools
+        from apps.crm.models import PipedriveAccount
+
+        PipedriveAccount.objects.create(company=self.company, api_key='pd-key', default_pipeline_id=1, default_stage_id=2)
+        Contact.objects.filter(pk=self.contact.pk).update(pipedrive_person_id=88)
+        self.contact.refresh_from_db()
+        tools, _ = ai_tools.build_tools(self.contact)
+        next(t for t in tools if t.__name__ == 'criar_negocio')(titulo='Cliente A')
+        mock_create.assert_called_once_with('pd-key', 'Cliente A', 88, 1, 2, None)  # funil padrão, não o de recuperação
 
 
 

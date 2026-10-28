@@ -129,6 +129,7 @@ class Sticker(models.Model):
 
 class Campaign(models.Model):
     class Status(models.TextChoices):
+        DRAFT = 'draft', 'Rascunho'
         SCHEDULED = 'scheduled', 'Agendada'
         SENDING = 'sending', 'Enviando'
         DONE = 'done', 'Concluída'
@@ -152,6 +153,8 @@ class Campaign(models.Model):
     scheduled_at = models.DateTimeField(null=True, blank=True)
     # destinatários calculados na criação; o envio agendado usa esta lista
     recipient_ids = models.JSONField(default=list, blank=True)
+    # rascunho: o formulário como o front deixou (template, público, agendamento); nunca dispara sozinho
+    draft = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
