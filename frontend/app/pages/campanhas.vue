@@ -164,6 +164,7 @@ function openCreate() {
   csvTags.value = []
   reuseCampaignId.value = undefined
   reuseSearch.value = ''
+  pastedNumbers.value = ''
   createOpen.value = true
 }
 
@@ -221,6 +222,29 @@ function setReuseVisible(checked: boolean) {
     if (checked) reuseSelected.value.add(c.id)
     else reuseSelected.value.delete(c.id)
   }
+}
+
+// colar números (um por linha, vírgula, com ou sem DDI/máscara) e desmarcar os que estão na lista
+const pastedNumbers = ref('')
+// chave de comparação: DDI 55 + DDD + 8 últimos dígitos, pra casar com e sem o 9 do celular
+function numberKey(raw: string): string {
+  let digits = raw.replace(/\D/g, '')
+  if (digits.length === 10 || digits.length === 11) digits = `55${digits}`
+  return digits.startsWith('55') && digits.length >= 12 ? `55${digits.slice(2, 4)}${digits.slice(-8)}` : digits
+}
+
+function unselectPasted() {
+  const keys = new Set(pastedNumbers.value.split(/[\n,;]+/).map(numberKey).filter(k => k.length >= 8))
+  if (!keys.size) return
+  const hits = reuseContacts.value.filter(c => keys.has(numberKey(c.wa_id)))
+  for (const c of hits) reuseSelected.value.delete(c.id)
+  const missing = keys.size - new Set(hits.map(c => numberKey(c.wa_id))).size
+  toast.add({
+    title: `${hits.length} desmarcado(s)`,
+    description: missing ? `${missing} número(s) não estavam nesse público` : undefined,
+    icon: 'i-lucide-user-minus'
+  })
+  pastedNumbers.value = ''
 }
 
 // seleção manual: contatos da conta escolhida
@@ -542,6 +566,24 @@ async function create() {
                 <span v-if="excludedTag(contact)" class="text-xs text-muted shrink-0">sai por "{{ excludedTag(contact) }}"</span>
                 <span class="text-xs text-muted font-mono ml-auto shrink-0">{{ contact.wa_id }}</span>
               </label>
+            </div>
+            <div class="flex items-start gap-2">
+              <UTextarea
+                v-model="pastedNumbers"
+                :rows="2"
+                autoresize
+                :maxrows="6"
+                placeholder="Cole números pra tirar (um por linha ou separados por vírgula)"
+                class="flex-1"
+              />
+              <UButton
+                label="Desmarcar estes"
+                icon="i-lucide-user-minus"
+                variant="soft"
+                size="sm"
+                :disabled="!pastedNumbers.trim()"
+                @click="unselectPasted"
+              />
             </div>
             <p class="text-xs text-muted">
               {{ reuseFinalCount }} de {{ reuseContacts.length }} vão receber

@@ -854,6 +854,14 @@ class DelayRuntimeTests(BaseAutomationsTestCase):
         self.assertEqual(run.node_id, 'd')
         mock_sched.assert_called_once()
 
+    def test_countdown_in_seconds_and_legacy_minutes(self, mock_sched):
+        graph = _graph([('start', 'start', {}), ('d', 'delay', {'seconds': 15}), ('a', 'ai', {})], [('start', 'd', None), ('d', 'a', None)])
+        services.start_flow(self.make_flow(graph=graph, active=True, trigger=Flow.Trigger.FIRST_MESSAGE), self._contact())
+        self.assertEqual(mock_sched.call_args.kwargs['countdown'], 15)
+        FlowRun.objects.all().delete()
+        services.start_flow(self.make_flow(graph=_DELAY, active=True, trigger=Flow.Trigger.FIRST_MESSAGE), Contact.objects.get())
+        self.assertEqual(mock_sched.call_args.kwargs['countdown'], 300)  # {'minutes': 5} de fluxo antigo
+
     def test_resume_continues(self, mock_sched):
         flow = self.make_flow(graph=_DELAY, active=True, trigger=Flow.Trigger.FIRST_MESSAGE)
         run = services.start_flow(flow, self._contact())

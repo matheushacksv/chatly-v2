@@ -427,7 +427,8 @@ export interface FlowNodeData {
   op?: 'contains' | 'equals' | 'regex' | 'window_open' | 'has_tag' | 'filled'
   value?: string
   values?: string[] // condição contém/é igual: basta um casar
-  minutes?: number
+  minutes?: number // espera antiga, em minutos
+  seconds?: number
   action?: 'person' | 'deal' | 'note' | 'stage' | 'label' | 'field' | 'add' | 'remove'
   field?: string // coletar dado: chave do campo do contato; crm "field": 'person:<chave>' ou 'deal:<chave>'
   title?: string

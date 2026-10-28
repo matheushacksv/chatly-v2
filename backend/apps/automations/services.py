@@ -240,7 +240,9 @@ def _execute(node: dict, run: FlowRun, message: Message | None) -> str | None:
     if t == 'delay':
         from apps.automations import tasks
 
-        tasks.resume_flow.apply_async(args=(run.pk,), countdown=int(data.get('minutes', 0)) * 60)
+        # em segundos; bloco antigo guardava minutos
+        seconds = int(data['seconds']) if 'seconds' in data else int(data.get('minutes', 0)) * 60
+        tasks.resume_flow.apply_async(args=(run.pk,), countdown=seconds)
         return None
     if t == 'collect':
         # pergunta e espera: a resposta cai no campo do contato em dispatch_incoming

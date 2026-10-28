@@ -67,7 +67,7 @@ export const FLOW_NODE_META: Record<FlowNodeType, NodeMeta> = {
     icon: 'i-lucide-timer',
     color: 'text-warning',
     hint: 'Segura o fluxo por um tempo antes do próximo nó',
-    data: () => ({ minutes: 60 })
+    data: () => ({ seconds: 60 })
   },
   crm: {
     label: 'Pipedrive',
@@ -190,7 +190,7 @@ export function flowNodeSummary(type: FlowNodeType, data: FlowNodeData): string 
       if (data.op === 'filled') return `${CONDITION_SOURCES[data.source ?? ''] ?? `{{${data.source}}}`} está preenchido?`
       return `${CONDITION_SOURCES[data.source ?? 'last_message'] ?? `{{${data.source}}}`} ${CONDITION_OPS[data.op ?? 'contains']} ${(data.op !== 'regex' && data.values?.length ? data.values : [data.value || '...']).map(v => `"${v}"`).join(' ou ')}`
     case 'delay':
-      return formatMinutes(data.minutes ?? 0)
+      return formatSeconds(delaySeconds(data))
     case 'crm':
       if (data.action === 'note') return data.note_target === 'deal' ? 'Anotação no negócio' : 'Anotação na pessoa'
       if (data.action === 'field') return data.field ? `Preenche campo com ${data.value || '...'}` : 'Escolha o campo'
@@ -203,6 +203,17 @@ export function flowNodeSummary(type: FlowNodeType, data: FlowNodeData): string 
     default:
       return FLOW_NODE_META[type].hint
   }
+}
+
+/** Espera em segundos; bloco antigo guardava `minutes`. */
+export function delaySeconds(data: FlowNodeData): number {
+  return data.seconds ?? (data.minutes ?? 0) * 60
+}
+
+export function formatSeconds(seconds: number): string {
+  if (seconds < 60) return `${seconds} s`
+  if (seconds < 3600 && seconds % 60) return `${Math.floor(seconds / 60)} min ${seconds % 60} s`
+  return formatMinutes(Math.round(seconds / 60))
 }
 
 export function formatMinutes(minutes: number): string {

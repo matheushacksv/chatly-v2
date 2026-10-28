@@ -79,6 +79,12 @@ const multiValue = computed(() => ['contains', 'equals'].includes(data.value.op 
 
 const buttonValueItems = computed(() => [...new Set([...(props.flowButtons ?? []), ...templateButtons.value])])
 
+// ---- espera: grava em segundos e larga o `minutes` do bloco antigo ----
+function setDelaySeconds(value: string | number) {
+  data.value.seconds = Number(value) || 0
+  delete data.value.minutes
+}
+
 // ---- botões ----
 const buttons = computed(() => data.value.buttons ?? [])
 
@@ -417,14 +423,15 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
 
     <UFormField
       v-if="type === 'delay'"
-      label="Esperar (minutos)"
-      :help="formatMinutes(data.minutes ?? 0)"
+      label="Esperar (segundos)"
+      :help="formatSeconds(delaySeconds(data))"
     >
       <UInput
-        v-model.number="data.minutes"
+        :model-value="delaySeconds(data)"
         type="number"
         min="1"
         class="w-full"
+        @update:model-value="setDelaySeconds"
       />
     </UFormField>
 
