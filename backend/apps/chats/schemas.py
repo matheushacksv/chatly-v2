@@ -212,7 +212,15 @@ class CampaignOutDTO(ModelSchema):
 
     class Meta:
         model = Campaign
-        fields = ['id', 'name', 'template_name', 'template_language', 'flow', 'status', 'total', 'sent', 'failed', 'scheduled_at', 'created_at']
+        fields = ['id', 'account', 'name', 'template_name', 'template_language', 'body_params', 'flow', 'status', 'total', 'sent', 'failed', 'scheduled_at', 'created_at']
+
+
+class CampaignRecipientOutDTO(ModelSchema):
+    tags: list[TagOutDTO] = []
+
+    class Meta:
+        model = Contact
+        fields = ['id', 'name', 'wa_id']
 
 
 class HeaderDTO(Schema):

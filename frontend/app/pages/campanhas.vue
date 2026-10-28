@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Campaign, Contact, CsvRecipient, Flow, Paginated, Tag, Template, WhatsAppAccount } from '~/types/api'
+import type { Campaign, CampaignRecipient, Contact, CsvRecipient, Flow, Paginated, Tag, Template, WhatsAppAccount } from '~/types/api'
 
 const api = useApi()
 const toast = useToast()
@@ -65,12 +65,13 @@ const template = ref<Template | null>(null)
 const params = ref<string[]>([])
 const headerMediaId = ref('')
 
-type RecipientMode = 'all' | 'select' | 'csv'
+type RecipientMode = 'all' | 'select' | 'csv' | 'reuse'
 const mode = ref<RecipientMode>('all')
 const modeItems = [
   { label: 'Todos os contatos', value: 'all' },
   { label: 'Selecionar contatos', value: 'select' },
-  { label: 'Importar CSV', value: 'csv' }
+  { label: 'Importar CSV', value: 'csv' },
+  { label: 'Público de outra campanha', value: 'reuse' }
 ]
 
 // fluxo disparado no clique de um botão do template + filtro por etiqueta
@@ -161,7 +162,65 @@ function openCreate() {
   csvNumbers.value = []
   csvInvalid.value = []
   csvTags.value = []
+  reuseCampaignId.value = undefined
+  reuseSearch.value = ''
   createOpen.value = true
+}
+
+// "Reutilizar público" no detalhe: abre a nova campanha com o público, o template e o fluxo da escolhida
+function reuseAudience(campaign: Campaign) {
+  openCreate()
+  accountId.value = campaign.account
+  name.value = `${campaign.name} (nova)`
+  // o picker reconhece por nome+idioma e troca pelo template completo
+  template.value = { name: campaign.template_name, language: campaign.template_language } as Template
+  params.value = [...campaign.body_params]
+  flowId.value = campaign.flow ?? undefined
+  mode.value = 'reuse'
+  reuseCampaignId.value = campaign.id
+  detailOpen.value = false
+}
+
+// público de outra campanha: vem todo marcado, desmarque quem não deve receber
+// ponytail: lista inteira renderizada; paginar se público de milhares ficar lento
+const reuseCampaignId = ref<number | undefined>(undefined)
+const reuseContacts = ref<CampaignRecipient[]>([])
+const reuseSelected = ref(new Set<number>())
+const reuseSearch = ref('')
+const reuseLoading = ref(false)
+const reuseCampaignItems = computed(() =>
+  campaigns.value.filter(c => c.account === accountId.value).map(c => ({ label: `${c.name} (${c.total} contato(s))`, value: c.id }))
+)
+watch(reuseCampaignId, async (id) => {
+  reuseContacts.value = []
+  reuseSelected.value = new Set()
+  if (!id) return
+  reuseLoading.value = true
+  try {
+    reuseContacts.value = await api<CampaignRecipient[]>(`/companies/${companyId.value}/campaigns/${id}/recipients`)
+    reuseSelected.value = new Set(reuseContacts.value.map(c => c.id))
+  } finally {
+    reuseLoading.value = false
+  }
+})
+const reuseVisible = computed(() => {
+  const q = reuseSearch.value.trim().toLowerCase()
+  return q ? reuseContacts.value.filter(c => `${c.name} ${c.wa_id}`.toLowerCase().includes(q)) : reuseContacts.value
+})
+// etiqueta em "Nunca enviar": o backend tira no envio, aqui só mostra
+const excludedTag = (contact: CampaignRecipient) => contact.tags.find(t => excludeTagIds.value.includes(t.id))?.name
+const reuseFinalCount = computed(() => reuseContacts.value.filter(c => reuseSelected.value.has(c.id) && !excludedTag(c)).length)
+
+function toggleReuse(id: number) {
+  if (reuseSelected.value.has(id)) reuseSelected.value.delete(id)
+  else reuseSelected.value.add(id)
+}
+
+function setReuseVisible(checked: boolean) {
+  for (const c of reuseVisible.value) {
+    if (checked) reuseSelected.value.add(c.id)
+    else reuseSelected.value.delete(c.id)
+  }
 }
 
 // seleção manual: contatos da conta escolhida
@@ -228,6 +287,7 @@ const campaignMissingReasons = computed(() => {
   if (when.value === 'later' && !(scheduledLocal.value && new Date(scheduledLocal.value) > new Date())) reasons.push('escolha uma data e hora futura')
   if (mode.value === 'select' && !selectedContactIds.value.length) reasons.push('selecione ao menos um contato')
   if (mode.value === 'csv' && !csvNumbers.value.length) reasons.push('importe um CSV com números')
+  if (mode.value === 'reuse' && !reuseFinalCount.value) reasons.push('escolha uma campanha e mantenha ao menos um contato')
   return reasons
 })
 const canSubmit = computed(() => campaignMissingReasons.value.length === 0)
@@ -250,6 +310,7 @@ async function create() {
     }
     if (mode.value === 'all') body.tag_groups = tagGroups.value
     if (mode.value === 'select') body.contact_ids = selectedContactIds.value
+    if (mode.value === 'reuse') body.contact_ids = [...reuseSelected.value]
     if (mode.value === 'csv') {
       body.contact_ids = []
       body.numbers = csvNumbers.value
@@ -383,8 +444,19 @@ async function create() {
         </div>
       </div>
     </template>
-    <template v-if="isOwner && detail && detail.status !== 'sending'" #footer>
-      <UButton label="Excluir campanha" icon="i-lucide-trash-2" color="error" variant="ghost" size="sm" @click="removeCampaign" />
+    <template v-if="detail" #footer>
+      <div class="flex w-full items-center justify-between gap-2">
+        <UButton label="Reutilizar público" icon="i-lucide-users" variant="soft" size="sm" @click="reuseAudience(detail)" />
+        <UButton
+          v-if="isOwner && detail.status !== 'sending'"
+          label="Excluir campanha"
+          icon="i-lucide-trash-2"
+          color="error"
+          variant="ghost"
+          size="sm"
+          @click="removeCampaign"
+        />
+      </div>
     </template>
   </UModal>
 
@@ -439,6 +511,42 @@ async function create() {
             <span class="text-sm truncate">{{ contact.name || contact.wa_id }}</span>
             <span class="text-xs text-muted font-mono ml-auto shrink-0">{{ contact.wa_id }}</span>
           </label>
+        </div>
+
+        <div v-if="mode === 'reuse'" class="space-y-2">
+          <USelectMenu
+            v-model="reuseCampaignId"
+            :items="reuseCampaignItems"
+            value-key="value"
+            placeholder="Escolha a campanha"
+            icon="i-lucide-megaphone"
+            class="w-full"
+          />
+          <template v-if="reuseCampaignId">
+            <div class="flex items-center gap-2">
+              <UInput v-model="reuseSearch" icon="i-lucide-search" placeholder="Buscar nome ou número" size="sm" class="flex-1" />
+              <UButton label="Marcar" variant="ghost" size="xs" @click="setReuseVisible(true)" />
+              <UButton label="Desmarcar" variant="ghost" color="neutral" size="xs" @click="setReuseVisible(false)" />
+            </div>
+            <div class="rounded-lg ring-1 ring-default max-h-56 overflow-y-auto divide-y divide-default">
+              <p v-if="reuseLoading" class="p-3 text-sm text-muted">Carregando...</p>
+              <p v-else-if="!reuseVisible.length" class="p-3 text-sm text-muted">Nenhum contato.</p>
+              <label
+                v-for="contact in reuseVisible"
+                :key="contact.id"
+                class="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-elevated/60"
+                :class="{ 'opacity-50': excludedTag(contact) }"
+              >
+                <UCheckbox :model-value="reuseSelected.has(contact.id)" @update:model-value="toggleReuse(contact.id)" />
+                <span class="text-sm truncate">{{ contact.name || contact.wa_id }}</span>
+                <span v-if="excludedTag(contact)" class="text-xs text-muted shrink-0">sai por "{{ excludedTag(contact) }}"</span>
+                <span class="text-xs text-muted font-mono ml-auto shrink-0">{{ contact.wa_id }}</span>
+              </label>
+            </div>
+            <p class="text-xs text-muted">
+              {{ reuseFinalCount }} de {{ reuseContacts.length }} vão receber
+            </p>
+          </template>
         </div>
 
         <div v-if="mode === 'csv'" class="space-y-2">

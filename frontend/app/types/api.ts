@@ -181,9 +181,11 @@ export interface TemplateCreated {
 
 export interface Campaign {
   id: number
+  account: number
   name: string
   template_name: string
   template_language: string
+  body_params: string[]
   flow: number | null
   status: 'scheduled' | 'sending' | 'done' | 'failed' | 'canceled'
   total: number
@@ -194,6 +196,9 @@ export interface Campaign {
   delivered: number
   read: number
 }
+
+/** Contato do público de uma campanha, pra reaproveitar em outra */
+export type CampaignRecipient = Pick<Contact, 'id' | 'name' | 'wa_id' | 'tags'>
 
 export interface Credential {
   id: number

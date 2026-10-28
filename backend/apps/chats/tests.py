@@ -4769,3 +4769,28 @@ class AiToggleTests(BaseChatsTestCase):
         self.assertFalse(response.json()['ai_enabled'])
         self.account.refresh_from_db()
         self.assertFalse(self.account.ai_enabled)
+
+
+class CampaignRecipientsTests(BaseChatsTestCase):
+    def test_lists_saved_recipients(self):
+        other = Contact.objects.create(account=self.account, wa_id='5511900000002', name='Bia')
+        Contact.objects.create(account=self.account, wa_id='5511900000003', name='Fora')
+        campaign = Campaign.objects.create(account=self.account, name='c', template_name='t', template_language='pt_BR', recipient_ids=[self.contact.pk, other.pk])
+
+        response = self.client.get(f'/api/companies/{self.company.pk}/campaigns/{campaign.pk}/recipients', headers=self.auth)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual({c['id'] for c in response.json()}, {self.contact.pk, other.pk})
+
+    def test_old_campaign_falls_back_to_sent_messages(self):
+        campaign = Campaign.objects.create(account=self.account, name='c', template_name='t', template_language='pt_BR')
+        Message.objects.create(contact=self.contact, direction='out', content='oi', wa_message_id='wamid.old', campaign=campaign)
+
+        ids = [c.pk for c in services.campaign_recipients(self.company, campaign.pk)]
+
+        self.assertEqual(ids, [self.contact.pk])
+
+    def test_other_company_404(self):
+        campaign = Campaign.objects.create(account=self.account, name='c', template_name='t', template_language='pt_BR')
+        with self.assertRaises(NotFound):
+            services.campaign_recipients(self.other_company, campaign.pk)

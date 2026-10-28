@@ -153,6 +153,17 @@ async function createFlow() {
   }
 }
 
+// cópia pausada logo abaixo do original, pra adaptar sem mexer nele
+async function duplicateFlow(flow: Flow) {
+  try {
+    const copy = await api<Flow>(`/automations/${companyId.value}/flows/${flow.id}/duplicate`, { method: 'POST' })
+    flows.value.splice(flows.value.findIndex(f => f.id === flow.id) + 1, 0, copy)
+    toast.add({ title: `"${copy.name}" criado, pausado`, icon: 'i-lucide-copy', color: 'success' })
+  } catch (error) {
+    toast.add({ title: apiErrorDetail(error, 'Não foi possível duplicar'), color: 'error' })
+  }
+}
+
 async function removeFlow(flow: Flow) {
   const ok = await confirm({
     title: `Excluir "${flow.name}"?`,
@@ -364,6 +375,16 @@ const waLink = computed(() => {
                 size="sm"
                 class="shrink-0 hidden sm:flex"
                 @click="openRuns(flow)"
+              />
+              <UButton
+                icon="i-lucide-copy"
+                color="neutral"
+                variant="ghost"
+                size="sm"
+                class="shrink-0"
+                aria-label="Duplicar fluxo"
+                title="Duplicar"
+                @click="duplicateFlow(flow)"
               />
               <UButton
                 icon="i-lucide-trash-2"

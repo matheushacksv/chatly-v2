@@ -874,6 +874,13 @@ def get_campaign(company: Company, campaign_id: int) -> Campaign:
     return campaign
 
 
+def campaign_recipients(company: Company, campaign_id: int) -> QuerySet[Contact]:
+    """Público de uma campanha, pra reaproveitar em outra. Campanha antiga sem a lista gravada: quem recebeu mensagem dela."""
+    campaign = get_campaign(company, campaign_id)
+    ids = campaign.recipient_ids or Message.objects.filter(campaign=campaign, direction='out').values('contact_id')
+    return Contact.objects.filter(account=campaign.account, pk__in=ids).prefetch_related('tags').order_by('name', 'wa_id')
+
+
 # * ----- Webhooks ------
 
 

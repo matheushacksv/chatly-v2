@@ -1262,3 +1262,26 @@ class OutboundCheckTests(TestCase):
             with self.assertRaises(ValidationError):
                 outbound.request('POST', 'https://localhost/x', {}, '')
             mock_req.assert_not_called()
+
+
+class DuplicateFlowTests(BaseAutomationsTestCase):
+    def test_duplicate_copies_graph_paused(self):
+        graph = _cond_graph('contains', ['bora'])
+        flow = self.make_flow(name='Resposta consulta', graph=graph, active=True, trigger=Flow.Trigger.CAMPAIGN)
+
+        response = self.client.post(f'/api/automations/{self.company.pk}/flows/{flow.pk}/duplicate', headers=self.auth)
+
+        self.assertEqual(response.status_code, 201)
+        copy = Flow.objects.get(pk=response.json()['id'])
+        self.assertNotEqual(copy.pk, flow.pk)
+        self.assertEqual(copy.name, 'Resposta consulta (cópia)')
+        self.assertEqual((copy.graph, copy.trigger, copy.account_id), (graph, Flow.Trigger.CAMPAIGN, self.account.pk))
+        self.assertFalse(copy.active)
+
+    def test_duplicate_other_company_404(self):
+        other = Company.objects.create(name='Outra', owner=self.owner)
+        flow = self.make_flow()
+        flow.company = other
+        flow.save()
+        response = self.client.post(f'/api/automations/{self.company.pk}/flows/{flow.pk}/duplicate', headers=self.auth)
+        self.assertEqual(response.status_code, 404)

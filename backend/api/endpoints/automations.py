@@ -50,6 +50,12 @@ def delete_flow_endpoint(request, company_id: int, flow_id: int):
     return Status(204, None)
 
 
+@router.post('/{company_id}/flows/{flow_id}/duplicate', response={201: FlowOutDTO})
+def duplicate_flow_endpoint(request, company_id: int, flow_id: int):
+    company = companies_services.get_owned_company(request.auth, company_id)
+    return Status(201, services.duplicate_flow(company, flow_id))
+
+
 @router.post('/{company_id}/flows/{flow_id}/activate', response=FlowOutDTO)
 def active_flow_endpoint(request, company_id: int, flow_id: int, payload: FlowActivateDTO):
     company = companies_services.get_owned_company(request.auth, company_id)

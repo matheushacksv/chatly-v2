@@ -332,6 +332,18 @@ def update_flow(company: Company, flow_id: int, data: dict) -> Flow:
     return get_flow(company, flow.pk)
 
 
+def duplicate_flow(company: Company, flow_id: int) -> Flow:
+    """Cópia pausada do fluxo, pra adaptar sem mexer no original."""
+    flow = get_flow(company, flow_id)
+    return create_flow(company, {
+        'name': f'{flow.name} (cópia)'[:Flow._meta.get_field('name').max_length],
+        'account_id': flow.account_id,
+        'trigger': flow.trigger,
+        'trigger_config': flow.trigger_config,
+        'graph': flow.graph,
+    })
+
+
 def delete_flow(company: Company, flow_id: int) -> None:
     get_flow(company, flow_id).delete()
 

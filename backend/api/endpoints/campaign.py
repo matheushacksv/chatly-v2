@@ -2,7 +2,7 @@ from ninja import Router, Status
 from ninja.pagination import paginate
 
 from apps.chats import services
-from apps.chats.schemas import CampaignAudienceInDTO, CampaignAudienceOutDTO, CampaignInDTO, CampaignOutDTO
+from apps.chats.schemas import CampaignAudienceInDTO, CampaignAudienceOutDTO, CampaignInDTO, CampaignOutDTO, CampaignRecipientOutDTO
 from apps.companies import services as companies_services
 
 router = Router(tags=['Campaigns'])
@@ -60,3 +60,9 @@ def delete_campaign_endpoint(request, company_id: int, campaign_id: int):
 def get_campaign_endpoint(request, company_id: int, campaign_id: int):
     company = companies_services.get_company(request.auth, company_id)
     return services.get_campaign(company, campaign_id)
+
+
+@router.get('/{company_id}/campaigns/{campaign_id}/recipients', response=list[CampaignRecipientOutDTO])
+def campaign_recipients_endpoint(request, company_id: int, campaign_id: int):
+    company = companies_services.get_company(request.auth, company_id)
+    return services.campaign_recipients(company, campaign_id)
