@@ -106,6 +106,17 @@ def _match_condition(subject: str, op: str, value: str) -> bool:
     return value.lower() in subject.lower()
 
 
+def _save_collected(run: FlowRun, field: str | None, value: str) -> None:
+    """Resposta do "Coletar dado" vai pro campo do contato: aparece no painel e vira {{campo}} nos blocos seguintes."""
+    if not field or not value.strip():
+        return
+    try:
+        chat_services.update_contact(run.flow.company, run.contact_id, {'custom_fields': {field: value}})
+        run.contact.refresh_from_db(fields=['custom_fields'])  # {{campo}} dos próximos blocos lê daqui
+    except ValidationError:
+        pass  # campo apagado depois do fluxo montado: fica só na variável do fluxo
+
+
 def _run_crm(node: dict, run: FlowRun) -> None:
     from apps.crm import pipedrive
     from apps.crm import services as crm_services
@@ -142,6 +153,17 @@ def _run_crm(node: dict, run: FlowRun) -> None:
                 new = labels if data['label_id'] in labels else [*labels, data['label_id']]
             if new != labels:
                 pipedrive.update_deal(pd.api_key, deal_id, label_ids=new)
+    elif action == 'field':
+        # campo personalizado da pessoa ou do negócio, ex.: {{email}} coletado antes
+        # ponytail: valor vai como texto; campo de opção (enum) do Pipedrive recusa e o fluxo falha nesse bloco
+        source, _, key = (data.get('field') or '').partition(':')
+        value = _render(data.get('value', ''), run).strip()
+        if not key or not value:
+            return
+        if source == 'person':
+            pipedrive.update_person(pd.api_key, crm_services.find_or_create_person(pd, contact), custom_fields={key: value})
+        elif deal_id := _deal_id(pd, run):
+            pipedrive.update_deal(pd.api_key, deal_id, custom_fields={key: value})
 
 
 def _deal_id(pd, run: FlowRun) -> int | None:
@@ -216,7 +238,13 @@ def _execute(node: dict, run: FlowRun, message: Message | None) -> str | None:
 
         tasks.resume_flow.apply_async(args=(run.pk,), countdown=int(data.get('minutes', 0)) * 60)
         return None
-    if t == 'wait':
+    if t == 'collect':
+        # pergunta e espera: a resposta cai no campo do contato em dispatch_incoming
+        text = _render(data.get('text', ''), run)
+        if text.strip():
+            wamid = whatsapp.send_text(account, contact.wa_id, text)
+            chat_services.record_outgoing_message(contact, wamid, text)
+    if t in ('wait', 'collect'):
         if data.get('timeout_minutes'):
             from apps.automations import tasks
 
@@ -457,11 +485,13 @@ def dispatch_incoming(message: Message) -> bool:
             node = _node(run.flow.graph, run.node_id)
             if node and node['type'] == 'buttons' and message.button_id:
                 _resume(run, _next_id(run.flow.graph, run.node_id, message.button_id), message)
-            elif node and node['type'] == 'wait':
+            elif node and node['type'] in ('wait', 'collect'):
                 run.context['last_message'] = message.content or ''
-                var = node.get('data', {}).get('var')
+                var = node.get('data', {}).get('var') if node['type'] == 'wait' else node.get('data', {}).get('field')
                 if var:
                     run.context[var] = message.content or ''
+                if node['type'] == 'collect':
+                    _save_collected(run, node.get('data', {}).get('field'), message.content or '')
                 _resume(run, _next_id(run.flow.graph, run.node_id), message)
         return True
     flow = _match_trigger(contact, message)
@@ -548,7 +578,7 @@ def resume(run_id: int) -> None:
         return
     if node['type'] == 'delay':
         nxt = _next_id(run.flow.graph, run.node_id)
-    elif node['type'] == 'wait':
+    elif node['type'] in ('wait', 'collect'):
         nxt = _next_id(run.flow.graph, run.node_id, 'timeout') or _next_id(run.flow.graph, run.node_id)
     else:
         return

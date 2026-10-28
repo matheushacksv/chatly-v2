@@ -48,6 +48,13 @@ export const FLOW_NODE_META: Record<FlowNodeType, NodeMeta> = {
     hint: 'Pausa até o contato responder e guarda o texto numa variável',
     data: () => ({ var: 'resposta', timeout_minutes: 0 })
   },
+  collect: {
+    label: 'Coletar dado',
+    icon: 'i-lucide-text-cursor-input',
+    color: 'text-warning',
+    hint: 'Pergunta, espera a resposta e salva num campo do contato (ex.: e-mail)',
+    data: () => ({ text: '', field: '', timeout_minutes: 0 })
+  },
   condition: {
     label: 'Condição',
     icon: 'i-lucide-git-branch',
@@ -144,7 +151,8 @@ const CRM_ACTIONS: Record<string, string> = {
   deal: 'Criar negócio',
   note: 'Salvar anotação',
   stage: 'Mover de estágio',
-  label: 'Etiqueta no negócio'
+  label: 'Etiqueta no negócio',
+  field: 'Preencher campo'
 }
 
 export const FLOW_CRM_ACTION_ITEMS = Object.entries(CRM_ACTIONS).map(([value, label]) => ({ label, value }))
@@ -156,7 +164,7 @@ export function flowNodeOutputs(type: FlowNodeType, data: FlowNodeData): { id: s
   if (type === 'buttons') return (data.buttons ?? []).map(b => ({ id: b.id, label: b.title || 'Sem nome' }))
   if (type === 'condition') return [{ id: 'sim', label: 'Sim' }, { id: 'nao', label: 'Não' }]
   if (type === 'http') return [{ id: 'sucesso', label: 'Sucesso' }, { id: 'falha', label: 'Falha' }]
-  if (type === 'wait' && data.timeout_minutes) {
+  if ((type === 'wait' || type === 'collect') && data.timeout_minutes) {
     return [{ id: undefined, label: 'Respondeu' }, { id: 'timeout', label: 'Não respondeu' }]
   }
   return [{ id: undefined, label: '' }]
@@ -172,6 +180,8 @@ export function flowNodeSummary(type: FlowNodeType, data: FlowNodeData): string 
     case 'message':
     case 'buttons':
       return data.text || 'Escreva a mensagem'
+    case 'collect':
+      return data.field ? `Salva em {{${data.field}}}` : 'Escolha o campo'
     case 'wait':
       return `Guarda em {{${data.var || 'resposta'}}}`
     case 'condition':
@@ -182,6 +192,7 @@ export function flowNodeSummary(type: FlowNodeType, data: FlowNodeData): string 
     case 'delay':
       return formatMinutes(data.minutes ?? 0)
     case 'crm':
+      if (data.action === 'field') return data.field ? `Preenche campo com ${data.value || '...'}` : 'Escolha o campo'
       if (data.action === 'label') return data.label_mode === 'remove' ? 'Remove etiqueta do negócio' : 'Etiqueta o negócio'
       return CRM_ACTIONS[data.action ?? 'deal'] ?? ''
     case 'http':

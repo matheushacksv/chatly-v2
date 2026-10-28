@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Formulário do nó selecionado. Escreve direto no `data` do nó (objeto do grafo),
 // então o canvas reflete a edição enquanto se digita.
-import type { FlowNodeData, FlowNodeType, PipedrivePipeline, Tag, TagColor, Template } from '~/types/api'
+import type { FlowNodeData, FlowNodeType, PipedriveField, PipedrivePipeline, Tag, TagColor, Template } from '~/types/api'
 
 const props = defineProps<{
   type: FlowNodeType
@@ -35,7 +35,7 @@ watch([pickedParams, pickedHeaderMediaId], () => {
 // ---- variáveis: escolher no menu em vez de digitar {{...}} ----
 const FLOW_EXTRA_VARS = [{ label: 'Botão clicado', key: 'botao' }, { label: 'Nome da campanha', key: 'campanha' }]
 
-function insertVar(field: 'text' | 'url' | 'body', token: string) {
+function insertVar(field: 'text' | 'url' | 'body' | 'value', token: string) {
   const current = data.value[field] ?? ''
   data.value[field] = current && !/\s$/.test(current) ? `${current} ${token}` : current + token
 }
@@ -131,6 +131,24 @@ async function createTag(name: string, color: TagColor = 'neutral') {
     creatingTag.value = false
   }
 }
+
+// ---- coletar dado: campo do contato que recebe a resposta ----
+const { fields: contactFields } = useContactFields()
+const contactFieldItems = computed(() => contactFields.value.map(f => ({ label: f.label, value: f.key })))
+
+// ---- campos personalizados do Pipedrive (nó crm: preencher campo) ----
+const pipedriveFieldItems = ref<{ label: string, value: string }[]>([])
+const pipedriveFieldsError = ref('')
+
+watch(() => [props.type, data.value.action], async ([type, action]) => {
+  if (type !== 'crm' || action !== 'field' || pipedriveFieldItems.value.length) return
+  try {
+    const fields = await api<PipedriveField[]>(`/companies/${props.companyId}/pipedrive/fields`)
+    pipedriveFieldItems.value = fields.map(f => ({ label: `${f.source === 'person' ? 'Pessoa' : 'Negócio'} · ${f.name}`, value: `${f.source}:${f.key}` }))
+  } catch (error) {
+    pipedriveFieldsError.value = apiErrorDetail(error, 'Conecte o Pipedrive em Configurações')
+  }
+}, { immediate: true })
 
 // ---- estágios do Pipedrive (nó crm: mover de estágio) ----
 const stageItems = ref<{ label: string, value: number }[]>([])
@@ -246,6 +264,46 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
             @click="addButton()"
           />
         </div>
+      </AppField>
+    </template>
+
+    <template v-if="type === 'collect'">
+      <UFormField
+        label="Pergunta"
+        required
+      >
+        <template #hint>
+          <VarInsertMenu :flow-vars="flowVars" :extra="FLOW_EXTRA_VARS" @insert="insertVar('text', $event)" />
+        </template>
+        <UTextarea
+          v-model="data.text"
+          :rows="2"
+          class="w-full"
+          placeholder="Me manda seu e-mail?"
+        />
+      </UFormField>
+      <AppField
+        label="Salvar a resposta em"
+        tip="Campo do contato: aparece no painel da conversa e vira {{campo}} nos blocos seguintes (HTTP, Pipedrive, mensagens). Crie campos em Contatos > Campos"
+      >
+        <USelectMenu
+          v-model="data.field"
+          :items="contactFieldItems"
+          value-key="value"
+          class="w-full"
+          placeholder="Escolha o campo"
+        />
+      </AppField>
+      <AppField
+        label="Desistir depois de (minutos)"
+        tip="0 = espera pra sempre"
+      >
+        <UInput
+          v-model.number="data.timeout_minutes"
+          type="number"
+          min="0"
+          class="w-full"
+        />
       </AppField>
     </template>
 
@@ -517,6 +575,35 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
           class="w-full"
         />
       </UFormField>
+      <template v-if="data.action === 'field'">
+        <AppField
+          label="Campo do Pipedrive"
+          required
+          tip="Campo personalizado da pessoa ou do negócio. Campo de opções (lista) não aceita texto livre"
+        >
+          <USelectMenu
+            v-model="data.field"
+            :items="pipedriveFieldItems"
+            value-key="value"
+            :placeholder="pipedriveFieldsError || 'Escolha o campo'"
+            :disabled="!pipedriveFieldItems.length"
+            class="w-full"
+          />
+        </AppField>
+        <UFormField
+          label="Valor"
+          required
+        >
+          <template #hint>
+            <VarInsertMenu :flow-vars="flowVars" :extra="FLOW_EXTRA_VARS" @insert="insertVar('value', $event)" />
+          </template>
+          <UInput
+            v-model="data.value"
+            class="w-full"
+            placeholder="{{email}}"
+          />
+        </UFormField>
+      </template>
       <template v-if="data.action === 'label'">
         <UFormField label="O que fazer">
           <USelect

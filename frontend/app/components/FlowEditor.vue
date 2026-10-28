@@ -246,7 +246,11 @@ async function toggleActive() {
 }
 
 // opções dos dropdowns do inspetor: variáveis guardadas pelos blocos Aguardar e textos dos blocos Botões
-const flowVars = computed(() => [...new Set(nodes.value.filter(n => n.type === 'wait').map(n => (n.data as FlowNodeData).var || 'resposta'))])
+const flowVars = computed(() => [...new Set(nodes.value.flatMap((n) => {
+  const d = n.data as FlowNodeData
+  if (n.type === 'wait') return [d.var || 'resposta']
+  return n.type === 'collect' && d.field ? [d.field] : []
+}))])
 const flowButtons = computed(() => [...new Set(nodes.value.filter(n => n.type === 'buttons')
   .flatMap(n => ((n.data as FlowNodeData).buttons ?? []).map(b => b.title)).filter(Boolean))])
 </script>

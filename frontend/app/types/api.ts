@@ -402,7 +402,7 @@ export interface PersonalConnect {
 //   POST        /automations/leads/{token}                      (público, auth=None)
 
 export type FlowNodeType
-  = 'start' | 'template' | 'message' | 'buttons' | 'wait' | 'condition' | 'delay' | 'crm' | 'http' | 'tag' | 'pause' | 'handoff' | 'ai' | 'end'
+  = 'start' | 'template' | 'message' | 'buttons' | 'wait' | 'collect' | 'condition' | 'delay' | 'crm' | 'http' | 'tag' | 'pause' | 'handoff' | 'ai' | 'end'
 
 export type FlowTrigger = 'lead' | 'first_message' | 'keyword' | 'pipedrive' | 'campaign'
 
@@ -428,7 +428,8 @@ export interface FlowNodeData {
   value?: string
   values?: string[] // condição contém/é igual: basta um casar
   minutes?: number
-  action?: 'person' | 'deal' | 'note' | 'stage' | 'label' | 'add' | 'remove'
+  action?: 'person' | 'deal' | 'note' | 'stage' | 'label' | 'field' | 'add' | 'remove'
+  field?: string // coletar dado: chave do campo do contato; crm "field": 'person:<chave>' ou 'deal:<chave>'
   title?: string
   stage_id?: number
   label_id?: number

@@ -61,6 +61,10 @@ def get_person(api_key: str, person_id: int) -> dict:
     return _req(api_key, 'GET', f'{V2_URL}/persons/{person_id}')['data']
 
 
+def update_person(api_key: str, person_id: int, *, custom_fields: dict) -> dict:
+    return _req(api_key, 'PATCH', f'{V2_URL}/persons/{person_id}', json={'custom_fields': custom_fields})['data']
+
+
 def create_person(api_key: str, name: str, phone: str) -> dict:
     payload: dict = {'name': name}
     if phone:
@@ -96,9 +100,12 @@ def create_deal(api_key: str, title: str, person_id: int, pipeline_id: int, stag
 
 
 def update_deal(
-    api_key: str, deal_id: int, *, stage_id: int | None = None, status: str | None = None, label_ids: list[int] | None = None
+    api_key: str, deal_id: int, *, stage_id: int | None = None, status: str | None = None, label_ids: list[int] | None = None,
+    custom_fields: dict | None = None,
 ) -> dict:
     payload: dict = {}
+    if custom_fields:
+        payload['custom_fields'] = custom_fields
     if label_ids is not None:
         payload['label_ids'] = label_ids
     if stage_id:

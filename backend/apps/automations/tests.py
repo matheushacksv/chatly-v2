@@ -920,6 +920,19 @@ class CrmRuntimeTests(BaseAutomationsTestCase):
         self._run('stage', {'stage_id': 5}, context={'deal_id': 77})
         mock_stage.assert_called_once()
 
+    @patch('apps.crm.pipedrive.update_person')
+    def test_field_person_renders_value(self, mock_update_person, mock_person, mock_deal, mock_note, mock_update):
+        self._run('field', {'field': 'person:abc', 'value': '{{email}}'}, context={'email': 'ana@x.com'})
+        mock_update_person.assert_called_once_with('x', 42, custom_fields={'abc': 'ana@x.com'})
+
+    def test_field_deal_uses_flow_deal(self, mock_person, mock_deal, mock_note, mock_update):
+        self._run('field', {'field': 'deal:abc', 'value': 'fixo'}, context={'deal_id': 77})
+        mock_update.assert_called_once_with('x', 77, custom_fields={'abc': 'fixo'})
+
+    def test_field_empty_value_skips(self, mock_person, mock_deal, mock_note, mock_update):
+        self._run('field', {'field': 'deal:abc', 'value': '{{email}}'}, context={'deal_id': 77, 'email': ''})
+        mock_update.assert_not_called()
+
     @patch('apps.crm.pipedrive.get_deal', return_value={'label_ids': [3]})
     def test_label_adds_and_removes_keeping_others(self, mock_get, mock_person, mock_deal, mock_note, mock_update):
         self._run('label', {'label_id': 9}, context={'deal_id': 77})
@@ -1285,3 +1298,46 @@ class DuplicateFlowTests(BaseAutomationsTestCase):
         flow.save()
         response = self.client.post(f'/api/automations/{self.company.pk}/flows/{flow.pk}/duplicate', headers=self.auth)
         self.assertEqual(response.status_code, 404)
+
+
+_COLLECT = _graph(
+    [('start', 'start', {}), ('c', 'collect', {'text': 'Me manda seu e-mail, {{nome}}', 'field': 'email'}),
+     ('h', 'http', {'method': 'POST', 'url': 'https://exemplo.com/hook', 'body': '{"email": "{{email}}"}'})],
+    [('start', 'c', None), ('c', 'h', None)],
+)
+
+
+@patch('apps.chats.events.publish')
+@patch('apps.chats.services.record_outgoing_message')
+@patch('apps.chats.whatsapp.send_text', return_value='wamid.q')
+class CollectRuntimeTests(BaseAutomationsTestCase):
+    def setUp(self):
+        super().setUp()
+        ContactField.objects.create(company=self.company, key='email', label='E-mail')
+        self.contact = Contact.objects.create(account=self.account, wa_id='5511999998888', name='Ana', custom_fields={'email': 'velho@x.com'})
+
+    @patch('apps.automations.outbound.request', return_value=200)
+    def test_asks_waits_and_fills_contact_field(self, mock_http, mock_send, mock_record, mock_pub):
+        flow = self.make_flow(graph=_COLLECT, active=True, trigger=Flow.Trigger.FIRST_MESSAGE)
+        run = services.start_flow(flow, self.contact)
+        run.refresh_from_db()
+        self.assertEqual((run.status, run.node_id), (FlowRun.Status.WAITING, 'c'))
+        self.assertEqual(mock_send.call_args.args[2], 'Me manda seu e-mail, Ana')
+
+        msg = Message.objects.create(contact=self.contact, direction='in', content=' ana@novo.com ', wa_message_id='c1')
+        self.assertTrue(services.dispatch_incoming(msg))
+
+        self.contact.refresh_from_db()
+        self.assertEqual(self.contact.custom_fields['email'], 'ana@novo.com')
+        self.assertIn('ana@novo.com', str(mock_http.call_args))  # bloco seguinte já lê o valor novo, não o velho
+
+    def test_unknown_field_keeps_flow_going(self, mock_send, mock_record, mock_pub):
+        graph = _graph([('start', 'start', {}), ('c', 'collect', {'text': 'Oi?', 'field': 'sumiu'}), ('a', 'ai', {})],
+                       [('start', 'c', None), ('c', 'a', None)])
+        flow = self.make_flow(graph=graph, active=True, trigger=Flow.Trigger.FIRST_MESSAGE)
+        run = services.start_flow(flow, self.contact)
+        msg = Message.objects.create(contact=self.contact, direction='in', content='x', wa_message_id='c2')
+        services.dispatch_incoming(msg)
+        run.refresh_from_db()
+        self.assertEqual(run.status, FlowRun.Status.DONE)
+        self.assertEqual(run.context.get('sumiu'), 'x')
