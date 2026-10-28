@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Formulário do nó selecionado. Escreve direto no `data` do nó (objeto do grafo),
 // então o canvas reflete a edição enquanto se digita.
-import type { FlowNodeData, FlowNodeType, PipedriveField, PipedrivePipeline, Tag, TagColor, Template } from '~/types/api'
+import type { ContactField, FlowNodeData, FlowNodeType, PipedriveField, PipedrivePipeline, Tag, TagColor, Template } from '~/types/api'
 
 const props = defineProps<{
   type: FlowNodeType
@@ -135,6 +135,24 @@ async function createTag(name: string, color: TagColor = 'neutral') {
 // ---- coletar dado: campo do contato que recebe a resposta ----
 const { fields: contactFields } = useContactFields()
 const contactFieldItems = computed(() => contactFields.value.map(f => ({ label: f.label, value: f.key })))
+const creatingField = ref(false)
+
+// cria o campo do contato sem sair do fluxo e já seleciona no bloco
+async function createField(label: string) {
+  if (!label.trim() || creatingField.value) return
+  creatingField.value = true
+  try {
+    const field = await api<ContactField>(`/companies/${props.companyId}/contact-fields`, { method: 'POST', body: { label } })
+    if (!contactFields.value.some(f => f.key === field.key)) contactFields.value.push(field)
+    data.value.field = field.key
+  } catch (error) {
+    toast.add({ title: apiErrorDetail(error, 'Não foi possível criar o campo'), color: 'error' })
+  } finally {
+    creatingField.value = false
+  }
+}
+
+const NOTE_TARGET_ITEMS = [{ label: 'Pessoa', value: 'person' }, { label: 'Negócio', value: 'deal' }]
 
 // ---- campos personalizados do Pipedrive (nó crm: preencher campo) ----
 const pipedriveFieldItems = ref<{ label: string, value: string }[]>([])
@@ -284,14 +302,17 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
       </UFormField>
       <AppField
         label="Salvar a resposta em"
-        tip="Campo do contato: aparece no painel da conversa e vira {{campo}} nos blocos seguintes (HTTP, Pipedrive, mensagens). Crie campos em Contatos > Campos"
+        tip="Campo do contato: aparece no painel da conversa e vira {{campo}} nos blocos seguintes (HTTP, Pipedrive, mensagens). Digite pra buscar ou criar um novo"
       >
         <USelectMenu
           v-model="data.field"
           :items="contactFieldItems"
           value-key="value"
+          create-item
+          :loading="creatingField"
           class="w-full"
-          placeholder="Escolha o campo"
+          placeholder="Escolha ou crie o campo"
+          @create="(label: string) => createField(label)"
         />
       </AppField>
       <AppField
@@ -548,6 +569,18 @@ watch(() => [props.type, data.value.action], async ([type, action]) => {
           v-model="data.title"
           class="w-full"
           placeholder="Lead {{nome}}"
+        />
+      </UFormField>
+      <UFormField
+        v-if="data.action === 'note'"
+        label="Anotar em"
+        :help="data.note_target === 'deal' ? 'O negócio do fluxo (gatilho Pipedrive ou bloco Criar negócio) ou o aberto da pessoa. Sem negócio, vai pra pessoa' : undefined"
+      >
+        <USelect
+          :model-value="data.note_target ?? 'person'"
+          :items="NOTE_TARGET_ITEMS"
+          class="w-full"
+          @update:model-value="(v: string) => { data.note_target = v === 'deal' ? 'deal' : 'person' }"
         />
       </UFormField>
       <UFormField

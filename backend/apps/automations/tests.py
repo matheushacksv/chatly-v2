@@ -916,6 +916,15 @@ class CrmRuntimeTests(BaseAutomationsTestCase):
         mock_person.assert_called_once()
         mock_note.assert_called_once()
 
+    def test_note_on_flow_deal(self, mock_person, mock_deal, mock_note, mock_stage):
+        self._run('note', {'text': 'oi {{nome}}', 'note_target': 'deal'}, context={'deal_id': 77})
+        mock_note.assert_called_once_with('x', 'oi Ana', deal_id=77)
+        mock_person.assert_not_called()
+
+    def test_note_on_deal_without_deal_falls_back_to_person(self, mock_person, mock_deal, mock_note, mock_stage):
+        self._run('note', {'text': 'oi', 'note_target': 'deal'})
+        mock_note.assert_called_once_with('x', 'oi', person_id=42)
+
     def test_stage_uses_deal_id_from_context(self, mock_person, mock_deal, mock_note, mock_stage):
         self._run('stage', {'stage_id': 5}, context={'deal_id': 77})
         mock_stage.assert_called_once()

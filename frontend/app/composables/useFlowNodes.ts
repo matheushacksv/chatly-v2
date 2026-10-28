@@ -192,6 +192,7 @@ export function flowNodeSummary(type: FlowNodeType, data: FlowNodeData): string 
     case 'delay':
       return formatMinutes(data.minutes ?? 0)
     case 'crm':
+      if (data.action === 'note') return data.note_target === 'deal' ? 'Anotação no negócio' : 'Anotação na pessoa'
       if (data.action === 'field') return data.field ? `Preenche campo com ${data.value || '...'}` : 'Escolha o campo'
       if (data.action === 'label') return data.label_mode === 'remove' ? 'Remove etiqueta do negócio' : 'Etiqueta o negócio'
       return CRM_ACTIONS[data.action ?? 'deal'] ?? ''

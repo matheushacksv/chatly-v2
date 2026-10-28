@@ -434,6 +434,7 @@ export interface FlowNodeData {
   stage_id?: number
   label_id?: number
   label_mode?: 'add' | 'remove'
+  note_target?: 'person' | 'deal'
   // requisição HTTP
   method?: HttpMethod
   url?: string

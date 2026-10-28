@@ -135,9 +135,13 @@ def _run_crm(node: dict, run: FlowRun) -> None:
         deal, _ = crm_services.get_or_create_open_deal(pd, contact, title)
         run.context['deal_id'] = deal['id']  # negócio aberto existente: os blocos seguintes (etapa) mexem nele
     elif action == 'note':
-        person_id = crm_services.find_or_create_person(pd, contact)
         text = _render(data.get('text', ''), run)
-        pipedrive.create_note(pd.api_key, text, person_id=person_id)
+        # no negócio (o do fluxo ou o aberto da pessoa); sem negócio, cai na pessoa
+        deal_id = _deal_id(pd, run) if data.get('note_target') == 'deal' else None
+        if deal_id:
+            pipedrive.create_note(pd.api_key, text, deal_id=deal_id)
+        else:
+            pipedrive.create_note(pd.api_key, text, person_id=crm_services.find_or_create_person(pd, contact))
     elif action == 'stage':
         deal_id = _deal_id(pd, run)
         if deal_id and data.get('stage_id'):
