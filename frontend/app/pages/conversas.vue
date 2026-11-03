@@ -44,30 +44,67 @@ const selectedId = ref<number | null>(null)
 const selected = computed(() => contacts.value.find(c => c.id === selectedId.value) ?? null)
 
 // conversa = contato com mensagem; mudo (importado/recém-criado) só aparece enquanto selecionado
-const filteredContacts = computed(() => {
-  const q = search.value.toLowerCase()
-  return contacts.value.filter(c =>
-    (c.last_message_at || c.id === selectedId.value)
-    && (!q || c.name.toLowerCase().includes(q) || c.wa_id.includes(q))
-  )
-})
+// quem filtra a busca é o servidor; a conversa aberta fora do resultado segue carregada, mas fica fora da lista
+const hiddenContactId = ref<number | null>(null)
+const filteredContacts = computed(() => contacts.value.filter(c =>
+  (c.last_message_at || c.id === selectedId.value) && c.id !== hiddenContactId.value
+))
+
+const CONTACTS_PAGE = 100
+// ponytail: cada evento recarrega tudo que já foi aberto (mantém ordem e fila certas sem mesclar);
+// quem rola centenas de conversas paga mais a cada mensagem. Se pesar, recarregar só a primeira página e mesclar.
+const contactsLimit = ref(CONTACTS_PAGE)
+const hasMoreContacts = ref(false)
+const loadingMoreContacts = ref(false)
+let contactsRequest = 0
 
 async function loadContacts() {
+  const request = ++contactsRequest
   if (!companyId.value || !accountId.value) {
     contacts.value = []
+    hasMoreContacts.value = false
     return
   }
+  const params = new URLSearchParams({ limit: String(contactsLimit.value), search: search.value.trim() })
+  if (queue.value !== 'all') params.set('queue', queue.value)
   const page = await api<Paginated<Contact>>(
-    `/companies/${companyId.value}/whatsapp-accounts/${accountId.value}/contacts?limit=100${queue.value === 'all' ? '' : `&queue=${queue.value}`}`
+    `/companies/${companyId.value}/whatsapp-accounts/${accountId.value}/contacts?${params}`
   )
+  // resposta atrasada (busca digitada, troca de fila) não sobrescreve a mais nova
+  if (request !== contactsRequest) return
   const items = [...page.items]
+  // contato sem mensagem fica no fim da ordem e não é conversa: chegou nele, acabou a lista
+  hasMoreContacts.value = page.count > items.length && !!items.at(-1)?.last_message_at
   // contato aberto sem mensagem pode estar fora da página (nulls_last) - preserva ele
   const current = contacts.value.find(c => c.id === selectedId.value)
-  if (current && !items.some(c => c.id === current.id)) items.push(current)
+  const outside = current && !items.some(c => c.id === current.id)
+  if (outside) items.push(current)
+  hiddenContactId.value = outside && search.value.trim() ? current.id : null
   contacts.value = items
 }
-watch(accountId, () => { selectedId.value = null; loadContacts() }, { immediate: true })
-watch(queue, loadContacts)
+
+function reloadContacts() {
+  contactsLimit.value = CONTACTS_PAGE
+  return loadContacts()
+}
+
+async function loadMoreContacts() {
+  loadingMoreContacts.value = true
+  contactsLimit.value += CONTACTS_PAGE
+  try {
+    await loadContacts()
+  } finally {
+    loadingMoreContacts.value = false
+  }
+}
+
+watch(accountId, () => { selectedId.value = null; reloadContacts() }, { immediate: true })
+watch(queue, reloadContacts)
+let searchTimer: ReturnType<typeof setTimeout> | undefined
+watch(search, () => {
+  clearTimeout(searchTimer)
+  searchTimer = setTimeout(reloadContacts, 300)
+})
 
 // ---- mensagens ----
 // API devolve desc (recente primeiro); exibimos asc → sempre inverter a página.
@@ -716,8 +753,20 @@ const accountItems = computed(() =>
           </div>
         </button>
 
+        <div v-if="hasMoreContacts" class="p-3">
+          <UButton
+            label="Carregar mais"
+            variant="ghost"
+            color="neutral"
+            size="sm"
+            block
+            :loading="loadingMoreContacts"
+            @click="loadMoreContacts()"
+          />
+        </div>
+
         <p v-if="!filteredContacts.length" class="p-4 text-sm text-muted">
-          {{ queue === 'waiting' ? 'Ninguém aguardando atendimento.' : queue === 'mine' ? 'Nenhuma conversa com você.' : 'Nenhuma conversa ainda.' }}
+          {{ search.trim() ? 'Nenhuma conversa encontrada.' : queue === 'waiting' ? 'Ninguém aguardando atendimento.' : queue === 'mine' ? 'Nenhuma conversa com você.' : 'Nenhuma conversa ainda.' }}
         </p>
       </div>
 

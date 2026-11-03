@@ -241,6 +241,26 @@ def _merge_import_fields(contact: Contact, fields: dict, known: set[str]) -> Non
         contact.save(update_fields=['custom_fields'])
 
 
+def _contact_search(search: str) -> Q:
+    digits = re.sub(r'\D', '', search)
+    if digits and re.fullmatch(r'[\d\s()+.-]+', search):
+        # busca de telefone: ignora a formatação e acha com ou sem o 9º dígito
+        variants = {digits}
+        if len(digits) == 9 and digits[0] == '9':
+            variants.add(digits[1:])
+        elif len(digits) >= 10:
+            variants.update(number_variants(digits if len(digits) > 11 else f'55{digits}'))
+        query = Q(name__unaccent__icontains=search.strip())
+        for variant in variants:
+            query |= Q(wa_id__contains=variant)
+        return query
+    # cada palavra precisa aparecer, em qualquer ordem
+    query = Q()
+    for term in search.split():
+        query &= Q(name__unaccent__icontains=term) | Q(wa_id__contains=term)
+    return query
+
+
 def list_contacts(company: Company, account_id: int, search: str = '', queue: str = '', user=None, tag: int | None = None) -> QuerySet[Contact]:
     account = get_account(company, account_id)
     last = Message.objects.filter(contact=OuterRef('pk')).order_by('-id')
@@ -249,7 +269,7 @@ def list_contacts(company: Company, account_id: int, search: str = '', queue: st
     if tag:
         qs = qs.filter(tags=tag)
     if search:
-        qs = qs.filter(Q(name__icontains=search) | Q(wa_id__contains=search))
+        qs = qs.filter(_contact_search(search))
     if queue == 'waiting':
         qs = qs.filter(ai_paused=True, assigned_to__isnull=True)
     elif queue == 'mine':

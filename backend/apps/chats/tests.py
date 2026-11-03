@@ -406,6 +406,37 @@ class ContactTests(BaseChatsTestCase):
         by_number = self.client.get(self.url(self.company.pk, self.account.pk) + '?search=99999', headers=self.auth)
         self.assertEqual([c['name'] for c in by_number.json()['items']], ['Cliente A'])
 
+    def _search(self, term):
+        response = self.client.get(self.url(self.company.pk, self.account.pk), {'search': term}, headers=self.auth)
+        self.assertEqual(response.status_code, 200, response.json())
+        return [c['name'] for c in response.json()['items']]
+
+    def test_search_ignores_accents_case_and_word_order(self):
+        Contact.objects.create(account=self.account, wa_id='5511955555555', name='João Pedro Silva')
+        for term in ('joao', 'JOÃO', 'silva joão', 'joao silva', '  pedro  '):
+            self.assertEqual(self._search(term), ['João Pedro Silva'], term)
+        self.assertEqual(self._search('joao souza'), [])
+
+    def test_search_ignores_number_formatting(self):
+        Contact.objects.create(account=self.account, wa_id='5548998273099', name='Com nono')
+        for term in ('+55 (48) 99827-3099', '(48) 99827-3099', '99827.3099', '98273099'):
+            self.assertEqual(self._search(term), ['Com nono'], term)
+
+    def test_search_finds_number_with_or_without_ninth_digit(self):
+        Contact.objects.create(account=self.account, wa_id='554898273099', name='Sem nono')
+        Contact.objects.create(account=self.account, wa_id='5511987654321', name='Com nono')
+        self.assertEqual(self._search('(48) 99827-3099'), ['Sem nono'])
+        self.assertEqual(self._search('99827-3099'), ['Sem nono'])
+        self.assertEqual(self._search('(11) 8765-4321'), ['Com nono'])
+
+    def test_search_with_digits_still_matches_name(self):
+        Contact.objects.create(account=self.account, wa_id='5511955555555', name='Turma 2024')
+        self.assertEqual(self._search('2024'), ['Turma 2024'])
+        self.assertEqual(self._search('turma 2024'), ['Turma 2024'])
+
+    def test_search_with_only_symbols_does_not_match_everyone(self):
+        self.assertEqual(self._search('()'), [])
+
     def test_rename_contact(self):
         response = self.client.patch(
             f'/api/companies/{self.company.pk}/contacts/{self.contact.pk}',
