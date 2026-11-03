@@ -21,39 +21,28 @@ async function loadAll() {
 watch(companyId, loadAll, { immediate: true })
 
 const credentialItems = computed(() =>
-  credentials.value.map(c => ({ label: `${c.provider === 'anthropic' ? 'Anthropic' : 'OpenAI'} #${c.id}`, value: c.id }))
+  credentials.value.map(c => ({ label: `${c.provider === 'anthropic' ? 'Anthropic' : 'OpenAI'} ****`, value: c.id }))
 )
 
 // catálogo fixo de modelos por provider - atualizar aqui quando sair modelo novo
 const MODELS: Record<Credential['provider'], { label: string, value: string }[]> = {
   anthropic: [
-    { label: 'Claude Haiku 4.5', value: 'claude-haiku-4-5' },
-    { label: 'Claude Sonnet 4.6', value: 'claude-sonnet-4-6' },
-    { label: 'Claude Sonnet 5', value: 'claude-sonnet-5' },
-    { label: 'Claude Opus 4.8', value: 'claude-opus-4-8' }
+    { label: 'Claude Haiku 5.5', value: 'claude-haiku-5-5' },
+    { label: 'Claude Sonnet 5.5', value: 'claude-sonnet-5-5' },
+    { label: 'Claude Opus 5.5', value: 'claude-opus-5-5' },
+    { label: 'Claude Fable 5.1', value: 'claude-fable-5-1' }
   ],
   openai: [
-    { label: 'GPT-5.6 Sol', value: 'gpt-5.6-sol' },
-    { label: 'GPT-5.6 Terra', value: 'gpt-5.6-terra' },
+    { label: 'GPT-6 Luna', value: 'gpt-6-luna' },
+    { label: 'GPT-6.1 Terra', value: 'gpt-6.1-terra' },
+    { label: 'GPT-6.1 Sol', value: 'gpt-6.1-sol' },
+    { label: 'GPT-6 Sol', value: 'gpt-6-sol' },
     { label: 'GPT-5.6 Luna', value: 'gpt-5.6-luna' },
+    { label: 'GPT-5.6 Terra', value: 'gpt-5.6-terra' },
+    { label: 'GPT-5.6 Sol', value: 'gpt-5.6-sol' },
     { label: 'GPT-5.5', value: 'gpt-5.5' },
-    { label: 'GPT-5.5 Pro', value: 'gpt-5.5-pro' },
-    { label: 'GPT-5.4', value: 'gpt-5.4' },
     { label: 'GPT-5.4 mini', value: 'gpt-5.4-mini' },
-    { label: 'GPT-5.4 nano', value: 'gpt-5.4-nano' },
-    { label: 'GPT-5.4 Pro', value: 'gpt-5.4-pro' },
-    { label: 'GPT-5.2', value: 'gpt-5.2' },
-    { label: 'GPT-5.2 Pro', value: 'gpt-5.2-pro' },
-    { label: 'GPT-5.1', value: 'gpt-5.1' },
-    { label: 'GPT-5', value: 'gpt-5' },
-    { label: 'GPT-5 mini', value: 'gpt-5-mini' },
-    { label: 'GPT-5 nano', value: 'gpt-5-nano' },
-    { label: 'GPT-5 Pro', value: 'gpt-5-pro' },
-    { label: 'GPT-4.1', value: 'gpt-4.1' },
-    { label: 'GPT-4.1 mini', value: 'gpt-4.1-mini' },
-    { label: 'GPT-4.1 nano', value: 'gpt-4.1-nano' },
-    { label: 'GPT-4o', value: 'gpt-4o' },
-    { label: 'GPT-4o mini', value: 'gpt-4o-mini' }
+    { label: 'GPT-5.4', value: 'gpt-5.4' }
   ]
 }
 
@@ -70,7 +59,7 @@ const schema = z.object({
   ai_hours_on: z.boolean(),
   ai_schedule: z.array(z.array(z.tuple([z.string(), z.string()]))),
   native_tools: z.array(z.string())
-}).refine(data => editing.value !== null || data.credential_id !== null, {
+}).refine(data => data.credential_id !== null, {
   message: 'Escolha uma credencial',
   path: ['credential_id']
 }).refine(data => !data.ai_hours_on || data.ai_schedule.flat().every(([start, end]) => start && end && (end > start || end === '00:00')), {
@@ -277,8 +266,8 @@ const NATIVE_TOOL_ITEMS: { label: string, description: string, value: NativeTool
 
 const modelItems = computed(() => {
   const cred = credentials.value.find(c => c.id === state.credential_id)
-  // edição sem credencial escolhida ("manter atual"): API não expõe o provider, mostra tudo
-  const items = cred ? MODELS[cred.provider] : editing.value ? [...MODELS.anthropic, ...MODELS.openai] : []
+  const items = cred ? MODELS[cred.provider] : []
+  // modelo salvo que saiu do catálogo continua aparecendo, sem trocar sozinho
   if (state.model && !items.some(i => i.value === state.model)) {
     return [...items, { label: state.model, value: state.model }]
   }
@@ -287,7 +276,8 @@ const modelItems = computed(() => {
 
 watch(() => state.credential_id, (id) => {
   const cred = credentials.value.find(c => c.id === id)
-  if (cred && !MODELS[cred.provider].some(m => m.value === state.model)) state.model = ''
+  // abrir um agente preenche a credencial dele: só limpa o modelo quando o usuário troca
+  if (cred && id !== editing.value?.credential_id && !MODELS[cred.provider].some(m => m.value === state.model)) state.model = ''
 })
 
 function openCreate() {
@@ -309,7 +299,7 @@ function openEdit(agent: Agent) {
     response_delay: agent.response_delay,
     split_messages: agent.split_messages,
     handoff_resume_hours: agent.handoff_resume_hours,
-    credential_id: null, // API não expõe a credencial atual; null = manter
+    credential_id: agent.credential_id,
     ai_hours_on: agent.ai_schedule !== null,
     ai_schedule: cloneSchedule(agent.ai_schedule ?? SCHEDULE_PRESETS[0]!.days),
     native_tools: [...agent.native_tools]
@@ -509,11 +499,11 @@ const statusBadge: Record<AgentDocument['status'], { label: string, color: 'warn
             </UFormField>
 
             <div class="grid grid-cols-2 gap-4">
-              <UFormField name="credential_id" label="Credencial" :required="!editing">
+              <UFormField name="credential_id" label="Credencial" required>
                 <USelect
                   v-model="state.credential_id"
                   :items="credentialItems"
-                  :placeholder="editing ? 'Manter atual' : 'Escolha'"
+                  placeholder="Escolha"
                   class="w-full"
                 />
               </UFormField>
@@ -522,8 +512,8 @@ const statusBadge: Record<AgentDocument['status'], { label: string, color: 'warn
                 <USelect
                   v-model="state.model"
                   :items="modelItems"
-                  :disabled="!state.credential_id && !editing"
-                  :placeholder="!state.credential_id && !editing ? 'Escolha a credencial' : 'Escolha o modelo'"
+                  :disabled="!state.credential_id"
+                  :placeholder="state.credential_id ? 'Escolha o modelo' : 'Escolha a credencial'"
                   class="w-full"
                 />
               </UFormField>

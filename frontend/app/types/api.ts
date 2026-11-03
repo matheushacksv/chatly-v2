@@ -231,6 +231,7 @@ export interface Agent {
   name: string
   description: string
   model: string
+  credential_id: number
   prompt: string
   response_delay: number
   split_messages: boolean

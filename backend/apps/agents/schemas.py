@@ -41,6 +41,8 @@ class AgentInDTO(Schema):
 
 
 class AgentOutDTO(ModelSchema):
+    credential_id: int
+
     class Meta:
         model = Agent
         fields = [

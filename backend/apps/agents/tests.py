@@ -333,6 +333,18 @@ class AgentTests(BaseAgentsTestCase):
         names = [agent['name'] for agent in response.json()]
         self.assertEqual(names, ['Vendedor'])
 
+    def test_gpt_6_chains_tool_calls_like_gpt_5(self):
+        agent = Agent(credential=Credential(provider='openai', api_key='k'))
+        for model, expected in [('gpt-6-luna', True), ('gpt-6.1-sol', True), ('gpt-5.4', True), ('gpt-4o', False)]:
+            agent.model = model
+            self.assertEqual(ai._build_model(agent)._using_reasoning_model(), expected, model)
+
+    def test_agent_exposes_credential_id_but_not_the_key(self):
+        response = self.client.get(self.url(self.company.pk, self.agent.pk), headers=self.auth)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['credential_id'], self.credential.pk)
+        self.assertNotIn(self.credential.api_key, response.content.decode())
+
     def test_get_foreign_agent_returns_404(self):
         response = self.client.get(self.url(self.company.pk, self.other_agent.pk), headers=self.auth)
         self.assertEqual(response.status_code, 404)

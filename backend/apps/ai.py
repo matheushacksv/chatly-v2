@@ -47,11 +47,17 @@ def _run(agno_agent: AgnoAgent, *args, **kwargs) -> str:
     return result.content or ''
 
 
+class _Responses(OpenAIResponses):
+    # Agno só reconhece gpt-5 como modelo com raciocínio; o gpt-6 precisa do mesmo encadeamento nas ferramentas
+    def _using_reasoning_model(self) -> bool:
+        return self.id.startswith('gpt-6') or super()._using_reasoning_model()
+
+
 def _build_model(agent: Agent) -> Claude | OpenAIResponses:
     credential = agent.credential
     model_id = agent.model
     if credential.provider == 'openai':
-        return OpenAIResponses(id=model_id, api_key=credential.api_key)
+        return _Responses(id=model_id, api_key=credential.api_key)
     return Claude(id=model_id, api_key=credential.api_key)
 
 

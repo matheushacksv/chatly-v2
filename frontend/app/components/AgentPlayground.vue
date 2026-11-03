@@ -17,6 +17,7 @@ const draft = ref('')
 const sending = ref(false)
 const showContact = ref(false)
 const scroller = useTemplateRef<HTMLElement>('scroller')
+const draftInput = useTemplateRef<{ inputRef: HTMLInputElement | null }>('draftInput')
 
 // simula o caminho real: template enviado -> cliente responde (ou clica no botão) -> IA continua
 const accounts = ref<WhatsAppAccount[]>([])
@@ -63,6 +64,7 @@ const TOOL_LABELS: Record<string, string> = {
 async function send(opener = false) {
   const text = draft.value.trim()
   if ((!text && !opener) || sending.value) return
+  draftInput.value?.inputRef?.focus() // clicar em enviar ou num botão de resposta tira o foco do campo
   if (text) turns.value.push({ role: 'user', content: text })
   draft.value = ''
   sending.value = true
@@ -211,10 +213,10 @@ const summary = (args: Record<string, unknown>) => Object.values(args).map(v => 
     <!-- sem <form>: o playground fica dentro do formulário do agente, e Enter não pode salvar o agente -->
     <div class="flex gap-2">
       <UInput
+        ref="draftInput"
         v-model="draft"
         class="flex-1"
         placeholder="Escreva como o cliente..."
-        :disabled="sending"
         autofocus
         @keydown.enter.prevent="send()"
       />

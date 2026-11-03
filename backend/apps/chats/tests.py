@@ -2048,7 +2048,7 @@ class GenerateReplyTests(BaseChatsTestCase):
         ai.generate_reply(self.agent, [], 'Oi')
         mock_claude.assert_called_once_with(id='claude-opus-4-8', api_key='sk-minha-chave')
 
-    @patch('apps.ai.OpenAIResponses')
+    @patch('apps.ai._Responses')
     @patch('apps.ai.AgnoAgent')
     def test_generate_reply_routes_openai_provider(self, mock_agent_cls, mock_openai):
         mock_agent_cls.return_value.run.return_value.content = 'ok'
