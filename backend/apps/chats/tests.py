@@ -2390,6 +2390,20 @@ class ProcessIncomingMessageTests(BaseChatsTestCase):
         self.contact.refresh_from_db()
         self.assertFalse(self.contact.ai_no_catchup)
 
+    @patch('apps.crm.tasks.note_ai_conversation.apply_async')
+    @patch('apps.chats.whatsapp.send_text', return_value='wamid.ia')
+    @patch('apps.ai.generate_reply', return_value='Oi, aqui é a IA')
+    def test_ai_reply_with_schedule_queues_crm_note(self, mock_generate, mock_send, mock_note):
+        incoming = Message.objects.create(contact=self.contact, direction='in', content='Oi', wa_message_id='wamid.n1')
+        tasks.process_incoming_message(incoming.pk)
+        mock_note.assert_not_called()  # IA sem horário (atende sempre): sem nota
+
+        Agent.objects.filter(pk=self.agent.pk).update(ai_schedule=[[['18:00', '00:00']]] * 7)
+        incoming = Message.objects.create(contact=self.contact, direction='in', content='Oi de novo', wa_message_id='wamid.n2')
+        with patch('apps.chats.tasks.timezone.now', return_value=datetime(2026, 10, 5, 20, tzinfo=SP)):
+            tasks.process_incoming_message(incoming.pk)
+        mock_note.assert_called_once_with((self.contact.pk,), countdown=1800)
+
     @patch('apps.chats.whatsapp.send_text')
     @patch('apps.ai.generate_reply')
     def test_deferred_run_skips_campaign_lead(self, mock_generate, mock_send):

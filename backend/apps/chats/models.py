@@ -69,6 +69,8 @@ class Contact(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='assigned_contacts'
     )
     pipedrive_person_id = models.IntegerField(null=True, blank=True)
+    # até onde a conversa da IA fora do horário já virou nota no Pipedrive
+    crm_noted_at = models.DateTimeField(null=True, blank=True)
     tags = models.ManyToManyField(Tag, blank=True, related_name='contacts')
     custom_fields = models.JSONField(default=dict, blank=True)  # {ContactField.key: valor}
     created_at = models.DateTimeField(auto_now_add=True)

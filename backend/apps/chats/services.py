@@ -37,6 +37,7 @@ SERVICE_WINDOW = timedelta(hours=24)
 AI_MAX_MESSAGES_PER_HOUR = 60
 NO_CONTENT_RE = re.compile(r'[\s.,;:!?¿¡\-_*#~"\'()]+')
 REPEAT_WINDOW = timedelta(minutes=10)
+CONVERSATION_IDLE = timedelta(minutes=30)  # conversa parada esse tempo vira nota no Pipedrive
 # preço por mensagem cobrada no Brasil, em R$ (as contas são faturadas em BRL). Fonte: tabela da Meta citada em
 # vectalk/zynfo, vigente em 11/2026. ponytail: a Meta muda a tabela por trimestre, atualizar aqui; número estrangeiro
 # tem preço por país e só é contado (billed_foreign), sem valor

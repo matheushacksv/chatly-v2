@@ -1,3 +1,4 @@
+import html
 import logging
 from datetime import timedelta
 import re
@@ -8,9 +9,10 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from apps.chats import events
-from apps.chats.models import Contact, WhatsAppAccount
+from apps.chats.models import Contact, Message, WhatsAppAccount
 from apps.agents.services import next_ai_opening
 from apps.chats.services import (
+    CONVERSATION_IDLE,
     _field_keys, _merge_import_fields, find_contact, get_template_send_info, normalize_number, send_template_message,
 )
 from apps.companies import plans
@@ -391,6 +393,49 @@ def find_or_create_person(pd: PipedriveAccount, contact: Contact) -> int:
         person_id = person['id']
     link_person(contact, person_id)
     return person_id
+
+
+def note_ai_conversation(contact_id: int):
+    """Conversa que a IA atendeu (fora do expediente) parada há 30 min: vira nota no Pipedrive,
+    na pessoa e no negócio aberto dela. Devolve quando olhar de novo se a conversa ainda não parou."""
+    contact = Contact.objects.select_related('account').filter(pk=contact_id).first()
+    pd = PipedriveAccount.objects.filter(company_id=contact.account.company_id).first() if contact else None
+    if pd is None:
+        return None
+    noted_at = contact.crm_noted_at
+    # ponytail: primeira nota pega só as últimas 24h, não o histórico inteiro
+    since = noted_at or timezone.now() - timedelta(days=1)
+    messages = list(contact.messages.filter(created_at__gt=since).order_by('created_at', 'pk'))
+    if not any(_from_ai(m) for m in messages):
+        return None
+    last = messages[-1]
+    if last.created_at > timezone.now() - CONVERSATION_IDLE:
+        # resposta nova da IA já agendou a própria checagem; mensagem de outro (cliente, equipe) não agenda
+        return None if _from_ai(last) else last.created_at + CONVERSATION_IDLE
+    # update condicional: duas checagens da mesma conversa não anotam duas vezes
+    if not Contact.objects.filter(pk=contact.pk, crm_noted_at=noted_at).update(crm_noted_at=last.created_at):
+        return None
+    try:
+        person_id = find_or_create_person(pd, contact)
+        deals = pipedrive.list_open_deals(pd.api_key, person_id)
+        pipedrive.create_note(pd.api_key, _conversation_note(contact, messages), person_id=person_id, deal_id=deals[0]['id'] if deals else None)
+    except Exception:
+        Contact.objects.filter(pk=contact.pk).update(crm_noted_at=noted_at)  # a nova tentativa pega a mesma conversa
+        raise
+    return None
+
+
+def _from_ai(m: Message) -> bool:
+    return m.direction == 'out' and not m.from_human and m.campaign_id is None
+
+
+def _conversation_note(contact: Contact, messages: list[Message]) -> str:
+    lines = ['<b>Conversa com a IA fora do horário comercial</b>', '']
+    for m in messages:
+        who = (contact.name or 'Cliente') if m.direction == 'in' else 'IA' if _from_ai(m) else 'Campanha' if m.campaign_id else 'Equipe'
+        text = m.content or f'[{m.get_message_type_display()}]'
+        lines.append(f'[{timezone.localtime(m.created_at):%d/%m %H:%M}] <b>{html.escape(who)}:</b> {html.escape(text)}'.replace('\n', '<br>'))
+    return '<br>'.join(lines)
 
 
 def get_or_create_open_deal(pd: PipedriveAccount, contact: Contact, title: str) -> tuple[dict, bool]:

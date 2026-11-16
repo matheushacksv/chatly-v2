@@ -886,3 +886,69 @@ class PipedriveAutoOpenTests(BaseCrmTestCase):
         self.assertEqual(response.json()['auto_rules'][0]['values'], ['blocos-cad'])
         response = self.client.put(url, {'stage_ids': [3], 'rules': [{**rule, 'values': []}]}, content_type='application/json', headers=self.auth)
         self.assertEqual(response.status_code, 400)
+
+
+@patch('apps.crm.pipedrive.create_note')
+@patch('apps.crm.pipedrive.list_open_deals', return_value=[{'id': 9}])
+class NoteAiConversationTests(BaseCrmTestCase):
+    def setUp(self):
+        super().setUp()
+        Contact.objects.filter(pk=self.contact.pk).update(pipedrive_person_id=5)
+
+    def _msg(self, direction, content, minutes_ago, from_human=False):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from apps.chats.models import Message
+
+        m = Message.objects.create(contact=self.contact, direction=direction, content=content, from_human=from_human)
+        Message.objects.filter(pk=m.pk).update(created_at=timezone.now() - timedelta(minutes=minutes_ago))
+
+    def test_idle_conversation_becomes_note_on_person_and_deal(self, _deals, mock_note):
+        self._msg('in', 'quanto custa?', 50)
+        self._msg('out', 'Custa R$ 10 <promo>', 49)
+        self._msg('out', 'Bom dia, sou da equipe', 40, from_human=True)
+        self.assertIsNone(services.note_ai_conversation(self.contact.pk))
+        content = mock_note.call_args.args[1]
+        self.assertEqual(mock_note.call_args.kwargs, {'person_id': 5, 'deal_id': 9})
+        self.assertIn('<b>Cliente A:</b> quanto custa?', content)
+        self.assertIn('<b>IA:</b> Custa R$ 10 &lt;promo&gt;', content)
+        self.assertIn('<b>Equipe:</b> Bom dia', content)
+        # já anotada: não repete
+        services.note_ai_conversation(self.contact.pk)
+        self.assertEqual(mock_note.call_count, 1)
+        # cliente e equipe seguem conversando sem a IA: nem nota nova, nem checagem reagendada
+        self._msg('in', 'obrigado', 35)
+        self._msg('out', 'de nada', 31, from_human=True)
+        self.assertIsNone(services.note_ai_conversation(self.contact.pk))
+        self._msg('in', 'mais uma coisa', 1)
+        self.assertIsNone(services.note_ai_conversation(self.contact.pk))
+        self.assertEqual(mock_note.call_count, 1)
+
+    def test_active_conversation_waits(self, _deals, mock_note):
+        self._msg('out', 'resposta da IA', 40)
+        self._msg('in', 'cliente respondeu', 10)
+        later = services.note_ai_conversation(self.contact.pk)
+        self.assertIsNotNone(later)  # mensagem do cliente não agenda sozinha: reagenda
+        self._msg('out', 'nova resposta da IA', 5)
+        self.assertIsNone(services.note_ai_conversation(self.contact.pk))  # a resposta da IA agendou a própria
+        mock_note.assert_not_called()
+
+    def test_without_ai_reply_or_pipedrive_does_nothing(self, _deals, mock_note):
+        self._msg('in', 'oi', 50)
+        self._msg('out', 'equipe', 45, from_human=True)
+        self.assertIsNone(services.note_ai_conversation(self.contact.pk))
+        self._msg('out', 'IA', 40)
+        self.pd.delete()
+        self.assertIsNone(services.note_ai_conversation(self.contact.pk))
+        mock_note.assert_not_called()
+
+    def test_pipedrive_failure_keeps_conversation_for_retry(self, _deals, mock_note):
+        self._msg('out', 'IA', 40)
+        mock_note.side_effect = PipedriveError('fora do ar')
+        with self.assertRaises(PipedriveError):
+            services.note_ai_conversation(self.contact.pk)
+        mock_note.side_effect = None
+        services.note_ai_conversation(self.contact.pk)
+        self.assertEqual(mock_note.call_count, 2)

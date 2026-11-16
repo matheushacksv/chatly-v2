@@ -10,6 +10,7 @@ from apps.agents import services as agents_services
 from apps.chats import ai_tools, events, services, whatsapp
 from apps.chats.models import Campaign, Contact, ContactField, FollowUp, Message
 from apps.companies import plans
+from apps.crm import tasks as crm_tasks
 from core.exceptions import ValidationError
 
 
@@ -99,6 +100,9 @@ def _send_parts(task, message_id: int, contact: Contact, parts: list[str], defer
         services.record_outgoing_message(contact, wamid, part)
     # a IA respondeu: o lead de campanha volta ao normal
     Contact.objects.filter(pk=contact.pk, ai_no_catchup=True).update(ai_no_catchup=False)
+    if contact.account.agent.ai_schedule:
+        # IA com horário = atende fora do expediente: conversa parada vira nota no Pipedrive
+        crm_tasks.note_ai_conversation.apply_async((contact.pk,), countdown=services.CONVERSATION_IDLE.seconds)
 
 
 @shared_task(bind=True, max_retries=3)
