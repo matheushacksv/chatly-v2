@@ -677,6 +677,16 @@ class PhoneNumberTests(BaseChatsTestCase):
         self.assertEqual(services.normalize_number('+1 415 555 1234'), '14155551234')
         self.assertEqual(services.normalize_number('+44 7911 123456'), '447911123456')
 
+    def test_normalize_reads_foreign_number_without_plus(self):
+        self.assertEqual(services.normalize_number('244946076300'), '244946076300')  # Angola
+        self.assertEqual(services.normalize_number('351934998051'), '351934998051')  # Portugal
+        self.assertEqual(services.normalize_number('16179925351'), '16179925351')  # EUA, não DDD 16
+        self.assertEqual(services.normalize_number('61422022879'), '61422022879')  # Austrália, não DDD 61
+
+    def test_normalize_prefers_valid_brazilian_number(self):
+        self.assertEqual(services.normalize_number('62981719966'), '5562981719966')
+        self.assertEqual(services.normalize_number('554733226556'), '554733226556')  # fixo com DDI
+
     def test_normalize_rejects_impossible_number(self):
         for number in ['123', '119999', '', 'abc']:
             with self.subTest(number=number), self.assertRaises(ValidationError):
@@ -3178,6 +3188,19 @@ class CampaignTests(BaseChatsTestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(Campaign.objects.count(), 0)
         mock_delay.assert_not_called()
+
+    @patch('apps.chats.tasks.run_campaign.delay')
+    @patch('apps.chats.whatsapp.list_templates')
+    def test_create_campaign_skips_invalid_numbers_and_sends_the_rest(self, mock_list, mock_delay):
+        mock_list.return_value = TEMPLATES_FIXTURE
+
+        response = self.post_campaign(
+            self.company.pk, contact_ids=[], numbers=[{'number': '123'}, {'number': '5511966665555'}, {'number': '244946076300'}]
+        )
+
+        self.assertEqual(response.status_code, 201, response.json())
+        self.assertEqual(response.json()['total'], 2)
+        self.assertTrue(Contact.objects.filter(wa_id='244946076300').exists())
 
     @patch('apps.chats.tasks.run_campaign.delay')
     @patch('apps.chats.whatsapp.list_templates')

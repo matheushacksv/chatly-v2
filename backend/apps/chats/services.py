@@ -44,6 +44,15 @@ def normalize_number(number: str) -> str:
         parsed = phonenumbers.parse(number, 'BR')
     except phonenumbers.NumberParseException:
         raise ValidationError(f'invalid number: {number}')
+    if not phonenumbers.is_valid_number(parsed) and not number.strip().startswith('+'):
+        # planilha costuma trazer estrangeiro sem '+' (244946076300 = Angola): BR válido tem prioridade,
+        # depois o número lido com DDI. ponytail: inválido nos dois e "possível" no BR segue como BR (formato antigo sem o 9)
+        try:
+            foreign = phonenumbers.parse(f'+{re.sub(r"\D", "", number)}')
+        except phonenumbers.NumberParseException:
+            foreign = None
+        if foreign and phonenumbers.is_valid_number(foreign):
+            parsed = foreign
     if not phonenumbers.is_possible_number(parsed):
         raise ValidationError(f'invalid number: {number}')
     return f'{parsed.country_code}{parsed.national_number}'
@@ -807,7 +816,11 @@ def create_campaign(
     known_keys = _field_keys(company)
     import_tags = _import_tags(company, import_tag_ids) if numbers else []
     for entry in numbers or []:
-        contact = get_or_create_contact(account, normalize_number(entry['number']), entry.get('name', ''))
+        try:
+            wa_id = normalize_number(entry['number'])
+        except ValidationError:
+            continue  # número inválido da planilha fica de fora, o resto do disparo segue
+        contact = get_or_create_contact(account, wa_id, entry.get('name', ''))
         _merge_import_fields(contact, entry.get('fields') or {}, known_keys)
         if import_tags:
             contact.tags.add(*import_tags)
