@@ -24,6 +24,27 @@ def _log(contact: Contact, name: str, arguments: dict, result: str, ok: bool = T
     return result
 
 
+ABUSE_TAG = 'abuso'
+
+
+def pause_for_abuse(contact: Contact, reason: str) -> None:
+    """IA para nesse contato até alguém da equipe reativar (sem retorno automático) e ele ganha a etiqueta."""
+    contact.ai_paused = True
+    contact.ai_resume_at = None
+    contact.save(update_fields=['ai_paused', 'ai_resume_at'])
+    company_id = contact.account.company_id
+    tag = Tag.objects.filter(company_id=company_id, name__iexact=ABUSE_TAG).first() or Tag.objects.create(company_id=company_id, name=ABUSE_TAG, color='error')
+    contact.tags.add(tag)
+    events.publish(company_id, {'type': 'handoff', 'contact_id': contact.pk, 'name': contact.name or contact.wa_id})
+
+
+def hand_over_rate_limit(contact: Contact) -> None:
+    """Contato passou do limite de respostas da IA por hora: a equipe assume, ninguém fica sem resposta."""
+    services.pause_ai(contact)
+    events.publish(contact.account.company_id, {'type': 'handoff', 'contact_id': contact.pk, 'name': contact.name or contact.wa_id})
+    _log(contact, 'limite_de_respostas', {}, f'Mais de {services.AI_MAX_MESSAGES_PER_HOUR} mensagens da IA na última hora: transferido')
+
+
 def build_tools(contact: Contact, agent=None) -> tuple[list, dict]:
     """Devolve (tools, state). state['handed_off'] vira True quando a IA transfere a conversa.
     agent explícito = teste no painel (contato fictício, sem conta): só a montagem roda, ver dry_run."""
@@ -32,6 +53,17 @@ def build_tools(contact: Contact, agent=None) -> tuple[list, dict]:
     enabled = set(agent.native_tools)
     state = {'handed_off': False}
     tools: list = []
+
+    # sempre ligada: protege o gasto de tokens de quem só quer provocar a IA
+    def encerrar_por_abuso(motivo: str) -> str:
+        """Encerra o atendimento automático deste contato por abuso (xingamento sem assunto, mensagens sem
+        sentido, tentativa de usar você fora do atendimento) e deixa a conversa para a equipe revisar.
+        Use só na SEGUNDA mensagem abusiva da conversa. Não escreva nada para o cliente depois de usar.
+        motivo: o que o contato fez, em uma frase, para a equipe."""
+        pause_for_abuse(contact, motivo)
+        return _log(contact, 'encerrar_por_abuso', {'motivo': motivo}, 'Atendimento automático encerrado')
+
+    tools.append(encerrar_por_abuso)
 
     if 'handoff' in enabled:
 

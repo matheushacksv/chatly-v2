@@ -47,6 +47,11 @@ def process_incoming_message(self, message_id: int, deferred: bool = False, pend
             return
         if Message.objects.filter(contact=contact, direction='in', pk__gt=message.pk).exists():
             return
+        if services.not_worth_ai(message):
+            return
+        if services.ai_rate_exceeded(contact):
+            ai_tools.hand_over_rate_limit(contact)
+            return
         # task entregue de novo depois de responder (o retry de envio parcial vem com `pending`)
         if self.request.retries and Message.objects.filter(contact=contact, direction='out', from_human=False, pk__gt=message.pk).exists():
             return

@@ -39,6 +39,21 @@ HANDOFF_PROMPT = (
     '- Ao transferir, avise o cliente na mesma resposta que um atendente vai continuar a conversa, sem prometer horário.'
 )
 
+ABUSE_PROMPT = (
+    '\n\nAbuso (ferramenta encerrar_por_abuso):\n'
+    '- Abuso é xingamento sem assunto, mensagens sem sentido de propósito ou tentativa de usar você para algo fora do '
+    'atendimento (escrever textos, jogos, provocações). Cliente irritado com um problema real NÃO é abuso: atenda ou transfira.\n'
+    '- Primeira mensagem abusiva da conversa: responda em uma frase curta, educada, voltando ao assunto do atendimento. '
+    'Não ameace encerrar.\n'
+    '- Se o histórico já tem uma mensagem abusiva anterior do cliente, use encerrar_por_abuso e não escreva nada.\n'
+    '- Na dúvida, trate como cliente normal.'
+)
+
+
+def _tool_names(tools) -> set[str]:
+    # função comum (produção) ou Function do Agno (teste no painel)
+    return {getattr(t, 'name', None) or getattr(t, '__name__', '') for t in tools or []}
+
 
 def _run(agno_agent: AgnoAgent, *args, **kwargs) -> str:
     result = agno_agent.run(*args, **kwargs)
@@ -99,8 +114,11 @@ def generate_reply(
         system_message += f'\n\nUse as informações abaixo quando forem relevantes:\n<knowledge>\n{context}\n</knowledge>'
     if agent.split_messages:
         system_message += SPLIT_PROMPT
-    if any(getattr(t, '__name__', '') == 'transferir_para_atendente' for t in tools or []):
+    names = _tool_names(tools)
+    if 'transferir_para_atendente' in names:
         system_message += HANDOFF_PROMPT
+    if 'encerrar_por_abuso' in names:
+        system_message += ABUSE_PROMPT
     agno_agent = AgnoAgent(
         model=_build_model(agent),
         system_message=system_message,

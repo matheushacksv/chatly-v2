@@ -33,6 +33,10 @@ VAR_RE = re.compile(r'\{\{\s*(\w+)\s*\}\}')
 RESERVED_VARS = {'nome', 'first_name', 'telefone', 'botao', 'campanha'}
 TEMPLATE_NAME_RE = re.compile(r'^[a-z0-9_]+$')
 SERVICE_WINDOW = timedelta(hours=24)
+# rede de segurança contra gasto de tokens: o maior caso real (11/2026) foi 24 balões da IA numa hora
+AI_MAX_MESSAGES_PER_HOUR = 60
+NO_CONTENT_RE = re.compile(r'[\s.,;:!?¿¡\-_*#~"\'()]+')
+REPEAT_WINDOW = timedelta(minutes=10)
 # preço por mensagem cobrada no Brasil, em R$ (as contas são faturadas em BRL). Fonte: tabela da Meta citada em
 # vectalk/zynfo, vigente em 11/2026. ponytail: a Meta muda a tabela por trimestre, atualizar aqui; número estrangeiro
 # tem preço por país e só é contado (billed_foreign), sem valor
@@ -72,6 +76,28 @@ def number_variants(wa_id: str) -> list[str]:
     if wa_id.startswith('55') and len(wa_id) == 13 and wa_id[4] == '9' and wa_id[5] in '6789':
         return [wa_id, wa_id[:4] + wa_id[5:]]
     return [wa_id]
+
+
+def not_worth_ai(message: Message) -> bool:
+    """Texto que não pede resposta e só gastaria tokens: só pontuação, ou repetição de uma mensagem
+    que a IA já respondeu há pouco. Reenvio de mensagem ainda sem resposta passa (pode ser falha nossa)."""
+    if message.message_type != Message.Type.TEXT:
+        return False
+    if NO_CONTENT_RE.fullmatch(message.content or ''):
+        return True
+    previous = (
+        Message.objects.filter(contact=message.contact, direction='in', pk__lt=message.pk, created_at__gte=message.created_at - REPEAT_WINDOW)
+        .order_by('-pk').first()
+    )
+    if previous is None or previous.content.strip() != message.content.strip():
+        return False
+    return Message.objects.filter(contact=message.contact, direction='out', from_human=False, pk__gt=previous.pk, pk__lt=message.pk).exists()
+
+
+def ai_rate_exceeded(contact: Contact) -> bool:
+    since = timezone.now() - timedelta(hours=1)
+    sent = Message.objects.filter(contact=contact, direction='out', from_human=False, campaign=None, created_at__gte=since).count()
+    return sent >= AI_MAX_MESSAGES_PER_HOUR
 
 
 def service_window_open(contact: Contact) -> bool:

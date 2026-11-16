@@ -2182,6 +2182,19 @@ class GenerateReplyTests(BaseChatsTestCase):
         ai.generate_reply(self.agent, [], 'Oi')
         self.assertNotIn(ai.HANDOFF_PROMPT, mock_agent_cls.call_args.kwargs['system_message'])
 
+    @patch('apps.ai.Claude')
+    @patch('apps.ai.AgnoAgent')
+    def test_generate_reply_adds_abuse_policy_also_for_playground_tools(self, mock_agent_cls, mock_claude):
+        # no teste do painel as ferramentas chegam como Function do Agno (sem __name__)
+        from agno.tools.function import Function
+
+        mock_agent_cls.return_value.run.return_value.content = 'ok'
+        tools = [Function(name=n, entrypoint=lambda: 'ok') for n in ('encerrar_por_abuso', 'transferir_para_atendente')]
+        ai.generate_reply(self.agent, [], 'Oi', tools=tools)
+        system = mock_agent_cls.call_args.kwargs['system_message']
+        self.assertIn(ai.ABUSE_PROMPT, system)
+        self.assertIn(ai.HANDOFF_PROMPT, system)
+
     @patch('apps.ai.embed_text')
     @patch('apps.ai.Claude')
     @patch('apps.ai.AgnoAgent')
@@ -2297,6 +2310,51 @@ class ProcessIncomingMessageTests(BaseChatsTestCase):
         self.assertEqual(reply.content, 'Resposta gerada')
         self.assertEqual(reply.contact, self.contact)
         self.assertFalse(reply.from_human)  # resposta da IA, não do atendente
+
+    @patch('apps.chats.whatsapp.send_text', return_value='wamid.ia')
+    @patch('apps.ai.generate_reply', return_value='Resposta')
+    def test_punctuation_only_message_does_not_call_ai(self, mock_generate, mock_send):
+        for i, text in enumerate(['?????', '...', ' !! ']):
+            incoming = Message.objects.create(contact=self.contact, direction='in', content=text, wa_message_id=f'wamid.p{i}')
+            tasks.process_incoming_message(incoming.pk)
+        mock_generate.assert_not_called()
+
+    @patch('apps.chats.whatsapp.send_text', return_value='wamid.ia')
+    @patch('apps.ai.generate_reply', return_value='Resposta')
+    def test_repeat_of_answered_message_does_not_call_ai(self, mock_generate, mock_send):
+        first = Message.objects.create(contact=self.contact, direction='in', content='bla bla', wa_message_id='wamid.r1')
+        tasks.process_incoming_message(first.pk)
+        self.assertEqual(mock_generate.call_count, 1)
+
+        again = Message.objects.create(contact=self.contact, direction='in', content='bla bla ', wa_message_id='wamid.r2')
+        tasks.process_incoming_message(again.pk)
+        self.assertEqual(mock_generate.call_count, 1)
+
+    @patch('apps.chats.whatsapp.send_text', return_value='wamid.ia')
+    @patch('apps.ai.generate_reply', return_value='Resposta')
+    def test_repeat_without_answer_still_calls_ai(self, mock_generate, mock_send):
+        # reenviou porque não teve resposta (ex.: IA fora do ar): não é abuso
+        Message.objects.create(contact=self.contact, direction='in', content='alguém aí?', wa_message_id='wamid.s1')
+        again = Message.objects.create(contact=self.contact, direction='in', content='alguém aí?', wa_message_id='wamid.s2')
+        tasks.process_incoming_message(again.pk)
+        mock_generate.assert_called_once()
+
+    @patch('apps.chats.events.publish')
+    @patch('apps.chats.whatsapp.send_text', return_value='wamid.ia')
+    @patch('apps.ai.generate_reply', return_value='Resposta')
+    def test_over_hourly_limit_hands_over_to_team(self, mock_generate, mock_send, mock_pub):
+        Message.objects.bulk_create([
+            Message(contact=self.contact, direction='out', content='ia', wa_message_id=f'wamid.lim{i}')
+            for i in range(services.AI_MAX_MESSAGES_PER_HOUR)
+        ])
+        incoming = Message.objects.create(contact=self.contact, direction='in', content='mais uma', wa_message_id='wamid.lim-in')
+
+        tasks.process_incoming_message(incoming.pk)
+
+        mock_generate.assert_not_called()
+        self.contact.refresh_from_db()
+        self.assertTrue(self.contact.ai_paused)
+        self.assertEqual(ToolCall.objects.get(contact=self.contact).name, 'limite_de_respostas')
 
     @patch('apps.chats.tasks.process_incoming_message.apply_async')
     @patch('apps.chats.whatsapp.send_text')
@@ -2808,8 +2866,8 @@ class ProcessIncomingMessageTests(BaseChatsTestCase):
         tasks.process_incoming_message(incoming.pk)
 
         tools = mock_generate.call_args.kwargs['tools']
-        self.assertEqual(len(tools), 1)
-        tool = tools[0]
+        self.assertEqual([t.__name__ for t in tools], ['encerrar_por_abuso', 'transferir_para_atendente'])
+        tool = tools[1]
         self.assertEqual(tool.__name__, 'transferir_para_atendente')
         self.assertTrue(tool.__doc__)  # docstring é a descrição que o modelo lê
         tool(motivo='cliente pediu humano')  # simula o modelo chamando a tool
@@ -4111,7 +4169,7 @@ class PipedriveToolsTests(BaseChatsTestCase):
     @patch('apps.ai.generate_reply')
     def test_no_pipedrive_account_no_crm_tools(self, mock_generate, mock_send):
         tools = self._run_task_and_get_tools(mock_generate, mock_send)
-        self.assertEqual([t.__name__ for t in tools], ['transferir_para_atendente'])
+        self.assertEqual([t.__name__ for t in tools], ['encerrar_por_abuso', 'transferir_para_atendente'])
 
     @patch('apps.chats.whatsapp.send_text')
     @patch('apps.ai.generate_reply')
@@ -4119,7 +4177,7 @@ class PipedriveToolsTests(BaseChatsTestCase):
         PipedriveAccount.objects.create(company=self.company, api_key='pd-key', default_pipeline_id=1, default_stage_id=2)
         tools = self._run_task_and_get_tools(mock_generate, mock_send)
         self.assertEqual(
-            [t.__name__ for t in tools], ['transferir_para_atendente', 'criar_negocio', 'anotar_crm']
+            [t.__name__ for t in tools], ['encerrar_por_abuso', 'transferir_para_atendente', 'criar_negocio', 'anotar_crm']
         )
 
     @patch('apps.crm.pipedrive.list_open_deals', return_value=[])
@@ -4133,7 +4191,7 @@ class PipedriveToolsTests(BaseChatsTestCase):
         mock_create_deal.return_value = {'id': 7, 'title': 'Cliente A'}
         tools = self._run_task_and_get_tools(mock_generate, mock_send)
 
-        result = tools[1]('Cliente A')
+        result = tools[2]('Cliente A')
 
         self.assertEqual(result, 'Negócio criado no CRM (id 7)')
         mock_create_deal.assert_called_once_with('pd-key', 'Cliente A', 88, 1, 2, None)
@@ -4151,7 +4209,7 @@ class PipedriveToolsTests(BaseChatsTestCase):
         mock_create_person.return_value = {'id': 51}
         tools = self._run_task_and_get_tools(mock_generate, mock_send)
 
-        result = tools[2]('Orçamento de 5 mil')
+        result = tools[3]('Orçamento de 5 mil')
 
         self.assertEqual(result, 'Anotação salva no CRM')
         mock_note.assert_called_once_with('pd-key', 'Orçamento de 5 mil', person_id=51)
@@ -4165,7 +4223,7 @@ class PipedriveToolsTests(BaseChatsTestCase):
         PipedriveAccount.objects.create(company=self.company, api_key='pd-key', default_pipeline_id=1, default_stage_id=2)
         mock_search.side_effect = PipedriveError('Pipedrive rate limit reached, try again soon')
         # IA chama a tool no meio da geração: erro do Pipedrive não pode estourar a task
-        mock_generate.side_effect = lambda *args, **kwargs: kwargs['tools'][1]('Cliente A')
+        mock_generate.side_effect = lambda *args, **kwargs: kwargs['tools'][2]('Cliente A')
         mock_send.return_value = 'wamid.out'
         incoming = Message.objects.get(wa_message_id='wamid.1')
 
@@ -4183,7 +4241,7 @@ class PipedriveToolsTests(BaseChatsTestCase):
         mock_search.return_value = [{'id': 88}]
         tools = self._run_task_and_get_tools(mock_generate, mock_send)
 
-        result = tools[1]('Cliente A')
+        result = tools[2]('Cliente A')
 
         self.assertEqual(result, 'Falha ao criar negócio: default pipeline and stage not set')
         mock_search.assert_not_called()
@@ -4578,14 +4636,33 @@ class AIToolsTests(BaseChatsTestCase):
     def test_only_enabled_native_tools_are_offered(self, mock_pub):
         ContactField.objects.create(company=self.company, key='cad', label='CAD')
         Tag.objects.create(company=self.company, name='quer_teste')
+        # encerrar_por_abuso vem sempre, independente do agente
         names, _ = self.tools('handoff')
-        self.assertEqual(list(names), ['transferir_para_atendente'])
+        self.assertEqual(list(names), ['encerrar_por_abuso', 'transferir_para_atendente'])
         names, _ = self.tools('handoff', 'followup', 'save_field', 'tag')
-        self.assertEqual(list(names), ['transferir_para_atendente', 'agendar_retomada', 'salvar_dado_contato', 'etiquetar_contato'])
+        self.assertEqual(
+            list(names), ['encerrar_por_abuso', 'transferir_para_atendente', 'agendar_retomada', 'salvar_dado_contato', 'etiquetar_contato']
+        )
         ContactField.objects.all().delete()
         Tag.objects.all().delete()
         names, _ = self.tools('save_field', 'tag')
-        self.assertEqual(names, {})  # sem campo/etiqueta cadastrada não adianta oferecer
+        self.assertEqual(list(names), ['encerrar_por_abuso'])  # sem campo/etiqueta cadastrada não adianta oferecer
+
+    def test_abuse_pauses_until_team_reactivates_and_tags(self, mock_pub):
+        Agent.objects.filter(pk=self.agent.pk).update(handoff_resume_hours=6)
+        tools, state = self.tools()
+        self.call(tools['encerrar_por_abuso'], motivo='só xingamentos')
+        self.contact.refresh_from_db()
+        self.assertTrue(self.contact.ai_paused)
+        self.assertIsNone(self.contact.ai_resume_at)  # não volta sozinha, mesmo com retorno automático no agente
+        self.assertFalse(state['handed_off'])  # nada de despedida: a resposta da IA não sai
+        self.assertEqual(list(self.contact.tags.values_list('name', flat=True)), ['abuso'])
+        self.assertEqual(ToolCall.objects.get().name, 'encerrar_por_abuso')
+
+        # segunda vez reaproveita a etiqueta (sem diferenciar maiúscula)
+        Tag.objects.filter(name='abuso').update(name='Abuso')
+        self.call(tools['encerrar_por_abuso'], motivo='de novo')
+        self.assertEqual(Tag.objects.filter(company=self.company).count(), 1)
 
     def test_handoff_logs_reason_and_flags_state(self, mock_pub):
         tools, state = self.tools('handoff')
