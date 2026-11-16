@@ -216,6 +216,10 @@ class CampaignAudienceOutDTO(Schema):
 class CampaignOutDTO(ModelSchema):
     delivered: int = 0
     read: int = 0
+    # gasto estimado (só no GET individual): mensagens cobradas pela Meta x preço do Brasil
+    billed: int = 0
+    billed_foreign: int = 0
+    cost: float = 0
 
     class Meta:
         model = Campaign

@@ -196,6 +196,9 @@ export interface Campaign {
   created_at: string
   delivered: number
   read: number
+  billed: number
+  billed_foreign: number
+  cost: number
 }
 
 /** Formulário de campanha guardado como rascunho (o backend só armazena) */

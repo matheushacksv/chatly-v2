@@ -33,6 +33,13 @@ VAR_RE = re.compile(r'\{\{\s*(\w+)\s*\}\}')
 RESERVED_VARS = {'nome', 'first_name', 'telefone', 'botao', 'campanha'}
 TEMPLATE_NAME_RE = re.compile(r'^[a-z0-9_]+$')
 SERVICE_WINDOW = timedelta(hours=24)
+# preço por mensagem cobrada no Brasil, em R$ (as contas são faturadas em BRL). Fonte: tabela da Meta citada em
+# vectalk/zynfo, vigente em 11/2026. ponytail: a Meta muda a tabela por trimestre, atualizar aqui; número estrangeiro
+# tem preço por país e só é contado (billed_foreign), sem valor
+BR_MESSAGE_PRICES = {
+    'marketing': (['marketing', 'marketing_lite'], 0.3217),
+    'other': (['utility', 'authentication', 'authentication_international', 'service'], 0.0350),
+}
 
 # * ------ Helpers ------
 
@@ -920,11 +927,18 @@ def get_campaign(company: Company, campaign_id: int) -> Campaign:
         .annotate(
             delivered=Count('messages', filter=Q(messages__status='delivered')),
             read=Count('messages', filter=Q(messages__status='read')),
+            **{
+                f'billed_{key}': Count('messages', filter=Q(messages__billable_category__in=categories, messages__contact__wa_id__startswith='55'))
+                for key, (categories, _) in BR_MESSAGE_PRICES.items()
+            },
+            billed_foreign=Count('messages', filter=~Q(messages__billable_category='') & ~Q(messages__contact__wa_id__startswith='55')),
         )
         .first()
     )
     if campaign is None:
         raise NotFound('campaign not found')
+    campaign.billed = sum(getattr(campaign, f'billed_{key}') for key in BR_MESSAGE_PRICES)
+    campaign.cost = round(sum(getattr(campaign, f'billed_{key}') * price for key, (_, price) in BR_MESSAGE_PRICES.items()), 2)
     return campaign
 
 
@@ -998,9 +1012,12 @@ def record_incoming_message(
 STATUS_ORDER = ['sent', 'delivered', 'read']
 
 
-def update_message_status(wa_message_id: str, status: str, error_detail: str = '') -> None:
+def update_message_status(wa_message_id: str, status: str, error_detail: str = '', billable_category: str = '') -> None:
     # webhooks chegam fora de ordem: só avança (um "delivered" atrasado não rebaixa "read"); failed grava sempre
     qs = Message.objects.filter(wa_message_id=wa_message_id)
+    if billable_category:
+        # vem igual em sent/delivered/read: grava uma vez, sem depender da ordem
+        qs.filter(billable_category='').update(billable_category=billable_category[:20])
     if status == Message.Status.FAILED:
         # a Meta aceitou o envio (contou como enviado) e recusou a entrega depois: a campanha passa a contar como falha
         changed = qs.exclude(status=status).exists()  # reenvio do mesmo failed não conta nem avisa de novo

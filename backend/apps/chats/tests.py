@@ -1675,6 +1675,28 @@ class WebhookTests(BaseChatsTestCase):
         message = Message.objects.get(wa_message_id='wamid.out')
         self.assertEqual(message.status, 'delivered')
 
+    def test_status_records_billable_category_once(self):
+        self.outgoing()
+        payload = self.status_payload(wamid='wamid.out', status='sent')
+        payload['entry'][0]['changes'][0]['value']['statuses'][0]['pricing'] = {
+            'billable': True, 'pricing_model': 'PMP', 'type': 'regular', 'category': 'marketing',
+        }
+        self.post_webhook(payload)
+        self.assertEqual(Message.objects.get(wa_message_id='wamid.out').billable_category, 'marketing')
+
+        payload['entry'][0]['changes'][0]['value']['statuses'][0]['pricing']['category'] = 'utility'
+        self.post_webhook(payload)
+        self.assertEqual(Message.objects.get(wa_message_id='wamid.out').billable_category, 'marketing')
+
+    def test_status_not_billable_records_nothing(self):
+        self.outgoing()
+        payload = self.status_payload(wamid='wamid.out', status='delivered')
+        payload['entry'][0]['changes'][0]['value']['statuses'][0]['pricing'] = {
+            'billable': False, 'pricing_model': 'PMP', 'type': 'free_customer_service', 'category': 'service',
+        }
+        self.post_webhook(payload)
+        self.assertEqual(Message.objects.get(wa_message_id='wamid.out').billable_category, '')
+
     def test_late_delivered_does_not_downgrade_read(self):
         message = self.outgoing(status='read')
         self.post_webhook(self.status_payload(wamid='wamid.out', status='delivered'))
@@ -3254,6 +3276,26 @@ class CampaignTests(BaseChatsTestCase):
         body = response.json()
         self.assertEqual(body['delivered'], 1)
         self.assertEqual(body['read'], 1)
+        self.assertEqual(body['cost'], 0)
+
+    def test_get_campaign_estimates_cost_from_billed_messages(self):
+        campaign = Campaign.objects.create(
+            account=self.account, name='Promo', template_name='oferta', template_language='pt_BR', total=5, sent=5
+        )
+        br = Contact.objects.create(account=self.account, wa_id='5511911112222')
+        angola = Contact.objects.create(account=self.account, wa_id='244946076300')
+        rows = [(br, 'marketing'), (br, 'marketing'), (br, 'utility'), (br, ''), (angola, 'marketing')]
+        for i, (contact, category) in enumerate(rows):
+            Message.objects.create(
+                contact=contact, direction='out', content='oi', status='delivered',
+                wa_message_id=f'wamid.cost{i}', campaign=campaign, billable_category=category,
+            )
+
+        body = self.client.get(self.url(self.company.pk, campaign.pk), headers=self.auth).json()
+
+        self.assertEqual(body['billed'], 3)
+        self.assertEqual(body['billed_foreign'], 1)
+        self.assertAlmostEqual(body['cost'], round(2 * 0.3217 + 0.0350, 2))
 
     def test_get_foreign_campaign_returns_404(self):
         campaign = Campaign.objects.create(account=self.other_account, name='Alheia', template_name='x', template_language='pt_BR')

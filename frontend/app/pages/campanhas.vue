@@ -46,6 +46,12 @@ const statusBadge: Record<Campaign['status'], { label: string, color: 'warning' 
   failed: { label: 'Falha', color: 'error' }
 }
 
+const brl = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' })
+function costNote(c: Campaign) {
+  const billed = `${c.billed} ${c.billed === 1 ? 'mensagem cobrada' : 'mensagens cobradas'} pela Meta`
+  if (!c.billed_foreign) return billed
+  return `${billed} · ${c.billed_foreign} ${c.billed_foreign === 1 ? 'internacional' : 'internacionais'} fora do valor`
+}
 const dateFmt = new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
 
 // ---- detalhes (delivered/read só vêm no GET individual) ----
@@ -557,6 +563,20 @@ async function create() {
         <div v-if="detail.failed" class="rounded-lg ring-1 ring-error/30 bg-error/5 p-3 col-span-2">
           <p class="text-xs text-error">Falhas de envio</p>
           <p class="text-xl font-semibold tabular-nums text-error">{{ detail.failed }}</p>
+        </div>
+        <div
+          v-if="detail.billed || detail.billed_foreign"
+          class="rounded-lg ring-1 ring-default p-3 col-span-2"
+        >
+          <p class="text-xs text-muted">
+            Gasto estimado
+          </p>
+          <p class="text-xl font-semibold tabular-nums">
+            {{ brl.format(detail.cost) }}
+          </p>
+          <p class="text-xs text-muted">
+            {{ costNote(detail) }}
+          </p>
         </div>
       </div>
     </template>

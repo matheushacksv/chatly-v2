@@ -111,6 +111,8 @@ class Message(models.Model):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.RECEIVED)
     button_id = models.CharField(max_length=64, blank=True, default='')
     from_human = models.BooleanField(default=False)
+    # categoria em que a Meta cobrou a mensagem (marketing, utility...), vinda do webhook de status; vazio = não cobrada
+    billable_category = models.CharField(max_length=20, blank=True, default='')
     campaign = models.ForeignKey('Campaign', on_delete=models.SET_NULL, null=True, blank=True, related_name='messages')
     created_at = models.DateTimeField(auto_now_add=True)
 

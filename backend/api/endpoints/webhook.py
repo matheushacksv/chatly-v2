@@ -92,6 +92,8 @@ def receive_webhook_endpoint(request):
         for status_event in value.get('statuses', []):
             errors = status_event.get('errors', [])
             error_detail = errors[0].get('title', '') if errors else ''
-            services.update_message_status(status_event['id'], status_event['status'], error_detail)
+            pricing = status_event.get('pricing') or {}
+            billable_category = pricing.get('category', '') if pricing.get('billable') else ''
+            services.update_message_status(status_event['id'], status_event['status'], error_detail, billable_category)
 
     return HttpResponse(status=200)
