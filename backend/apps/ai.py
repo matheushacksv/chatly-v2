@@ -23,6 +23,18 @@ MEMORY_PROMPT = (
     '(nome, preferências, contexto de compra, decisões). Máximo 20 linhas. '
     'Não inclua opiniões nem transcrição da conversa. Responda apenas com as anotações. '
 )
+SUMMARY_PROMPT = (
+    'Você resume, para a equipe de vendas, uma conversa de WhatsApp que a assistente virtual (IA) teve com um cliente '
+    'fora do horário comercial. Use só fatos da conversa: não invente nem deduza. Responda apenas com estas linhas, '
+    'nesta ordem, omitindo as que não tiverem informação:\n'
+    'Interesse: o que o cliente quer.\n'
+    'Dados informados: nome, empresa, cidade e outros dados que o cliente passou.\n'
+    'Dúvidas e objeções: o que perguntou ou o que o travou.\n'
+    'O que a IA fez: o que explicou, enviou ou combinou.\n'
+    'Próximo passo: o que a equipe deve fazer agora (sempre presente; inclua o que ficou combinado, como horário de retorno).\n'
+    'Cada linha com uma ou duas frases curtas: a equipe lê em 20 segundos. Não escreva o que não aconteceu '
+    '(nada de "não informou" ou "sem objeções"), não repita a mesma informação em duas linhas e não use markdown.'
+)
 VAR_RE = re.compile(r'\{\{\s*(\w+)\s*\}\}')
 WEEKDAYS = ('segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado', 'domingo')
 
@@ -146,3 +158,8 @@ def update_memory(agent: Agent, memory: str, history: list[dict]) -> str:
     agno_agent = AgnoAgent(model=_build_model(agent), system_message=MEMORY_PROMPT)
     prompt = f'<anotacoes_atuais>\n{memory}\n</anotacoes_atuais>\n\n<conversa_recente>\n{conversation}\n</conversa_recente>'
     return _run(agno_agent, prompt)[:MEMORY_MAX_CHARS]
+
+
+def summarize_conversation(agent: Agent, conversation: str) -> str:
+    agno_agent = AgnoAgent(model=_build_model(agent), system_message=SUMMARY_PROMPT)
+    return _run(agno_agent, f'<conversa>\n{conversation}\n</conversa>').strip()

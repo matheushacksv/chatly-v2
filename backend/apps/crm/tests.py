@@ -46,6 +46,11 @@ class PipedriveRequestTests(TestCase):
         with self.assertRaises(NotFound):
             pipedrive.get_person('key', 999)
 
+    def test_create_note_pinned_to_deal(self, mock_request):
+        mock_request.return_value = _resp({'data': {'id': 1}})
+        pipedrive.create_note('key', 'resumo', deal_id=9, person_id=5, pin=True)
+        self.assertEqual(mock_request.call_args.kwargs['json'], {'content': 'resumo', 'deal_id': 9, 'pinned_to_deal_flag': 1, 'person_id': 5})
+
     def test_429_raises_rate_limit(self, mock_request):
         mock_request.return_value = _resp(status=429)
         with self.assertRaises(PipedriveError) as ctx:
@@ -888,6 +893,7 @@ class PipedriveAutoOpenTests(BaseCrmTestCase):
         self.assertEqual(response.status_code, 400)
 
 
+@patch('apps.ai.summarize_conversation', return_value='Interesse: saber o preço <promo>\nPróximo passo: ligar amanhã')
 @patch('apps.crm.pipedrive.create_note')
 @patch('apps.crm.pipedrive.list_open_deals', return_value=[{'id': 9}])
 class NoteAiConversationTests(BaseCrmTestCase):
@@ -905,16 +911,19 @@ class NoteAiConversationTests(BaseCrmTestCase):
         m = Message.objects.create(contact=self.contact, direction=direction, content=content, from_human=from_human)
         Message.objects.filter(pk=m.pk).update(created_at=timezone.now() - timedelta(minutes=minutes_ago))
 
-    def test_idle_conversation_becomes_note_on_person_and_deal(self, _deals, mock_note):
+    def test_idle_conversation_becomes_note_on_person_and_deal(self, _deals, mock_note, mock_summary):
         self._msg('in', 'quanto custa?', 50)
         self._msg('out', 'Custa R$ 10 <promo>', 49)
         self._msg('out', 'Bom dia, sou da equipe', 40, from_human=True)
         self.assertIsNone(services.note_ai_conversation(self.contact.pk))
         content = mock_note.call_args.args[1]
-        self.assertEqual(mock_note.call_args.kwargs, {'person_id': 5, 'deal_id': 9})
-        self.assertIn('<b>Cliente A:</b> quanto custa?', content)
-        self.assertIn('<b>IA:</b> Custa R$ 10 &lt;promo&gt;', content)
-        self.assertIn('<b>Equipe:</b> Bom dia', content)
+        self.assertEqual(mock_note.call_args.kwargs, {'person_id': 5, 'deal_id': 9, 'pin': True})
+        self.assertIn('<b>Resumo do atendimento da IA (fora do horário)', content)
+        self.assertIn('<b>Interesse:</b> saber o preço &lt;promo&gt;<br><b>Próximo passo:</b> ligar amanhã', content)
+        conversation = mock_summary.call_args.args[1]  # a IA recebe a conversa inteira, com quem falou
+        self.assertIn('Cliente A: quanto custa?', conversation)
+        self.assertIn('IA: Custa R$ 10 <promo>', conversation)
+        self.assertIn('Equipe: Bom dia', conversation)
         # já anotada: não repete
         services.note_ai_conversation(self.contact.pk)
         self.assertEqual(mock_note.call_count, 1)
@@ -926,7 +935,7 @@ class NoteAiConversationTests(BaseCrmTestCase):
         self.assertIsNone(services.note_ai_conversation(self.contact.pk))
         self.assertEqual(mock_note.call_count, 1)
 
-    def test_active_conversation_waits(self, _deals, mock_note):
+    def test_active_conversation_waits(self, _deals, mock_note, mock_summary):
         self._msg('out', 'resposta da IA', 40)
         self._msg('in', 'cliente respondeu', 10)
         later = services.note_ai_conversation(self.contact.pk)
@@ -935,7 +944,7 @@ class NoteAiConversationTests(BaseCrmTestCase):
         self.assertIsNone(services.note_ai_conversation(self.contact.pk))  # a resposta da IA agendou a própria
         mock_note.assert_not_called()
 
-    def test_without_ai_reply_or_pipedrive_does_nothing(self, _deals, mock_note):
+    def test_without_ai_reply_or_pipedrive_does_nothing(self, _deals, mock_note, mock_summary):
         self._msg('in', 'oi', 50)
         self._msg('out', 'equipe', 45, from_human=True)
         self.assertIsNone(services.note_ai_conversation(self.contact.pk))
@@ -944,7 +953,7 @@ class NoteAiConversationTests(BaseCrmTestCase):
         self.assertIsNone(services.note_ai_conversation(self.contact.pk))
         mock_note.assert_not_called()
 
-    def test_pipedrive_failure_keeps_conversation_for_retry(self, _deals, mock_note):
+    def test_pipedrive_failure_keeps_conversation_for_retry(self, _deals, mock_note, mock_summary):
         self._msg('out', 'IA', 40)
         mock_note.side_effect = PipedriveError('fora do ar')
         with self.assertRaises(PipedriveError):
@@ -952,3 +961,12 @@ class NoteAiConversationTests(BaseCrmTestCase):
         mock_note.side_effect = None
         services.note_ai_conversation(self.contact.pk)
         self.assertEqual(mock_note.call_count, 2)
+
+    def test_summary_failure_falls_back_to_full_conversation(self, _deals, mock_note, mock_summary):
+        mock_summary.side_effect = RuntimeError('model run failed')
+        self._msg('in', 'quanto custa?', 50)
+        self._msg('out', 'Custa R$ 10', 49)
+        services.note_ai_conversation(self.contact.pk)
+        content = mock_note.call_args.args[1]
+        self.assertIn('<b>Conversa com a IA fora do horário comercial</b>', content)
+        self.assertIn('Cliente A: quanto custa?<br>', content)

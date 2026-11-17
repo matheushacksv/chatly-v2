@@ -121,10 +121,12 @@ def list_notes(api_key: str, deal_id: int) -> list[dict]:
     return body.get('data') or []
 
 
-def create_note(api_key: str, content: str, *, deal_id: int | None = None, person_id: int | None = None) -> dict:
+def create_note(api_key: str, content: str, *, deal_id: int | None = None, person_id: int | None = None, pin: bool = False) -> dict:
     payload: dict = {'content': content}
     if deal_id:
         payload['deal_id'] = deal_id
+        if pin:
+            payload['pinned_to_deal_flag'] = 1
     if person_id:
         payload['person_id'] = person_id
     return _req(api_key, 'POST', f'{V1_URL}/notes', json=payload)['data']

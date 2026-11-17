@@ -8,6 +8,7 @@ from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
+from apps import ai
 from apps.chats import events
 from apps.chats.models import Contact, Message, WhatsAppAccount
 from apps.agents.services import next_ai_opening
@@ -398,7 +399,7 @@ def find_or_create_person(pd: PipedriveAccount, contact: Contact) -> int:
 def note_ai_conversation(contact_id: int):
     """Conversa que a IA atendeu (fora do expediente) parada há 30 min: vira nota no Pipedrive,
     na pessoa e no negócio aberto dela. Devolve quando olhar de novo se a conversa ainda não parou."""
-    contact = Contact.objects.select_related('account').filter(pk=contact_id).first()
+    contact = Contact.objects.select_related('account__agent__credential').filter(pk=contact_id).first()
     pd = PipedriveAccount.objects.filter(company_id=contact.account.company_id).first() if contact else None
     if pd is None:
         return None
@@ -418,7 +419,9 @@ def note_ai_conversation(contact_id: int):
     try:
         person_id = find_or_create_person(pd, contact)
         deals = pipedrive.list_open_deals(pd.api_key, person_id)
-        pipedrive.create_note(pd.api_key, _conversation_note(contact, messages), person_id=person_id, deal_id=deals[0]['id'] if deals else None)
+        pipedrive.create_note(
+            pd.api_key, _conversation_note(contact, messages), person_id=person_id, deal_id=deals[0]['id'] if deals else None, pin=True,
+        )
     except Exception:
         Contact.objects.filter(pk=contact.pk).update(crm_noted_at=noted_at)  # a nova tentativa pega a mesma conversa
         raise
@@ -430,12 +433,24 @@ def _from_ai(m: Message) -> bool:
 
 
 def _conversation_note(contact: Contact, messages: list[Message]) -> str:
-    lines = ['<b>Conversa com a IA fora do horário comercial</b>', '']
+    lines = []
     for m in messages:
         who = (contact.name or 'Cliente') if m.direction == 'in' else 'IA' if _from_ai(m) else 'Campanha' if m.campaign_id else 'Equipe'
-        text = m.content or f'[{m.get_message_type_display()}]'
-        lines.append(f'[{timezone.localtime(m.created_at):%d/%m %H:%M}] <b>{html.escape(who)}:</b> {html.escape(text)}'.replace('\n', '<br>'))
-    return '<br>'.join(lines)
+        lines.append(f'[{timezone.localtime(m.created_at):%d/%m %H:%M}] {who}: {m.content or f"[{m.get_message_type_display()}]"}')
+    conversation = '\n'.join(lines)
+    start, end = timezone.localtime(messages[0].created_at), timezone.localtime(messages[-1].created_at)
+    until = f'{end:%H:%M}' if start.date() == end.date() else f'{end:%d/%m %H:%M}'
+    title = f'Resumo do atendimento da IA (fora do horário) · {start:%d/%m}, {start:%H:%M} às {until}'
+    try:
+        body = ai.summarize_conversation(contact.account.agent, conversation)
+        if not body:
+            raise ValueError('resumo vazio')
+    except Exception as exc:
+        # sem resumo a equipe não fica sem nota: vai a conversa inteira
+        logger.warning('resumo da conversa do contato %s falhou: %s', contact.pk, exc)
+        title, body = 'Conversa com a IA fora do horário comercial', conversation
+    body = re.sub(r'(?m)^([^:\n\[]{1,30}):', r'<b>\1:</b>', html.escape(body, quote=False))
+    return f'<b>{html.escape(title)}</b><br><br>' + body.replace('\n', '<br>')
 
 
 def get_or_create_open_deal(pd: PipedriveAccount, contact: Contact, title: str) -> tuple[dict, bool]:
